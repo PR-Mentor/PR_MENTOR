@@ -9,13 +9,14 @@ import type {
   ReviewResponse,
   SavedPullRequest,
 } from '../types/review';
+import { authenticatedFetch } from './auth';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    response = await authenticatedFetch(`${API_BASE}${path}`, {
       ...init,
       headers: { ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...init?.headers },
     });

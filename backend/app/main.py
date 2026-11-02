@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import cors_origins
 from app.database.mongo_connection import close_mongo_client
 from app.database.reviews import get_store
-from app.routes.auth import router as auth_router
+from app.routes.auth import legacy_router as legacy_auth_router, router as auth_router
 from app.routes.learning import router as learning_router
 from app.routes.review import router as review_router
 
@@ -63,3 +63,4 @@ def readiness():
 app.include_router(review_router)
 app.include_router(learning_router)
 app.include_router(auth_router)
+app.include_router(legacy_auth_router)

@@ -34,7 +34,7 @@ python -m scripts.migrate_sqlite_to_mongodb --source .\data\pr_mentor.sqlite3
 
 The default source path is `PR_MENTOR_DATABASE_PATH`. Migration is never run at application startup. Reviews are upserted by `review_id`; saved URLs and learning attempts use stable unique keys so rerunning the command does not duplicate them.
 
-Collections are `reviews`, `saved_pull_requests`, and `learning_attempts`. Idempotent indexes enforce unique review IDs, saved IDs/URLs, and learning attempt IDs, and support newest-first history queries. The current app has no account or ownership model: review history, saved URLs, and learning progress are shared by all users of the configured database. MongoDB persistence does not add authentication or user isolation.
+Collections are `reviews`, `saved_pull_requests`, `learning_attempts`, and `users`. User profiles are also available in SQLite for local use. The MongoDB user collection has a unique `firebase_uid` index. Review history, saved URLs, and learning progress remain shared records without ownership fields; authentication does not make those existing records private.
 
 ## API contracts
 
@@ -43,7 +43,7 @@ Collections are `reviews`, `saved_pull_requests`, and `learning_attempts`. Idemp
 - `GET /api/reviews/history?limit=50`, `GET /api/reviews/{review_id}`, and `GET /api/reviews/{review_id}/diff` read persisted review records.
 - `GET /api/reviews/saved`, `POST /api/reviews/saved` with `{ "url": "..." }`, and `DELETE /api/reviews/saved/{saved_id}` manage saved PR links.
 - `GET /api/learning/exercises`, `GET /api/learning/exercises/{exercise_id}`, `POST /api/learning/exercises/{exercise_id}/submit` with `{ "answer": "..." }`, `GET /api/learning/progress`, and `GET /api/learning/history` serve authored exercises and persistent progress. Answers are omitted until submission.
-- `POST /api/auth/otp/send` and `POST /api/auth/otp/verify` currently return 503 because secure OTP delivery and challenge storage are not configured. They never log or accept a fake demo code.
+- `POST /api/auth/firebase/verify` verifies a Firebase ID token and creates or refreshes its profile; `GET /api/auth/me`, `PATCH /api/users/me`, `DELETE /api/users/me`, and `POST /api/auth/logout` require a bearer token. Account deletion requires recent authentication (five minutes). Firebase Phone Auth sends and verifies SMS codes in the browser; legacy `/api/auth/otp/*` paths fail closed.
 
 FastAPI validation and HTTP errors use the standard `{ "detail": ... }` shape consumed by the frontend. Fixed paths are declared before dynamic review IDs.
 
@@ -60,6 +60,20 @@ The public request/response schemas in `app/schemas/` and route paths above are 
 
 Demo mode returns stable educational findings labelled with source `demo`; it does not fetch or analyze the submitted repository. Live mode fetches GitHub metadata and diffs, retrieves at most 20 bounded Python files, runs available static analyzers in a temporary workspace, and includes AI findings only when configured. Tests are not run; the response explicitly says so. Tool unavailability creates `partial` status and warnings. The submitted repository URL is parsed and restricted to HTTPS `github.com`; server requests use a fixed `api.github.com` base to avoid arbitrary outbound destinations.
 
-SQLite and MongoDB implement the replaceable `ReviewStore` interface. Reviews, saved PR links, and learning attempts survive process restarts. A failed database write returns an API error; the service does not claim success. Before production deployment, configure managed storage, secrets, rate limiting, and an isolated runner if test execution is ever introduced. OTP authentication remains unavailable until secure delivery, hashed challenges, expiry, throttling, and persistent session handling are designed and tested.
+SQLite and MongoDB implement the replaceable `ReviewStore` interface. Reviews, saved PR links, and learning attempts survive process restarts. A failed database write returns an API error; the service does not claim success. Before production deployment, configure managed storage, secrets, platform rate limiting, and an isolated runner if test execution is ever introduced. Firebase provider sign-in requires the project configuration below. Firebase handles popup state, SMS delivery, OTP expiry, and reCAPTCHA; enable Firebase SMS protection and configure platform rate limits. Device sessions are not exposed because reliable device tracking is not implemented.
+
+## Firebase Authentication setup
+
+1. Create a project at [Firebase Console](https://console.firebase.google.com/) and add a Web app. Put its web config in `frontend/.env.local` using `frontend/.env.example`. These client settings identify the Firebase app and are not Admin credentials.
+2. In **Authentication → Sign-in method**, enable **Google**, **GitHub**, and **Phone**. See Firebase's [Google](https://firebase.google.com/docs/auth/web/google-signin), [GitHub](https://firebase.google.com/docs/auth/web/github-auth), and [phone](https://firebase.google.com/docs/auth/web/phone-auth) provider guides.
+3. Create a GitHub OAuth App. Set its callback URL to the exact callback shown in Firebase's GitHub provider settings (commonly `https://<firebase-project-id>.firebaseapp.com/__/auth/handler`). Put its client ID and secret in Firebase Console only; never put the secret in Vite variables.
+4. In **Authentication → Settings → Authorized domains**, add `localhost` manually for development and each deployed Vercel hostname. Firebase projects created after April 28, 2025 no longer include localhost by default; do not use localhost in production. Phone Auth also requires authorized domains; Firebase test numbers are for staging only.
+5. Create a Firebase service account or use workload identity/Application Default Credentials. Set `FIREBASE_PROJECT_ID` and either `FIREBASE_SERVICE_ACCOUNT_JSON` (secret JSON string), `FIREBASE_SERVICE_ACCOUNT_FILE` (mounted secret path), or ADC on Render. Never commit service account credentials.
+6. In Render set `FIREBASE_PROJECT_ID`, one secure Admin credential option, `PR_MENTOR_STORAGE=mongodb`, `MONGODB_URI`, `MONGODB_DATABASE`, and `PR_MENTOR_CORS_ORIGINS` to the exact HTTPS frontend origins. Firebase Admin verifies token signature, audience, expiry, and revocation before using the UID.
+7. In Vercel set all `VITE_FIREBASE_*` values and `VITE_API_BASE_URL=https://<render-service-host>`, then redeploy. Add the deployed domain to Firebase authorized domains and the exact frontend origin to backend CORS.
+8. Locally run `npm install`, copy `.env.example` to `.env.local`, configure Vite settings, provide backend Firebase credentials through environment variables, run `python -m pip install -r requirements.txt`, then start `npm run dev` and `uvicorn app.main:app --reload --port 8000`.
+9. Verify GitHub, Google account selection, and real SMS in a staging Firebase project. Check callback/domain settings, SMS quota and reCAPTCHA, HTTPS, CORS, MongoDB, and Firebase Admin. Firebase Phone SMS requires a linked Cloud Billing account for projects subject to current Firebase requirements. No real provider credentials are present here, so live authentication has not been claimed or tested.
+
+Firebase Admin can use ADC when neither service account environment variable is set, if the runtime identity is securely provisioned. These Firebase Console settings are manual and are not included in the repository.
 
 The orchestration layer has no dependency on the nested backend repository from Ritik's fork. `backend/` is an ordinary tracked directory in this canonical repository.

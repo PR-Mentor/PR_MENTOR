@@ -16,6 +16,8 @@ import type {
   AnalysisMode, DiffFile, LearningExercise, LearningHistory, LearningProgress,
   LearningResult, ReviewFinding, ReviewResponse, SavedPullRequest, Severity,
 } from './types/review';
+import { useAuth } from './auth/AuthContext';
+import LoginPage from './pages/LoginPage';
 
 type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning';
 
@@ -42,8 +44,11 @@ function pretty(value: string) {
 }
 
 export default function App() {
+  const auth = useAuth();
   const navigateRouter = useNavigate();
   const location = useLocation();
+  if (location.pathname.replace(/\/$/, '') === '/login') return <LoginPage />;
+  if (auth.loading) return <div className="app-auth-loading" role="status"><span className="brand-mark"><Code2 size={17}/><i/></span><LoaderCircle className="spin" size={18}/> Restoring your workspace…</div>;
   const page = pageFromPath(location.pathname);
   const [mobileNav, setMobileNav] = useState(false);
   const [mobileViewport, setMobileViewport] = useState(() => window.matchMedia('(max-width: 760px)').matches);
@@ -225,7 +230,7 @@ export default function App() {
             {nav.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={`side-link ${page === id ? 'selected' : ''}`} aria-current={page === id ? 'page' : undefined} onClick={() => go(id)}><Icon size={17}/><span>{label}</span>{id === 'history' && history.length > 0 && <small>{history.length}</small>}</button>)}
           </nav>
           <div className="sidebar-note"><div className="note-icon"><ShieldCheck size={16}/></div><strong>Evidence first</strong><p>AI suggestions need a human review. Static analyzer output is shown with its source.</p></div>
-          <div className="sidebar-bottom"><span className="guest-avatar">PM</span><span><strong>Guest workspace</strong><small>Backend-stored data</small></span><Activity size={15}/></div>
+          <div className="sidebar-bottom">{auth.user?.avatar_url ? <img className="guest-avatar profile-avatar" src={auth.user.avatar_url} alt=""/> : <span className="guest-avatar">{auth.user ? auth.user.display_name.slice(0, 2).toUpperCase() : 'PM'}</span>}<span><strong>{auth.user?.display_name ?? 'Guest workspace'}</strong><small>{auth.user?.email ?? 'Public workspace'}</small></span>{auth.user ? <button className="logout-button" type="button" onClick={() => void auth.logout()} aria-label="Sign out">Sign out</button> : <button className="login-link" type="button" onClick={() => navigateRouter('/login')}>Sign in</button>}</div>
         </aside>
 
         <main className="main-content">
