@@ -45,6 +45,22 @@ function pretty(value: string) {
 
 export default function App() {
   const auth = useAuth();
+ codex/fix-blank-auth
+
+ codex/firebase-auth
+  const location = useLocation();
+  const isLoginRoute = location.pathname.replace(/\/$/, '') === '/login';
+  if (isLoginRoute) return <LoginPage />;
+  if (auth.loading) return <div className="app-auth-loading" role="status"><span className="brand-mark"><Code2 size={17}/><i/></span><LoaderCircle className="spin" size={18}/> Restoring your workspace…</div>;
+  if (!auth.user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  return <Workspace />;
+}
+
+function Workspace() {
+  const auth = useAuth();
+ main
+  const navigateRouter = useNavigate();
+ main
   const location = useLocation();
   const isLoginRoute = location.pathname.replace(/\/$/, '') === '/login';
   if (isLoginRoute) return <LoginPage />;
