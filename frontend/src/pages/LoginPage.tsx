@@ -67,7 +67,7 @@ export default function LoginPage() {
   };
 
   return <main className="auth-page">
-    <section className="auth-story">
+    <div className="auth-frame"><section className="auth-story">
       <Link to="/" className="auth-brand"><span className="brand-mark"><Code2 size={17}/><i/></span><span>PR <b>Mentor</b></span></Link>
       <div className="story-content"><div className="story-kicker"><Sparkles size={14}/> THE DEVELOPER'S REVIEW WORKSPACE</div><h1>Your journey to<br/>better code starts here.</h1><p>Review pull requests, understand complex code changes, discover bugs, and become a better developer with AI-powered guidance.</p><div className="story-features"><span><Check size={15}/> AI-powered code reviews</span><span><Check size={15}/> Understand every pull request</span><span><Check size={15}/> Learn through real-world code</span></div><div className="code-art" aria-hidden="true"><div className="code-top"><i/><i/><i/><span>review.ts</span></div><div className="code-lines"><span>01</span><code><b>const</b> insight = <em>review</em>(pullRequest);</code><span>02</span><code><b>if</b> (insight.<i>hasEvidence</i>) {'{'}</code><span>03</span><code>&nbsp;&nbsp;<u>share</u>(insight);</code><span>04</span><code>{'}'}</code></div><div className="code-glow"/></div></div>
       <div className="story-foot"><ShieldCheck size={14}/> Built for thoughtful, evidence-first code review</div>
@@ -83,8 +83,8 @@ export default function LoginPage() {
       </>}
       {(error || profileError) && <div className="auth-error" role="alert">{error || profileError}</div>}
       {!firebaseConfigured && <div className="auth-note">Firebase credentials are required before sign-in can be used.</div>}
-      <p className="auth-terms">By continuing, you agree to our <a href="/terms">Terms of Service</a> and <a href="/privacy">Privacy Policy</a>.</p>
+      <p className="auth-terms">By continuing, you agree to our <Link to="/terms">Terms of Service</Link> and <Link to="/privacy">Privacy Policy</Link>.</p>
       {loading && <div className="auth-restoring" role="status"><LoaderCircle className="spin" size={14}/> Restoring session…</div>}
-    </div><div className="auth-panel-foot"><ShieldCheck size={14}/> Secure authentication powered by Firebase</div></section>
+    </div><div className="auth-panel-foot"><ShieldCheck size={14}/> Secure authentication powered by Firebase</div></section></div>
   </main>;
 }

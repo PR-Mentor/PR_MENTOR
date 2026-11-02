@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, ArrowRight, Bookmark, BookOpen, CheckCircle2, ChevronRight, CircleAlert,
   Code2, ExternalLink, FileCode2,
@@ -45,10 +45,18 @@ function pretty(value: string) {
 
 export default function App() {
   const auth = useAuth();
+  const location = useLocation();
+  const isLoginRoute = location.pathname.replace(/\/$/, '') === '/login';
+  if (isLoginRoute) return <LoginPage />;
+  if (auth.loading) return <div className="app-auth-loading" role="status"><span className="brand-mark"><Code2 size={17}/><i/></span><LoaderCircle className="spin" size={18}/> Restoring your workspace…</div>;
+  if (!auth.user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  return <Workspace />;
+}
+
+function Workspace() {
+  const auth = useAuth();
   const navigateRouter = useNavigate();
   const location = useLocation();
-  if (location.pathname.replace(/\/$/, '') === '/login') return <LoginPage />;
-  if (auth.loading) return <div className="app-auth-loading" role="status"><span className="brand-mark"><Code2 size={17}/><i/></span><LoaderCircle className="spin" size={18}/> Restoring your workspace…</div>;
   const page = pageFromPath(location.pathname);
   const [mobileNav, setMobileNav] = useState(false);
   const [mobileViewport, setMobileViewport] = useState(() => window.matchMedia('(max-width: 760px)').matches);
