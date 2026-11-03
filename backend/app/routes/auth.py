@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import base64
+import binascii
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.database.users import delete_user, get_user, update_user, upsert_user
@@ -55,8 +58,67 @@ def verify_firebase_token(authorization: str | None) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="The Firebase ID token is invalid, expired, or revoked.", headers={"WWW-Authenticate": "Bearer"}) from exc
 
 
+def verify_supabase_token(authorization: str | None) -> dict[str, Any]:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="A bearer token is required.", headers={"WWW-Authenticate": "Bearer"})
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    anon_key = os.getenv("SUPABASE_ANON_KEY", "")
+    if not url or not anon_key:
+        raise HTTPException(status_code=503, detail="Supabase token verification is not configured on the API.")
+    token = authorization[7:].strip()
+    try:
+        response = httpx.get(
+            f"{url}/auth/v1/user",
+            headers={"apikey": anon_key, "Authorization": f"Bearer {token}"},
+            timeout=5.0,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Supabase authentication is temporarily unavailable.") from exc
+    if response.status_code in {401, 403}:
+        raise HTTPException(status_code=401, detail="The Supabase access token is invalid or expired.", headers={"WWW-Authenticate": "Bearer"})
+    if not response.is_success:
+        raise HTTPException(status_code=503, detail="Supabase could not verify this account.")
+    try:
+        user = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="Supabase returned an invalid user response.") from exc
+    uid = user.get("id") if isinstance(user, dict) else None
+    if not isinstance(uid, str) or not uid:
+        raise HTTPException(status_code=401, detail="The Supabase access token did not resolve to a user.", headers={"WWW-Authenticate": "Bearer"})
+
+    metadata = user.get("user_metadata") or {}
+    app_metadata = user.get("app_metadata") or {}
+    provider = app_metadata.get("provider") or "github"
+    return {
+        "uid": f"supabase:{uid}",
+        "name": metadata.get("full_name") or metadata.get("name"),
+        "preferred_username": metadata.get("user_name") or metadata.get("preferred_username"),
+        "email": user.get("email"),
+        "email_verified": bool(user.get("email_confirmed_at")),
+        "picture": metadata.get("avatar_url") or metadata.get("picture"),
+        "auth_provider": "supabase",
+        "firebase": {"sign_in_provider": provider},
+    }
+
+
 def current_claims(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    return verify_firebase_token(authorization)
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="A bearer token is required.", headers={"WWW-Authenticate": "Bearer"})
+    token = authorization[7:].strip()
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise ValueError("Malformed JWT")
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(payload))
+        if not isinstance(decoded, dict):
+            raise ValueError("JWT payload must be an object")
+        issuer = decoded.get("iss", "")
+    except (ValueError, TypeError, UnicodeDecodeError, binascii.Error):
+        raise HTTPException(status_code=401, detail="The bearer token is invalid.", headers={"WWW-Authenticate": "Bearer"}) from None
+    if isinstance(issuer, str) and issuer.startswith("https://securetoken.google.com/"):
+        return verify_firebase_token(authorization)
+    return verify_supabase_token(authorization)
 
 
 def safe_user(user: dict[str, Any]) -> dict[str, Any]:
@@ -72,6 +134,14 @@ def delete_firebase_identity(uid: str) -> None:
 
 @router.post("/auth/firebase/verify")
 def firebase_verify(claims: Annotated[dict[str, Any], Depends(current_claims)]):
+    user = upsert_user(claims)
+    return {"user": safe_user(user)}
+
+
+@router.post("/auth/supabase/verify")
+def supabase_verify(claims: Annotated[dict[str, Any], Depends(current_claims)]):
+    if claims.get("auth_provider") != "supabase":
+        raise HTTPException(status_code=401, detail="A Supabase access token is required.")
     user = upsert_user(claims)
     return {"user": safe_user(user)}
 
@@ -106,6 +176,8 @@ def patch_me(payload: ProfileUpdate, claims: Annotated[dict[str, Any], Depends(c
 
 @router.delete("/users/me")
 def delete_me(claims: Annotated[dict[str, Any], Depends(current_claims)]):
+    if claims.get("auth_provider") == "supabase":
+        raise HTTPException(status_code=501, detail="Supabase account deletion is not configured for this project.")
     auth_time = int(claims.get("auth_time", 0))
     if not auth_time or (datetime.now(UTC).timestamp() - auth_time) > 300:
         raise HTTPException(status_code=403, detail="Please reauthenticate and try again.")
