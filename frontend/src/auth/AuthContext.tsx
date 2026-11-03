@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
-import { supabase, supabaseConfigured } from '../services/supabase';
+import { supabase, supabaseConfigured, supabaseConfigurationError } from '../services/supabase';
 import { syncSupabaseUser } from '../services/auth';
 
 export type UserProfile = {
@@ -19,6 +19,7 @@ type AuthValue = {
   loading: boolean;
   error: string;
   configured: boolean;
+  configurationError: string;
   signInWithGithub: () => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -105,7 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthValue>(() => ({
-    user, loading, error, configured: supabaseConfigured, signInWithGithub, logout,
+    user, loading, error, configured: supabaseConfigured, configurationError: supabaseConfigurationError, signInWithGithub, logout,
   }), [user, loading, error, signInWithGithub, logout]);
 
   return <Context.Provider value={value}>{children}</Context.Provider>;
