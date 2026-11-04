@@ -62,14 +62,19 @@ def verify_supabase_token(authorization: str | None) -> dict[str, Any]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="A bearer token is required.", headers={"WWW-Authenticate": "Bearer"})
     url = os.getenv("SUPABASE_URL", "").rstrip("/")
-    anon_key = os.getenv("SUPABASE_ANON_KEY", "")
-    if not url or not anon_key:
+    api_key = (
+        os.getenv("SUPABASE_PUBLISHABLE_KEY")
+        or os.getenv("SUPABASE_PUBLIC_KEY")
+        or os.getenv("SUPABASE_ANON_KEY")
+        or ""
+    ).strip()
+    if not url or not api_key:
         raise HTTPException(status_code=503, detail="Supabase token verification is not configured on the API.")
     token = authorization[7:].strip()
     try:
         response = httpx.get(
             f"{url}/auth/v1/user",
-            headers={"apikey": anon_key, "Authorization": f"Bearer {token}"},
+            headers={"apikey": api_key, "Authorization": f"Bearer {token}"},
             timeout=5.0,
         )
     except httpx.HTTPError as exc:

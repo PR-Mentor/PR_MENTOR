@@ -64,12 +64,12 @@ SQLite and MongoDB implement the replaceable `ReviewStore` interface. Reviews, s
 
 ## Supabase GitHub authentication setup
 
-1. Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in the backend host environment. The API validates Supabase access tokens against the Supabase Auth user endpoint and syncs the resulting profile. The anon key is safe for this validation; never use a service-role key for frontend or bearer-token verification.
+1. Set `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` (recommended) or legacy `SUPABASE_ANON_KEY` in the backend host environment. The API validates Supabase access tokens against the Supabase Auth user endpoint and syncs the resulting profile. Never use a secret or service-role key for frontend or bearer-token verification.
 2. In Supabase **Authentication → Sign In / Providers**, enable GitHub and save the GitHub OAuth app client ID and secret there. Configure the app's local and deployed URLs under **Authentication → URL Configuration**. The GitHub OAuth app's callback URL must match the callback URL Supabase displays for that provider.
 3. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in `frontend/.env.local` for local development and as GitHub Actions repository variables for GitHub Pages builds. The GitHub Pages URLs are `https://pr-mentor.github.io/PR_MENTOR/` and the matching login route. See Supabase's [GitHub sign-in guide](https://supabase.com/docs/guides/auth/social-sign-in/auth-github).
 
 4. Add the exact frontend origins to `PR_MENTOR_CORS_ORIGINS` on the backend host. For GitHub Pages, the origin is `https://pr-mentor.github.io` (no repository path).
-5. Locally, copy `frontend/.env.example` to `frontend/.env.local`, then start the frontend and backend using the commands above. On Render, add `SUPABASE_URL` and `SUPABASE_ANON_KEY`; do not add a service-role key to the frontend or use it to validate user access tokens.
+5. Locally, copy `frontend/.env.example` to `frontend/.env.local`, then start the frontend and backend using the commands above. On Render, add `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` (or `SUPABASE_ANON_KEY` for legacy projects); do not add a service-role key to the frontend or use it to validate user access tokens.
 
 Supabase account deletion is not enabled through the API; users can sign out from the workspace. Firebase Admin settings below are only needed if an older Firebase client still needs to authenticate.
 
