@@ -12,7 +12,19 @@ def database_path() -> Path:
 
 
 def storage_backend() -> str:
-    value = os.getenv("PR_MENTOR_STORAGE", "sqlite").strip().lower()
+    # Render's default filesystem is ephemeral: SQLite data can disappear on
+    # restart or redeploy. Use the managed MongoDB database there and fail
+    # closed if it has not been configured, instead of silently accepting a
+    # local database that cannot provide durable, cross-device history.
+    if os.getenv("RENDER", "").strip().lower() == "true" or os.getenv("RENDER_SERVICE_ID"):
+        if not mongodb_uri():
+            raise ValueError("Render requires MONGODB_URI for durable review storage.")
+        return "mongodb"
+
+    configured = os.getenv("PR_MENTOR_STORAGE")
+    # If a managed database URI is provided locally or on another host, prefer
+    # it unless the operator explicitly selected a storage backend.
+    value = (configured or ("mongodb" if mongodb_uri() else "sqlite")).strip().lower()
     if value not in {"sqlite", "mongodb"}:
         raise ValueError("PR_MENTOR_STORAGE must be either 'sqlite' or 'mongodb'.")
     return value
