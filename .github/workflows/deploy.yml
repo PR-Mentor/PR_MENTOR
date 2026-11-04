@@ -1,4 +1,3 @@
-
 name: Deploy PR Mentor Frontend
 
 on:
@@ -55,8 +54,17 @@ jobs:
               ;;
           esac
           case "$SUPABASE_URL" in
-            */rest/v1|*/rest/v1/)
-              echo "VITE_SUPABASE_URL must be the project URL without /rest/v1."
+            */rest/v1/) SUPABASE_URL="${SUPABASE_URL%/}" ;;
+          esac
+          # The frontend client strips this API path before initializing Supabase.
+          # Normalize it here too so the build check accepts the same supported URL.
+          case "$SUPABASE_URL" in
+            */rest/v1) SUPABASE_URL="${SUPABASE_URL%/rest/v1}" ;;
+          esac
+          case "$SUPABASE_URL" in
+            https://*|http://localhost:*|http://127.0.0.1:*) ;;
+            *)
+              echo "VITE_SUPABASE_URL must be a Supabase project URL (optionally ending in /rest/v1)."
               exit 1
               ;;
           esac
