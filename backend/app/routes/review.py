@@ -1,20 +1,22 @@
 """Stable review API consumed by the frontend."""
 
-from fastapi import APIRouter, HTTPException, Query
+from typing import Annotated, Any
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.database.reviews import get_store
 from app.github_service.client import GitHubAPIError
 from app.github_service.parser import InvalidPullRequestURL
 from app.schemas.review import AnalyzeRequest, DiffResponse, ReviewResponse, SavedPullRequestRequest
 from app.services.review_orchestrator import analyze
+from app.routes.auth import current_claims
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
 
 
 @router.post("/analyze", response_model=ReviewResponse)
-async def analyze_review(payload: AnalyzeRequest):
+async def analyze_review(payload: AnalyzeRequest, claims: Annotated[dict[str, Any], Depends(current_claims)]):
     try:
-        return await analyze(payload)
+        return await analyze(payload, claims["uid"])
     except InvalidPullRequestURL as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GitHubAPIError as exc:
@@ -42,23 +44,23 @@ async def analyze_review(payload: AnalyzeRequest):
 
 
 @router.get("/history", response_model=list[ReviewResponse])
-def history(limit: int = Query(default=50, ge=1, le=100)):
+def history(claims: Annotated[dict[str, Any], Depends(current_claims)], limit: int = Query(default=50, ge=1, le=100)):
     try:
-        return get_store().list_reviews(limit)
+        return get_store().list_reviews(claims["uid"], limit)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Review history is unavailable.") from exc
 
 
 @router.get("/saved")
-def saved_pull_requests():
+def saved_pull_requests(claims: Annotated[dict[str, Any], Depends(current_claims)]):
     try:
-        return get_store().list_saved()
+        return get_store().list_saved(claims["uid"])
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Saved pull requests are unavailable.") from exc
 
 
 @router.post("/saved", status_code=201)
-def save_pull_request(payload: SavedPullRequestRequest):
+def save_pull_request(payload: SavedPullRequestRequest, claims: Annotated[dict[str, Any], Depends(current_claims)]):
     url = payload.pull_request_url or payload.url or ""
     try:
         from app.github_service.parser import parse_pull_request_url
@@ -68,15 +70,15 @@ def save_pull_request(payload: SavedPullRequestRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     canonical_url = f"https://github.com/{owner}/{repo}/pull/{number}"
     try:
-        return get_store().save_pull_request(canonical_url)
+        return get_store().save_pull_request(canonical_url, claims["uid"])
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Pull request could not be saved.") from exc
 
 
 @router.delete("/saved/{saved_id}")
-def delete_saved_pull_request(saved_id: str):
+def delete_saved_pull_request(saved_id: str, claims: Annotated[dict[str, Any], Depends(current_claims)]):
     try:
-        deleted = get_store().delete_saved(saved_id)
+        deleted = get_store().delete_saved(saved_id, claims["uid"])
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Saved pull requests are unavailable.") from exc
     if not deleted:
@@ -85,9 +87,9 @@ def delete_saved_pull_request(saved_id: str):
 
 
 @router.get("/{review_id}/diff", response_model=DiffResponse)
-def review_diff(review_id: str):
+def review_diff(review_id: str, claims: Annotated[dict[str, Any], Depends(current_claims)]):
     try:
-        review = get_store().get_review(review_id)
+        review = get_store().get_review(review_id, claims["uid"])
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Review data is unavailable.") from exc
     if review is None:
@@ -96,9 +98,9 @@ def review_diff(review_id: str):
 
 
 @router.get("/{review_id}", response_model=ReviewResponse)
-def get_review(review_id: str):
+def get_review(review_id: str, claims: Annotated[dict[str, Any], Depends(current_claims)]):
     try:
-        review = get_store().get_review(review_id)
+        review = get_store().get_review(review_id, claims["uid"])
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Review data is unavailable.") from exc
     if review is None:

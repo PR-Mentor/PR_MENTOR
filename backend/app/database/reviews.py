@@ -9,12 +9,12 @@ from app.database.connection import connection
 
 
 class ReviewStore(Protocol):
-    def save_review(self, review: dict[str, Any]) -> dict[str, Any]: ...
-    def get_review(self, review_id: str) -> dict[str, Any] | None: ...
-    def list_reviews(self, limit: int = 50) -> list[dict[str, Any]]: ...
-    def save_pull_request(self, url: str) -> dict[str, Any]: ...
-    def list_saved(self) -> list[dict[str, Any]]: ...
-    def delete_saved(self, saved_id: str) -> bool: ...
+    def save_review(self, review: dict[str, Any], user_id: str) -> dict[str, Any]: ...
+    def get_review(self, review_id: str, user_id: str) -> dict[str, Any] | None: ...
+    def list_reviews(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]: ...
+    def save_pull_request(self, url: str, user_id: str) -> dict[str, Any]: ...
+    def list_saved(self, user_id: str) -> list[dict[str, Any]]: ...
+    def delete_saved(self, saved_id: str, user_id: str) -> bool: ...
     def record_learning_attempt(self, exercise_id: str, category: str, correct: bool) -> None: ...
     def learning_progress(self) -> dict[str, Any]: ...
     def learning_history(self, limit: int = 100) -> dict[str, Any]: ...
@@ -29,43 +29,43 @@ class SQLiteReviewStore:
 
         ping()
 
-    def save_review(self, review: dict[str, Any]) -> dict[str, Any]:
+    def save_review(self, review: dict[str, Any], user_id: str) -> dict[str, Any]:
         review_id = review["review_id"]
         created_at = str(review.get("created_at", ""))
         payload = json.dumps(review, ensure_ascii=False, separators=(",", ":"), default=str)
         with connection() as db:
-            db.execute("INSERT INTO reviews(review_id, created_at, payload) VALUES (?, ?, ?) ON CONFLICT(review_id) DO UPDATE SET created_at=excluded.created_at, payload=excluded.payload", (review_id, created_at, payload))
+            db.execute("INSERT INTO reviews(review_id, user_id, created_at, payload) VALUES (?, ?, ?, ?) ON CONFLICT(review_id) DO UPDATE SET created_at=excluded.created_at, payload=excluded.payload WHERE reviews.user_id=excluded.user_id", (review_id, user_id, created_at, payload))
         return review
 
-    def get_review(self, review_id: str) -> dict[str, Any] | None:
+    def get_review(self, review_id: str, user_id: str) -> dict[str, Any] | None:
         with connection() as db:
-            row = db.execute("SELECT payload FROM reviews WHERE review_id = ?", (review_id,)).fetchone()
+            row = db.execute("SELECT payload FROM reviews WHERE review_id = ? AND user_id = ?", (review_id, user_id)).fetchone()
         return json.loads(row["payload"]) if row else None
 
-    def list_reviews(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_reviews(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
         bounded = max(1, min(int(limit), 100))
         with connection() as db:
-            rows = db.execute("SELECT payload FROM reviews ORDER BY rowid DESC LIMIT ?", (bounded,)).fetchall()
+            rows = db.execute("SELECT payload FROM reviews WHERE user_id = ? ORDER BY rowid DESC LIMIT ?", (user_id, bounded)).fetchall()
         return [json.loads(row["payload"]) for row in rows]
 
-    def save_pull_request(self, url: str) -> dict[str, Any]:
+    def save_pull_request(self, url: str, user_id: str) -> dict[str, Any]:
         with connection() as db:
-            row = db.execute("SELECT saved_id, url FROM saved_pull_requests WHERE url = ?", (url,)).fetchone()
+            row = db.execute("SELECT saved_id, url FROM saved_pull_requests WHERE url = ? AND user_id = ?", (url, user_id)).fetchone()
             if row is None:
                 saved_id = uuid4().hex
-                db.execute("INSERT INTO saved_pull_requests(saved_id, url) VALUES (?, ?)", (saved_id, url))
+                db.execute("INSERT INTO saved_pull_requests(saved_id, user_id, url) VALUES (?, ?, ?)", (saved_id, user_id, url))
             else:
                 saved_id = row["saved_id"]
         return {"saved_id": saved_id, "url": url, "temporary": False}
 
-    def list_saved(self) -> list[dict[str, Any]]:
+    def list_saved(self, user_id: str) -> list[dict[str, Any]]:
         with connection() as db:
-            rows = db.execute("SELECT saved_id, url FROM saved_pull_requests ORDER BY created_at DESC, rowid DESC").fetchall()
+            rows = db.execute("SELECT saved_id, url FROM saved_pull_requests WHERE user_id = ? ORDER BY created_at DESC, rowid DESC", (user_id,)).fetchall()
         return [{"saved_id": row["saved_id"], "url": row["url"], "temporary": False} for row in rows]
 
-    def delete_saved(self, saved_id: str) -> bool:
+    def delete_saved(self, saved_id: str, user_id: str) -> bool:
         with connection() as db:
-            cursor = db.execute("DELETE FROM saved_pull_requests WHERE saved_id = ?", (saved_id,))
+            cursor = db.execute("DELETE FROM saved_pull_requests WHERE saved_id = ? AND user_id = ?", (saved_id, user_id))
         return cursor.rowcount > 0
 
     def record_learning_attempt(self, exercise_id: str, category: str, correct: bool) -> None:

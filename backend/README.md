@@ -34,14 +34,14 @@ python -m scripts.migrate_sqlite_to_mongodb --source .\data\pr_mentor.sqlite3
 
 The default source path is `PR_MENTOR_DATABASE_PATH`. Migration is never run at application startup. Reviews are upserted by `review_id`; saved URLs and learning attempts use stable unique keys so rerunning the command does not duplicate them.
 
-Collections are `reviews`, `saved_pull_requests`, `learning_attempts`, and `users`. User profiles are also available in SQLite for local use. The MongoDB user collection has a unique `firebase_uid` index. Review history, saved URLs, and learning progress remain shared records without ownership fields; authentication does not make those existing records private.
+Collections are `reviews`, `saved_pull_requests`, `learning_attempts`, and `users`. User profiles are also available in SQLite for local use. The MongoDB user collection has a unique `firebase_uid` index. Reviews and saved PR links are stored with the verified account ID, and every review read or saved-link operation is restricted to that account. SQLite remains suitable for local development; use a persistent shared MongoDB deployment for review history to follow a user across devices. Records created before account ownership was added have no verified owner and are not shown to signed-in users.
 
 ## API contracts
 
 - `GET /api/health` is a liveness check; `GET /api/health/ready` verifies SQLite can open.
 - `POST /api/reviews/analyze` accepts `{ "url": "https://github.com/owner/repo/pull/42", "mode": "demo" | "live", "include_learning": true }`. `pull_request_url` is also accepted for compatibility. Responses use `schemas/review.py` and `schemas/finding.py`, including explicit `is_demo`, analysis provenance, tool statuses, warnings, verification counts, and diff files.
-- `GET /api/reviews/history?limit=50`, `GET /api/reviews/{review_id}`, and `GET /api/reviews/{review_id}/diff` read persisted review records.
-- `GET /api/reviews/saved`, `POST /api/reviews/saved` with `{ "url": "..." }`, and `DELETE /api/reviews/saved/{saved_id}` manage saved PR links.
+- `POST /api/reviews/analyze`, `GET /api/reviews/history?limit=50`, `GET /api/reviews/{review_id}`, and `GET /api/reviews/{review_id}/diff` require the signed-in user's bearer token; completed reviews are automatically saved to that account.
+- `GET /api/reviews/saved`, `POST /api/reviews/saved` with `{ "url": "..." }`, and `DELETE /api/reviews/saved/{saved_id}` require the signed-in user's bearer token and manage only that account's saved PR links.
 - `GET /api/learning/exercises`, `GET /api/learning/exercises/{exercise_id}`, `POST /api/learning/exercises/{exercise_id}/submit` with `{ "answer": "..." }`, `GET /api/learning/progress`, and `GET /api/learning/history` serve authored exercises and persistent progress. Answers are omitted until submission.
 - `POST /api/auth/firebase/verify` verifies a Firebase ID token and creates or refreshes its profile; `GET /api/auth/me`, `PATCH /api/users/me`, `DELETE /api/users/me`, and `POST /api/auth/logout` require a bearer token. Account deletion requires recent authentication (five minutes). Firebase Phone Auth sends and verifies SMS codes in the browser; legacy `/api/auth/otp/*` paths fail closed.
 
