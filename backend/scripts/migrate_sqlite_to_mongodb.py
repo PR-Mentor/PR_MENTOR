@@ -21,7 +21,8 @@ def migrate(source_path: Path, store: MongoReviewStore) -> dict[str, int]:
         source.row_factory = sqlite3.Row
         for row in source.execute("SELECT payload FROM reviews"):
             review: dict[str, Any] = json.loads(row["payload"])
-            store.save_review(review)
+            # The source database has no authenticated owner for its old records.
+            store.save_review(review, "legacy:unassigned")
             counts["reviews"] += 1
         for row in source.execute("SELECT saved_id, url, created_at FROM saved_pull_requests"):
             store.import_saved_record(row["saved_id"], row["url"], row["created_at"])

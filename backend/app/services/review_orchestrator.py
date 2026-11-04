@@ -101,7 +101,7 @@ from app.verification.ruff_runner import ToolExecutionError, run_ruff
 from app.verification.test_runner import run_tests
 
 
-async def analyze(request: AnalyzeRequest) -> ReviewResponse:
+async def analyze(request: AnalyzeRequest, user_id: str) -> ReviewResponse:
     submitted_url = request.pull_request_url or request.url or ""
     owner, repo, number = parse_pull_request_url(submitted_url)
     if request.mode == "demo":
@@ -115,7 +115,7 @@ async def analyze(request: AnalyzeRequest) -> ReviewResponse:
         if not request.include_learning:
             for finding in response.findings:
                 finding.learning_explanation = ""
-        await asyncio.to_thread(_persist, response)
+        await asyncio.to_thread(_persist, response, user_id)
         return response
 
     started = datetime.now(timezone.utc)
@@ -197,7 +197,7 @@ async def analyze(request: AnalyzeRequest) -> ReviewResponse:
     if not request.include_learning:
         for finding in response.findings:
             finding.learning_explanation = ""
-    await asyncio.to_thread(_persist, response)
+    await asyncio.to_thread(_persist, response, user_id)
     return response
 
 
@@ -248,5 +248,5 @@ def _static_finding(tool: str, item: Finding, root: Path) -> ReviewFinding:
     )
 
 
-def _persist(response: ReviewResponse) -> None:
-    get_store().save_review(response.model_dump(mode="json"))
+def _persist(response: ReviewResponse, user_id: str) -> None:
+    get_store().save_review(response.model_dump(mode="json"), user_id)

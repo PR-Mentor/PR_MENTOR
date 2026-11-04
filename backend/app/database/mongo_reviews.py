@@ -28,10 +28,15 @@ def _without_id(document: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def create_indexes(database: Database | Any) -> None:
+    # Older deployments enforced URL uniqueness globally; ownership makes it per-user.
+    try:
+        database["saved_pull_requests"].drop_index("saved_url_unique")
+    except Exception:
+        pass
     database["reviews"].create_index("review_id", unique=True, name="review_id_unique")
     database["reviews"].create_index([("created_at", -1)], name="review_created_at_desc")
     database["saved_pull_requests"].create_index("saved_id", unique=True, name="saved_id_unique")
-    database["saved_pull_requests"].create_index("url", unique=True, name="saved_url_unique")
+    database["saved_pull_requests"].create_index([("user_id", 1), ("url", 1)], unique=True, name="saved_user_url_unique")
     database["saved_pull_requests"].create_index([("created_at", -1)], name="saved_created_at_desc")
     database["learning_attempts"].create_index("attempt_id", unique=True, name="attempt_id_unique")
     database["learning_attempts"].create_index([("created_at", -1)], name="attempt_created_at_desc")
@@ -54,41 +59,42 @@ class MongoReviewStore:
     def ping(self) -> None:
         self.database.command("ping")
 
-    def save_review(self, review: dict[str, Any]) -> dict[str, Any]:
+    def save_review(self, review: dict[str, Any], user_id: str) -> dict[str, Any]:
         document = dict(review)
         document["review_id"] = str(document["review_id"])
         document["created_at"] = _utc_datetime(document["created_at"])
-        self.reviews.replace_one({"review_id": document["review_id"]}, document, upsert=True)
+        document["user_id"] = user_id
+        self.reviews.replace_one({"review_id": document["review_id"], "user_id": user_id}, document, upsert=True)
         return review
 
-    def get_review(self, review_id: str) -> dict[str, Any] | None:
-        return _without_id(self.reviews.find_one({"review_id": review_id}))
+    def get_review(self, review_id: str, user_id: str) -> dict[str, Any] | None:
+        return _without_id(self.reviews.find_one({"review_id": review_id, "user_id": user_id}))
 
-    def list_reviews(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_reviews(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
         bounded = max(1, min(int(limit), 100))
-        cursor = self.reviews.find({}, {"_id": 0}).sort([("created_at", -1), ("_id", -1)]).limit(bounded)
+        cursor = self.reviews.find({"user_id": user_id}, {"_id": 0}).sort([("created_at", -1), ("_id", -1)]).limit(bounded)
         return list(cursor)
 
-    def save_pull_request(self, url: str) -> dict[str, Any]:
+    def save_pull_request(self, url: str, user_id: str) -> dict[str, Any]:
         saved_id = uuid4().hex
-        document = {"saved_id": saved_id, "url": url, "created_at": datetime.now(timezone.utc)}
+        document = {"saved_id": saved_id, "url": url, "user_id": user_id, "created_at": datetime.now(timezone.utc)}
         try:
             self.saved.insert_one(document)
         except DuplicateKeyError:
             # A repeated URL is an idempotent save; a concurrent duplicate insert
             # is resolved by reading the existing canonical record below.
             pass
-        existing = self.saved.find_one({"url": url}, {"_id": 0})
+        existing = self.saved.find_one({"url": url, "user_id": user_id}, {"_id": 0})
         if existing is None:
             raise RuntimeError("Saved pull request was not found after insert.")
         return {"saved_id": existing["saved_id"], "url": existing["url"], "temporary": False}
 
-    def list_saved(self) -> list[dict[str, Any]]:
-        cursor = self.saved.find({}, {"_id": 0}).sort([("created_at", -1), ("_id", -1)])
+    def list_saved(self, user_id: str) -> list[dict[str, Any]]:
+        cursor = self.saved.find({"user_id": user_id}, {"_id": 0}).sort([("created_at", -1), ("_id", -1)])
         return [{"saved_id": item["saved_id"], "url": item["url"], "temporary": False} for item in cursor]
 
-    def delete_saved(self, saved_id: str) -> bool:
-        return self.saved.delete_one({"saved_id": saved_id}).deleted_count > 0
+    def delete_saved(self, saved_id: str, user_id: str) -> bool:
+        return self.saved.delete_one({"saved_id": saved_id, "user_id": user_id}).deleted_count > 0
 
     def record_learning_attempt(self, exercise_id: str, category: str, correct: bool) -> None:
         self.attempts.insert_one({
