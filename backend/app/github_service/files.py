@@ -37,6 +37,8 @@ def fetch_pull_request_files(
             return files, False
 
     return files, True
+ main
+
 
 """Turn GitHub's unified patch text into the review UI's stable diff shape."""
 
@@ -98,3 +100,4 @@ def parse_patch(item: dict[str, Any]) -> dict[str, Any]:
 
 def _count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+ main

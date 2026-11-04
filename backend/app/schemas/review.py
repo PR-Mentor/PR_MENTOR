@@ -1,6 +1,10 @@
+ main
+"""Legacy review response used by the main branch frontend."""
+
 """Request and response models for the review API."""
 
 from typing import Literal
+ main
 
 from pydantic import BaseModel, Field
 
@@ -10,7 +14,11 @@ class ReviewAnalyzeRequest(BaseModel):
 
 
 class ReviewFindingResponse(BaseModel):
+ main
+    severity: str
+
     severity: Literal["Critical", "High", "Medium", "Low", "Informational"]
+ main
     title: str
     file: str
     line: int | str
@@ -24,6 +32,11 @@ class ReviewResponse(BaseModel):
     pull_request_title: str
     pull_request_number: int
     url: str | None = None
+ main
+    review_id: str
+    findings: list[ReviewFindingResponse]
+    status: str = "completed"
+
     review_id: str | None = None
     findings: list[ReviewFindingResponse]
     status: str | None = None
@@ -106,3 +119,4 @@ class DiffResponse(BaseModel):
     review_id: str
     files: list[DiffFile]
     warnings: list[str] = Field(default_factory=list)
+ main

@@ -328,6 +328,8 @@ def test_reviewer_rejects_invalid_json():
             {"src/example.py": sample_diff()},
             provider=provider,
         )
+ main
+
 
 import asyncio
 import json
@@ -364,3 +366,4 @@ def test_reviewer_rejects_malformed_provider_json(monkeypatch):
     monkeypatch.setattr(reviewer, "complete_json", complete)
     with pytest.raises(AIReviewUnavailable, match="invalid JSON"):
         asyncio.run(reviewer.generate_candidates({}, [], []))
+ main

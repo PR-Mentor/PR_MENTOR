@@ -220,6 +220,8 @@ def review_pull_request_payload(
         raise ValueError("The pull request payload contains no reviewable file patches.")
 
     return review_changed_files(changed_files, provider=provider)
+ main
+
 
 """Schema-validated AI candidate findings; provider transport stays replaceable."""
 
@@ -251,3 +253,4 @@ async def generate_candidates(metadata: dict[str, Any], files: list[dict[str, An
         except Exception as exc:
             raise AIReviewUnavailable("AI provider returned a finding that did not match the review schema.") from exc
     return findings
+main

@@ -145,6 +145,8 @@ class OpenAICompatibleProvider:
             raise AIProviderError("The AI provider returned an empty response.")
 
         return content.strip()
+ main
+
 """Replaceable OpenAI-compatible JSON completion client."""
 
 import httpx
@@ -189,3 +191,4 @@ async def complete_json(system_prompt: str, user_prompt: str) -> str:
     if not isinstance(content, str):
         raise AIReviewUnavailable("AI provider response did not contain JSON text.")
     return content
+ main
