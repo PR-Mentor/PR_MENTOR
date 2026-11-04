@@ -65,7 +65,15 @@ SQLite and MongoDB implement the replaceable `ReviewStore` interface. Reviews, s
 ## Supabase GitHub authentication setup
 
 1. Set `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` (recommended) or legacy `SUPABASE_ANON_KEY` in the backend host environment. The API validates Supabase access tokens against the Supabase Auth user endpoint and syncs the resulting profile. Never use a secret or service-role key for frontend or bearer-token verification.
+ codex/fix-supabase-env-deployment
 2. In Supabase **Authentication → Sign In / Providers**, enable GitHub and save the GitHub OAuth app client ID and secret there. Configure the app's local and deployed URLs under **Authentication → URL Configuration**. The GitHub OAuth app's callback URL must match the callback URL Supabase displays for that provider. The frontend requests only `read:user user:email`; live PR reads use the user's OAuth token so each user's API use has its own GitHub quota. The token is sent only with live analysis requests and is not stored by PR Mentor.
+
+ codex/fix-supabase-env-deployment
+2. In Supabase **Authentication → Sign In / Providers**, enable GitHub and save the GitHub OAuth app client ID and secret there. Configure the app's local and deployed URLs under **Authentication → URL Configuration**. The GitHub OAuth app's callback URL must match the callback URL Supabase displays for that provider. The frontend requests only `read:user user:email`; live PR reads use the user's OAuth token so each user's API use has its own GitHub quota. The token is sent only with live analysis requests and is not stored by PR Mentor.
+
+2. In Supabase **Authentication → Sign In / Providers**, enable GitHub and save the GitHub OAuth app client ID and secret there. Configure the app's local and deployed URLs under **Authentication → URL Configuration**. The GitHub OAuth app's callback URL must match the callback URL Supabase displays for that provider.
+main
+ main
 3. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in `frontend/.env.local` for local development and as GitHub Actions repository variables for GitHub Pages builds. The GitHub Pages URLs are `https://pr-mentor.github.io/PR_MENTOR/` and the matching login route. See Supabase's [GitHub sign-in guide](https://supabase.com/docs/guides/auth/social-sign-in/auth-github).
 
 4. Add the exact frontend origins to `PR_MENTOR_CORS_ORIGINS` on the backend host. For GitHub Pages, the origin is `https://pr-mentor.github.io` (no repository path).
