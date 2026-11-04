@@ -42,7 +42,6 @@ export async function authenticatedFetch(input: RequestInfo | URL, init: Request
   // the persisted Supabase session once, then retry the API call with its new JWT.
   const refreshedToken = await getToken(true);
   return refreshedToken ? send(refreshedToken) : response;
- codex/fix-supabase-env-deployment
 }
 
 export async function getGitHubProviderToken(): Promise<string | undefined> {
@@ -57,6 +56,4 @@ export async function getGitHubProviderToken(): Promise<string | undefined> {
   if (token) window.sessionStorage.setItem('pr-mentor-github-provider-token', token);
   if (currentUserId) window.sessionStorage.setItem('pr-mentor-github-provider-user', currentUserId);
   return token ?? undefined;
-
- main
 }
