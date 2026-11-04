@@ -42,8 +42,6 @@ def ingest_pull_request(
         "files_truncated": files_truncated,
     }
 
- main
-
 """Fetch bounded pull-request metadata and changed-file pages from GitHub."""
 
 import base64
@@ -168,4 +166,3 @@ def _required_nonnegative(value: object, field: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError(f"GitHub pull request has invalid {field}.")
     return value
- main

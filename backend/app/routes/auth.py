@@ -1,19 +1,3 @@
- main
-"""Authentication endpoints fail closed until OTP delivery is configured."""
-
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
-
-router = APIRouter(prefix="/api/auth", tags=["authentication"])
-
-
-class SendOtpRequest(BaseModel):
-    method: str = Field(pattern="^(email|phone)$")
-    identifier: str = Field(min_length=3, max_length=320)
-
-
-class VerifyOtpRequest(BaseModel):
-
 """Firebase ID-token verification and authenticated user profile endpoints."""
 
 from __future__ import annotations
@@ -229,20 +213,9 @@ class LegacyOtpRequest(BaseModel):
 
 
 class LegacyOtpVerifyRequest(BaseModel):
- main
     challenge_id: str = Field(min_length=1, max_length=128)
     code: str = Field(min_length=4, max_length=12)
 
-
- main
-@router.post("/otp/send")
-def send_otp(_payload: SendOtpRequest):
-    raise HTTPException(status_code=503, detail="OTP delivery is not configured; sign-in is unavailable.")
-
-
-@router.post("/otp/verify")
-def verify_otp(_payload: VerifyOtpRequest):
-    raise HTTPException(status_code=503, detail="OTP verification is not configured; sign-in is unavailable.")
 
 @legacy_router.post("/otp/send")
 def legacy_send_otp(_payload: LegacyOtpRequest):
@@ -252,4 +225,3 @@ def legacy_send_otp(_payload: LegacyOtpRequest):
 @legacy_router.post("/otp/verify")
 def legacy_verify_otp(_payload: LegacyOtpVerifyRequest):
     raise HTTPException(status_code=503, detail="Standalone OTP verification is not configured; use Firebase Phone Authentication.")
- main

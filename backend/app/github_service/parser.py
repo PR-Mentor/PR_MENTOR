@@ -122,8 +122,6 @@ def parse_pull_request_file(data: Any) -> dict[str, Any]:
             else "GitHub did not provide a text patch for this file."
         ),
     }
-main
-
 
 """Parse public GitHub pull-request URLs without making network requests."""
 
@@ -156,4 +154,3 @@ def parse_pull_request_url(value: str) -> tuple[str, str, int]:
     except (ValueError, UnicodeError) as exc:
         raise InvalidPullRequestURL("Use an https://github.com/{owner}/{repo}/pull/{number} URL.") from exc
     return owner, repo.removesuffix(".git"), int(raw_number)
- main

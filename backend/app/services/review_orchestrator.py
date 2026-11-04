@@ -77,8 +77,6 @@ def run_review(
         "status": "completed",
     }
 
-main
-
 """Coordinate ingestion, static checks, optional AI review, and persistence."""
 
 import asyncio
@@ -252,7 +250,3 @@ def _static_finding(tool: str, item: Finding, root: Path) -> ReviewFinding:
 
 def _persist(response: ReviewResponse, user_id: str) -> None:
     get_store().save_review(response.model_dump(mode="json"), user_id)
- codex/fix-supabase-env-deployment
-
- main
- main
