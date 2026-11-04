@@ -54,8 +54,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     let active = true;
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    let providerTokenUserId = window.sessionStorage.getItem('pr-mentor-github-provider-user');
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!active) return;
+      const nextUserId = nextSession?.user.id ?? null;
+      if (providerTokenUserId && nextUserId && providerTokenUserId !== nextUserId) {
+        window.sessionStorage.removeItem('pr-mentor-github-provider-token');
+        window.sessionStorage.removeItem('pr-mentor-github-provider-user');
+      }
+      providerTokenUserId = nextUserId;
+      if (nextUserId) window.sessionStorage.setItem('pr-mentor-github-provider-user', nextUserId);
+      if (nextSession?.provider_token) {
+        window.sessionStorage.setItem('pr-mentor-github-provider-token', nextSession.provider_token);
+      } else if (event === 'SIGNED_OUT') {
+        window.sessionStorage.removeItem('pr-mentor-github-provider-token');
+        window.sessionStorage.removeItem('pr-mentor-github-provider-user');
+        providerTokenUserId = null;
+      }
       setSession(nextSession);
       setUser(nextSession?.user ? profileFromSupabaseUser(nextSession.user) : null);
       setError('');
