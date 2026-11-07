@@ -73,10 +73,7 @@ jobs:
         working-directory: frontend
         env:
           VITE_API_BASE_URL: https://pr-mentor.onrender.com
- codex/fix-blank-auth
-
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
- main
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
         run: npm run build
