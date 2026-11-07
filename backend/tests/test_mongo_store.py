@@ -22,25 +22,30 @@ def store():
 
 def test_mongo_review_upsert_and_history_hide_object_ids(store):
     review = {"review_id": "r-1", "created_at": "2026-10-18T10:00:00Z", "findings": []}
-    store.save_review(review)
-    assert store.get_review("r-1")["review_id"] == "r-1"
-    assert "_id" not in store.get_review("r-1")
+    store.save_review(review, "test-user")
+    owned_review = store.get_review("r-1", "test-user")
+    assert owned_review["review_id"] == "r-1"
+    assert "_id" not in owned_review
+    assert store.get_review("r-1", "another-user") is None
 
-    store.save_review({"review_id": "r-2", "created_at": "2026-10-19T10:00:00Z", "findings": []})
-    assert [item["review_id"] for item in store.list_reviews()] == ["r-2", "r-1"]
-    assert isinstance(store.get_review("r-1")["created_at"], datetime)
-    assert store.get_review("r-1")["created_at"].utcoffset() == timedelta(0)
+    store.save_review({"review_id": "r-2", "created_at": "2026-10-19T10:00:00Z", "findings": []}, "test-user")
+    assert [item["review_id"] for item in store.list_reviews("test-user")] == ["r-2", "r-1"]
+    assert store.list_reviews("another-user") == []
+    assert isinstance(store.get_review("r-1", "test-user")["created_at"], datetime)
+    assert store.get_review("r-1", "test-user")["created_at"].utcoffset() == timedelta(0)
 
 
 def test_saved_urls_are_idempotent_and_deletable(store):
     url = "https://github.com/owner/repo/pull/12"
-    first = store.save_pull_request(url)
-    second = store.save_pull_request(url)
+    first = store.save_pull_request(url, "test-user")
+    second = store.save_pull_request(url, "test-user")
     assert first == second
     assert first["temporary"] is False
-    assert store.list_saved() == [first]
-    assert store.delete_saved(first["saved_id"]) is True
-    assert store.delete_saved(first["saved_id"]) is False
+    assert store.list_saved("test-user") == [first]
+    assert store.list_saved("another-user") == []
+    assert store.delete_saved(first["saved_id"], "another-user") is False
+    assert store.delete_saved(first["saved_id"], "test-user") is True
+    assert store.delete_saved(first["saved_id"], "test-user") is False
 
 
 def test_learning_progress_and_history_preserve_frontend_contract(store):
@@ -152,8 +157,8 @@ def test_sqlite_migration_is_repeatable_and_preserves_source(tmp_path, monkeypat
     sqlite_path = tmp_path / "legacy.sqlite3"
     monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(sqlite_path))
     source = SQLiteReviewStore()
-    source.save_review({"review_id": "legacy-review", "created_at": "2026-10-18T10:00:00Z", "findings": []})
-    saved = source.save_pull_request("https://github.com/owner/repo/pull/1")
+    source.save_review({"review_id": "legacy-review", "created_at": "2026-10-18T10:00:00Z", "findings": []}, "source-user")
+    saved = source.save_pull_request("https://github.com/owner/repo/pull/1", "source-user")
     source.record_learning_attempt("exercise-1", "security", True)
 
     mongo_client = mongomock.MongoClient(tz_aware=True)
@@ -162,7 +167,9 @@ def test_sqlite_migration_is_repeatable_and_preserves_source(tmp_path, monkeypat
     second = migrate(sqlite_path, target)
 
     assert first == second == {"reviews": 1, "saved_pull_requests": 1, "learning_attempts": 1}
-    assert target.get_review("legacy-review")["review_id"] == "legacy-review"
-    assert target.list_saved()[0]["saved_id"] == saved["saved_id"]
+    assert target.get_review("legacy-review", "legacy:unassigned")["review_id"] == "legacy-review"
+    migrated_saved = target.saved.find_one({"saved_id": saved["saved_id"]})
+    assert migrated_saved["url"] == "https://github.com/owner/repo/pull/1"
+    assert "user_id" not in migrated_saved
     assert target.learning_progress()["attempt_count"] == 1
     assert sqlite_path.exists()

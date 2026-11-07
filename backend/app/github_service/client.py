@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -92,26 +93,33 @@ class GitHubClient:
         except ValueError as exc:
             raise GitHubServiceError("GitHub returned invalid JSON.") from exc
 
-def headers() -> dict[str, str]:
+def headers(token: str | None = None) -> dict[str, str]:
     result = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    token = github_token()
+    token = token or github_token()
     if token:
         result["Authorization"] = f"Bearer {token}"
     return result
 
 
-async def request_json(client: httpx.AsyncClient, path: str, *, params: dict[str, Any] | None = None) -> Any:
+async def request_json(client: httpx.AsyncClient, path: str, *, params: dict[str, Any] | None = None, github_token: str | None = None) -> Any:
     if not path.startswith("/") or path.startswith("//") or ".." in path.split("/"):
         raise ValueError("GitHub API paths must be relative to the fixed API host.")
     try:
-        response = await client.get(f"{API_ROOT}{path}", params=params, headers=headers())
+        response = await client.get(f"{API_ROOT}{path}", params=params, headers=headers(github_token))
     except httpx.TimeoutException as exc:
         raise GitHubAPIError("GitHub did not respond in time.") from exc
     except httpx.RequestError as exc:
         raise GitHubAPIError("GitHub is temporarily unavailable.") from exc
     if response.status_code >= 400:
         if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
-            raise GitHubAPIError("GitHub API rate limit reached.", 429)
+            reset_at = response.headers.get("X-RateLimit-Reset")
+            retry_after = response.headers.get("Retry-After")
+            try:
+                wait_until = datetime.fromtimestamp(int(reset_at), timezone.utc).strftime("%H:%M UTC")
+                detail = f"GitHub API rate limit reached. Try again after {wait_until}."
+            except (TypeError, ValueError, OverflowError, OSError):
+                detail = f"GitHub API rate limit reached. Try again in {retry_after} seconds." if retry_after and retry_after.isdigit() else "GitHub API rate limit reached. Try again in about one minute."
+            raise GitHubAPIError(detail, 429)
         message = "GitHub rejected the request."
         try:
             body = response.json()

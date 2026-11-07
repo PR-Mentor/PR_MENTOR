@@ -1,7 +1,11 @@
 """Stable review API consumed by the frontend."""
 
 from typing import Annotated, Any
+ codex/fix-blank-auth
 from fastapi import APIRouter, Depends, HTTPException, Query
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+main
 
 from app.database.reviews import get_store
 from app.github_service.client import GitHubAPIError
@@ -14,13 +18,22 @@ router = APIRouter(prefix="/api/reviews", tags=["reviews"])
 
 
 @router.post("/analyze", response_model=ReviewResponse)
+codex/fix-blank-auth
 async def analyze_review(payload: AnalyzeRequest, claims: Annotated[dict[str, Any], Depends(current_claims)]):
     try:
         return await analyze(payload, claims["uid"])
+
+async def analyze_review(payload: AnalyzeRequest, claims: Annotated[dict[str, Any], Depends(current_claims)], github_token: str | None = Header(default=None, alias="X-GitHub-Token", max_length=512)):
+    if github_token and any(ord(char) < 32 or ord(char) == 127 for char in github_token):
+        raise HTTPException(status_code=400, detail="The GitHub provider token is malformed.")
+    try:
+        return await analyze(payload, claims["uid"], github_token=github_token)
+ main
     except InvalidPullRequestURL as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GitHubAPIError as exc:
         status = exc.status_code
+        detail = str(exc)
         if status is None:
             status = 503
         elif status == 404:
@@ -28,14 +41,15 @@ async def analyze_review(payload: AnalyzeRequest, claims: Annotated[dict[str, An
         elif status == 429:
             status = 429
         elif status == 401:
-            status = 401
+            status = 502
+            detail = "GitHub rejected its access token. Sign out and back in to reconnect GitHub, or update the backend GITHUB_TOKEN."
         elif status == 403:
             status = 403
         elif status >= 500:
             status = 502
         else:
             status = 502
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        raise HTTPException(status_code=status, detail=detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=502, detail="GitHub returned data that could not be processed.") from exc
     except Exception as exc:

@@ -9,7 +9,7 @@ import type {
   ReviewResponse,
   SavedPullRequest,
 } from '../types/review';
-import { authenticatedFetch } from './auth';
+import { authenticatedFetch, getGitHubProviderToken } from './auth';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '');
 
@@ -34,9 +34,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function analyzePullRequest(url: string, mode: AnalysisMode): Promise<ReviewResponse> {
+export async function analyzePullRequest(url: string, mode: AnalysisMode): Promise<ReviewResponse> {
+  const githubToken = mode === 'live' ? await getGitHubProviderToken() : undefined;
   return request<ReviewResponse>('/api/reviews/analyze', {
     method: 'POST',
+    headers: githubToken ? { 'X-GitHub-Token': githubToken } : undefined,
     body: JSON.stringify({ url, mode, include_learning: true }),
   });
 }

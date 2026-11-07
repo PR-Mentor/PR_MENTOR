@@ -3,9 +3,9 @@ import type { FormEvent, ReactNode } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, ArrowRight, Bookmark, BookOpen, CheckCircle2, ChevronRight, CircleAlert,
-  Code2, ExternalLink, FileCode2,
-  GitPullRequest, GraduationCap, History, LoaderCircle, Menu, Search,
-  ShieldCheck, Sparkles, X,
+  ChevronDown, Code2, ExternalLink, FileCode2,
+  GitPullRequest, GraduationCap, History, LoaderCircle, LogOut, Menu, Search,
+  Moon, ShieldCheck, Sparkles, Sun, X,
 } from 'lucide-react';
 import {
   analyzePullRequest, deleteSavedPullRequest, getLearningExercises, getLearningHistory,
@@ -18,8 +18,16 @@ import type {
 } from './types/review';
 import { useAuth } from './auth/AuthContext';
 import LoginPage from './pages/LoginPage';
+import LandingPage from './components/LandingPage';
 
 type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning';
+type Theme = 'light' | 'dark';
+
+function setDocumentTheme(theme: Theme) {
+  document.documentElement.dataset.theme = theme;
+  try { window.localStorage.setItem('pr-mentor-theme', theme); }
+  catch { /* Theme still applies for this session when storage is unavailable. */ }
+}
 
 const nav: Array<{ id: Page; label: string; icon: typeof Search }> = [
   { id: 'discover', label: 'Discover', icon: Search },
@@ -59,8 +67,13 @@ function Workspace() {
   const location = useLocation();
   const page = pageFromPath(location.pathname);
   const [mobileNav, setMobileNav] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
   const [mobileViewport, setMobileViewport] = useState(() => window.matchMedia('(max-width: 760px)').matches);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+  const profileTriggerRef = useRef<HTMLButtonElement>(null);
+  const profileSignOutRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const [url, setUrl] = useState('');
   const [mode, setMode] = useState<AnalysisMode>('demo');
@@ -103,6 +116,28 @@ function Workspace() {
     viewport.addEventListener('change', updateViewport);
     return () => viewport.removeEventListener('change', updateViewport);
   }, []);
+
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+    profileSignOutRef.current?.focus();
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (event.target instanceof Node && !profileMenuRef.current?.contains(event.target)) {
+        setProfileMenuOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setProfileMenuOpen(false);
+        profileTriggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [profileMenuOpen]);
 
   useEffect(() => {
     if (!mobileNav || !mobileViewport) return;
@@ -217,6 +252,11 @@ function Workspace() {
 
   const activeExerciseData = exercises.find((item) => item.id === activeExercise);
   const activeTitle = useMemo(() => ({ discover: 'Discover', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab' }[page]), [page]);
+  const toggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    setDocumentTheme(nextTheme);
+  };
 
   return (
     <div className="app-shell">
@@ -228,42 +268,37 @@ function Workspace() {
           <span className="brand-mark"><Code2 size={17}/><i/></span><span>PR <b>Mentor</b></span>
         </button>
         <div className="top-context"><span>PR REVIEW WORKSPACE</span><ChevronRight size={13}/><strong>{activeTitle}</strong></div>
-        <a className="top-github" href="https://github.com/MAANDUBEY07/PR_MENTOR" target="_blank" rel="noreferrer"><Code2 size={16}/><span>Project</span><ExternalLink size={12}/></a>
+        <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} aria-pressed={theme === 'dark'} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
+          {theme === 'dark' ? <Sun size={17}/> : <Moon size={17}/>}
+        </button>
+        <div className="profile-menu" ref={profileMenuRef}>
+          <button ref={profileTriggerRef} className="profile-trigger" type="button" aria-label={profileMenuOpen ? 'Close profile menu' : 'Open profile menu'} aria-haspopup="menu" aria-expanded={profileMenuOpen} aria-controls="profile-menu-options" onClick={() => setProfileMenuOpen((open) => !open)}>
+            {auth.user?.avatar_url ? <img className="profile-trigger-avatar" src={auth.user.avatar_url} alt=""/> : <span className="profile-trigger-avatar profile-trigger-initials">{auth.user?.display_name?.slice(0, 2).toUpperCase() ?? 'PM'}</span>}
+            <span className="profile-trigger-copy"><strong>{auth.user?.display_name ?? 'Your profile'}</strong><small>Account</small></span>
+            <ChevronDown className="profile-trigger-chevron" size={15}/>
+          </button>
+          {profileMenuOpen && <div className="profile-dropdown" id="profile-menu-options" role="menu" aria-label="Profile options">
+            <div className="profile-dropdown-identity" role="presentation">
+              {auth.user?.avatar_url ? <img className="profile-trigger-avatar" src={auth.user.avatar_url} alt=""/> : <span className="profile-trigger-avatar profile-trigger-initials">{auth.user?.display_name?.slice(0, 2).toUpperCase() ?? 'PM'}</span>}
+              <span><strong>{auth.user?.display_name ?? 'Your profile'}</strong><small>{auth.user?.email ?? ''}</small></span>
+            </div>
+            <div className="profile-dropdown-divider" role="presentation"/>
+            <button ref={profileSignOutRef} className="profile-option" type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); void auth.logout(); }}><LogOut size={16}/>Sign out</button>
+          </div>}
+        </div>
       </header>
       {mobileNav && <button className="drawer-backdrop" type="button" onClick={() => { setMobileNav(false); mobileMenuRef.current?.focus(); }} aria-label="Close navigation"/>}
       <div className={`app-body ${mobileNav ? 'nav-open' : ''}`}>
         <aside ref={sidebarRef} id="main-navigation" className="sidebar" aria-label="Main navigation" aria-hidden={mobileViewport && !mobileNav} inert={mobileViewport && !mobileNav}>
           <div className="sidebar-label">WORKSPACE</div>
           <nav className="side-nav">
-            {nav.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={`side-link ${page === id ? 'selected' : ''}`} aria-current={page === id ? 'page' : undefined} onClick={() => go(id)}><Icon size={17}/><span>{label}</span>{id === 'history' && history.length > 0 && <small>{history.length}</small>}</button>)}
+            {nav.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={`side-link ${page === id ? 'selected' : ''}`} aria-label={label} title={label} aria-current={page === id ? 'page' : undefined} onClick={() => go(id)}><Icon size={17}/><span>{label}</span>{id === 'history' && history.length > 0 && <small>{history.length}</small>}</button>)}
           </nav>
           <div className="sidebar-note"><div className="note-icon"><ShieldCheck size={16}/></div><strong>Evidence first</strong><p>AI suggestions need a human review. Static analyzer output is shown with its source.</p></div>
-          <div className="sidebar-bottom">{auth.user?.avatar_url ? <img className="guest-avatar profile-avatar" src={auth.user.avatar_url} alt=""/> : <span className="guest-avatar">{auth.user ? auth.user.display_name.slice(0, 2).toUpperCase() : 'PM'}</span>}<span><strong>{auth.user?.display_name ?? 'Guest workspace'}</strong><small>{auth.user?.email ?? 'Public workspace'}</small></span>{auth.user ? <button className="logout-button" type="button" onClick={() => void auth.logout()} aria-label="Sign out">Sign out</button> : <button className="login-link" type="button" onClick={() => navigateRouter('/login')}>Sign in</button>}</div>
         </aside>
 
         <main className="main-content">
-          {page === 'discover' && <section className="discover-page">
-            <div className="hero-kicker"><span className="kicker-line"/> PULL REQUESTS, MADE CLEAR <span className="kicker-index">01 / REVIEW</span></div>
-            <h1>Understand the Code.<br/><span>Review With Confidence.</span></h1>
-            <p className="hero-description">A thoughtful workspace for reading changes, weighing evidence, and learning what deserves a closer look.</p>
-            <div className="review-entry">
-              <div className="entry-heading"><div><span className="section-index">01</span><strong>Start with a pull request</strong></div><span>PUBLIC GITHUB URL</span></div>
-              <form onSubmit={runAnalysis}>
-                <label className="url-label" htmlFor="pr-url">Pull request URL</label>
-                <div className="url-field"><Code2 size={18}/><input id="pr-url" type="url" value={url} onChange={(event) => { setUrl(event.target.value); setReviewError(''); }} placeholder="https://github.com/owner/repository/pull/42" autoComplete="url"/><button className="analyze-button" type="submit" disabled={reviewBusy}>{reviewBusy ? <><LoaderCircle className="spin" size={16}/> Analyzing</> : <>Analyze PR <ArrowRight size={16}/></>}</button></div>
-                <fieldset className="mode-select"><legend>Choose review mode <span>Required</span></legend><label className={`mode-option ${mode === 'demo' ? 'chosen' : ''}`}><input type="radio" name="mode" value="demo" checked={mode === 'demo'} onChange={() => setMode('demo')}/><span className="radio-mark"/><span><strong>Demo</strong><small>Fictional educational findings, clearly labeled</small></span><Sparkles size={15}/></label><label className={`mode-option ${mode === 'live' ? 'chosen' : ''}`}><input type="radio" name="mode" value="live" checked={mode === 'live'} onChange={() => setMode('live')}/><span className="radio-mark"/><span><strong>Live analysis</strong><small>Fetch public PR details and available Python checks</small></span><GitPullRequest size={15}/></label></fieldset>
-                {reviewError && <div className="alert error-alert" role="alert"><CircleAlert size={16}/><span>{reviewError}</span></div>}
-              </form>
-              <div className="entry-foot"><span><ShieldCheck size={14}/> Submitted code is not executed.</span><span>Live analysis depends on GitHub access and installed analyzers.</span></div>
-            </div>
-            <div className="section-rule"><span>THE REVIEW PRACTICE</span><i/></div>
-            <section className="principles" aria-label="Review principles">
-              <article><span className="principle-no">01</span><div><h2>Read the change</h2><p>Review the actual pull request metadata and diff returned by the service.</p></div><FileCode2 size={19}/></article>
-              <article><span className="principle-no">02</span><div><h2>Separate signal from certainty</h2><p>See whether a finding came from a static analyzer or an AI candidate needing review.</p></div><ShieldCheck size={19}/></article>
-              <article><span className="principle-no">03</span><div><h2>Build the habit</h2><p>Practice with the learning exercises served by the backend.</p></div><BookOpen size={19}/></article>
-            </section>
-            <div className="notice-strip"><span className="notice-mark">i</span><p>Reviews, saved links, and exercise progress are stored by the backend. Retention depends on its configured storage.</p></div>
-          </section>}
+          {page === 'discover' && <LandingPage url={url} setUrl={(value) => { setUrl(value); setReviewError(''); }} mode={mode} setMode={setMode} busy={reviewBusy} error={reviewError} onSubmit={runAnalysis}/>}
 
           {page === 'review' && <ReviewPage review={review} busy={reviewBusy} error={reviewError} onRetry={() => go('discover')} onSave={saveCurrent} saveMessage={saveMessage} onDiff={() => go('diff')}/>}
           {page === 'history' && <HistoryPage state={historyState} error={historyError} items={history} onOpen={openReview} onDiscover={() => go('discover')}/>}
