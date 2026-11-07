@@ -1,7 +1,11 @@
 """Stable review API consumed by the frontend."""
 
 from typing import Annotated, Any
+ codex/fix-blank-auth
+from fastapi import APIRouter, Depends, HTTPException, Query
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+main
 
 from app.database.reviews import get_store
 from app.github_service.client import GitHubAPIError
@@ -14,11 +18,17 @@ router = APIRouter(prefix="/api/reviews", tags=["reviews"])
 
 
 @router.post("/analyze", response_model=ReviewResponse)
+codex/fix-blank-auth
+async def analyze_review(payload: AnalyzeRequest, claims: Annotated[dict[str, Any], Depends(current_claims)]):
+    try:
+        return await analyze(payload, claims["uid"])
+
 async def analyze_review(payload: AnalyzeRequest, claims: Annotated[dict[str, Any], Depends(current_claims)], github_token: str | None = Header(default=None, alias="X-GitHub-Token", max_length=512)):
     if github_token and any(ord(char) < 32 or ord(char) == 127 for char in github_token):
         raise HTTPException(status_code=400, detail="The GitHub provider token is malformed.")
     try:
         return await analyze(payload, claims["uid"], github_token=github_token)
+ main
     except InvalidPullRequestURL as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GitHubAPIError as exc:

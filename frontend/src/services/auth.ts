@@ -12,6 +12,13 @@ export async function syncSupabaseUser(token: string) {
 }
 
 export async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+ codex/fix-blank-auth
+  const { data } = await supabase?.auth.getSession() ?? { data: { session: null } };
+  const token = data.session?.access_token;
+  const headers = new Headers(init.headers);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+
   const getToken = async (refresh = false) => {
     if (!supabase) return undefined;
     if (refresh) {
@@ -56,4 +63,5 @@ export async function getGitHubProviderToken(): Promise<string | undefined> {
   if (token) window.sessionStorage.setItem('pr-mentor-github-provider-token', token);
   if (currentUserId) window.sessionStorage.setItem('pr-mentor-github-provider-user', currentUserId);
   return token ?? undefined;
+ main
 }

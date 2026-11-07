@@ -22,7 +22,11 @@ from app.verification.ruff_runner import ToolExecutionError, run_ruff
 from app.verification.test_runner import run_tests
 
 
+codex/fix-blank-auth
+async def analyze(request: AnalyzeRequest, user_id: str) -> ReviewResponse:
+
 async def analyze(request: AnalyzeRequest, user_id: str, github_token: str | None = None) -> ReviewResponse:
+ main
     submitted_url = request.pull_request_url or request.url or ""
     owner, repo, number = parse_pull_request_url(submitted_url)
     if request.mode == "demo":
