@@ -1,11 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
- codex/fix-blank-auth
-import { supabase, supabaseConfigured } from '../services/supabase';
-
 import { supabase, supabaseConfigured, supabaseConfigurationError } from '../services/supabase';
- main
 import { syncSupabaseUser } from '../services/auth';
 
 export type UserProfile = {
@@ -23,10 +19,7 @@ type AuthValue = {
   loading: boolean;
   error: string;
   configured: boolean;
-codex/fix-blank-auth
-
   configurationError: string;
- main
   signInWithGithub: () => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -61,10 +54,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     let active = true;
- codex/fix-blank-auth
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      if (!active) return;
-
     let providerTokenUserId = window.sessionStorage.getItem('pr-mentor-github-provider-user');
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!active) return;
@@ -82,7 +71,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         window.sessionStorage.removeItem('pr-mentor-github-provider-user');
         providerTokenUserId = null;
       }
- main
       setSession(nextSession);
       setUser(nextSession?.user ? profileFromSupabaseUser(nextSession.user) : null);
       setError('');
@@ -133,11 +121,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthValue>(() => ({
- codex/fix-blank-auth
-    user, loading, error, configured: supabaseConfigured, signInWithGithub, logout,
-
     user, loading, error, configured: supabaseConfigured, configurationError: supabaseConfigurationError, signInWithGithub, logout,
- main
   }), [user, loading, error, signInWithGithub, logout]);
 
   return <Context.Provider value={value}>{children}</Context.Provider>;

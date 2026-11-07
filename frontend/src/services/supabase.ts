@@ -3,11 +3,6 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim();
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
 
- codex/fix-blank-auth
-export const supabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
-export const supabase = supabaseConfigured
-  ? createClient(supabaseUrl!, supabaseAnonKey!, {
-
 const normalizedSupabaseUrl = supabaseUrl
   ?.replace(/\/rest\/v1\/?$/i, '')
   .replace(/\/+$/, '');
@@ -33,7 +28,6 @@ export const supabaseConfigurationError = (() => {
 export const supabaseConfigured = !supabaseConfigurationError;
 export const supabase = supabaseConfigured
   ? createClient(normalizedSupabaseUrl!, supabaseAnonKey!, {
- main
       auth: {
         autoRefreshToken: true,
         detectSessionInUrl: true,
