@@ -58,6 +58,20 @@ button { color: inherit; }
 button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid #9f80d3; outline-offset: 3px; }
 a { color: inherit; }
 .app-shell { min-height: 100vh; }
+
+.phone-auth { margin-top: 13px; }
+.phone-auth .auth-divider { margin: 17px 0; }
+.phone-auth-heading h3 { display:flex; align-items:center; gap:8px; margin:0; color:var(--ink); font-size:13px; font-weight:700; }
+.phone-auth-heading h3 svg { color:#76539f; }
+.phone-auth-heading p { margin:6px 0 0; color:var(--muted); font-size:10px; line-height:1.5; }
+.phone-form { margin-top:12px; }
+.phone-form small { color:#776f7e; font-size:9px; line-height:1.5; }
+.phone-form input { border-radius:4px; }
+.phone-primary { width:100%; border-color:#4d2e80; background:#4d2e80; color:#fff; }
+.phone-primary:hover:not(:disabled) { border-color:#3f256b; background:#3f256b; }
+.phone-form .otp-input { text-align:center; font-size:19px; letter-spacing:.38em; }
+.otp-actions button { display:inline-flex; align-items:center; gap:4px; }
+.phone-auth .auth-note,.phone-auth .auth-error { margin-top:10px; }
 .topbar { height: 68px; position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 32px; padding: 0 34px; background: rgba(255,255,255,.96); border-bottom: 1px solid var(--line); }
 .brand { border: 0; background: transparent; display: flex; align-items: center; gap: 10px; padding: 0; font-size: 19px; letter-spacing: -.065em; font-weight: 750; cursor: pointer; white-space: nowrap; }
 .brand b { color: var(--purple); font-weight: 750; }
