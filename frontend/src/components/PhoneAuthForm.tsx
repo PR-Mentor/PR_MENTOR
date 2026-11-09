@@ -17,6 +17,26 @@ function isE164(phone: string) {
 }
 
 function readableAuthError(reason: unknown) {
+  if (reason && typeof reason === 'object') {
+    const authError = reason as { code?: string; message?: string };
+    const code = authError.code?.toLowerCase() ?? '';
+    const message = authError.message?.toLowerCase() ?? '';
+
+    if (code === 'unsupported_phone_provider' || message.includes('unsupported phone provider')) {
+      return 'Phone sign-in is not enabled for this Supabase project. In Supabase, open Authentication → Sign In / Providers, enable Phone, configure an SMS provider (such as Twilio or Vonage), and save the settings.';
+    }
+    if (code === 'phone_provider_disabled' || code === 'provider_disabled') {
+      return 'Phone sign-in is disabled for this Supabase project. Enable the Phone provider under Authentication → Sign In / Providers.';
+    }
+    if (code === 'over_sms_send_rate_limit') {
+      return 'Too many codes were requested for this number. Wait a minute before trying again.';
+    }
+    if (code === 'sms_send_failed' || message.includes('sms provider')) {
+      return 'Supabase could not send the SMS. Check that the SMS provider credentials and sender settings are valid in Supabase Authentication.';
+    }
+    if (authError.message) return authError.message;
+  }
+
   if (reason instanceof Error) return reason.message;
   return 'Phone sign-in could not be completed. Please try again.';
 }
