@@ -17,6 +17,7 @@ function isE164(phone: string) {
 }
 
 function readableAuthError(reason: unknown) {
+ codex/phone-otp-login
   if (reason && typeof reason === 'object') {
     const authError = reason as { code?: string; message?: string };
     const code = authError.code?.toLowerCase() ?? '';
@@ -36,6 +37,8 @@ function readableAuthError(reason: unknown) {
     }
     if (authError.message) return authError.message;
   }
+
+ main
   if (reason instanceof Error) return reason.message;
   return 'Phone sign-in could not be completed. Please try again.';
 }
