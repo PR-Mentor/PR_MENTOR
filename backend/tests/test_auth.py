@@ -11,6 +11,8 @@ def test_otp_routes_fail_closed_without_delivery_or_storage():
     sent = client.post("/api/auth/otp/send", json={"identity": "user@example.com", "channel": "email"})
     assert sent.status_code == 503
     assert "not configured" in sent.json()["detail"].lower()
+    phone_sent = client.post("/api/auth/otp/send", json={"identity": "+919876543210", "channel": "phone"})
+    assert phone_sent.status_code == 422
     verified = client.post("/api/auth/otp/verify", json={"challenge_id": "any", "code": "123456"})
     assert verified.status_code == 503
     assert "not configured" in verified.json()["detail"].lower()
@@ -93,7 +95,6 @@ def test_delete_requires_recent_authentication():
     [
         ("github.com", {"name": "octocat", "email": "octo@example.com", "email_verified": True}, "email"),
         ("google.com", {"name": "Ada", "email": "ada@example.com", "email_verified": True, "picture": "https://example.test/ada.png"}, "email"),
-        ("phone", {"phone_number": "+919876543210"}, "phone_number"),
     ],
 )
 def test_provider_claims_create_one_profile(tmp_path, monkeypatch, provider, claim_fields, expected_field):
@@ -124,12 +125,11 @@ def test_linked_provider_login_preserves_verified_profile_fields(tmp_path, monke
         first = {"uid": "linked-uid", "email": "ada@example.com", "email_verified": True, "name": "Ada", "firebase": {"sign_in_provider": "google.com"}}
         app.dependency_overrides[current_claims] = lambda: first
         client.post("/api/auth/firebase/verify")
-        second = {"uid": "linked-uid", "phone_number": "+919876543210", "firebase": {"sign_in_provider": "phone"}}
+        second = {"uid": "linked-uid", "name": "Ada Lovelace", "firebase": {"sign_in_provider": "github.com"}}
         app.dependency_overrides[current_claims] = lambda: second
         profile = client.post("/api/auth/firebase/verify").json()["user"]
         assert profile["email"] == "ada@example.com"
         assert profile["email_verified"] is True
-        assert profile["phone_number"] == "+919876543210"
-        assert profile["providers"] == ["google.com", "phone"]
+        assert profile["providers"] == ["google.com", "github.com"]
     finally:
         app.dependency_overrides.pop(current_claims, None)
