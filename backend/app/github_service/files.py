@@ -3,7 +3,6 @@
 import re
 from typing import Any
 
-
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*$")
 MAX_PATCH_CHARS = 200_000
 MAX_LINES_PER_FILE = 4_000

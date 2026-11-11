@@ -8,7 +8,10 @@ from app.main import app
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("PR_MENTOR_STORAGE", "sqlite")
     monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / "learning.sqlite3"))
-    return TestClient(app)
+    monkeypatch.setenv("PR_MENTOR_COOKIE_SECURE", "false")
+    with TestClient(app) as instance:
+        assert instance.post("/api/auth/register", json={"email": "learner@example.com", "password": "correct horse battery staple"}).status_code == 201
+        yield instance
 
 
 def test_exercises_hide_answer_and_submission_updates_persistent_progress(client):

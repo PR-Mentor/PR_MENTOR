@@ -4,7 +4,6 @@ import re
 from pathlib import PurePosixPath
 from typing import Any
 
-
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$")
 _MAX_PATCH_CHARS = 200_000
 _MAX_LINES_PER_FILE = 4_000
