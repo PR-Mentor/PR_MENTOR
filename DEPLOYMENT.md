@@ -15,3 +15,10 @@ In the Render service settings, set **Branch** to `codex/fix-supabase-env-deploy
 ## Email OTP with Brevo
 
 Email OTP uses Supabase Auth so verified users receive a normal Supabase session; Brevo delivers the messages through Supabase custom SMTP. In Supabase Dashboard, open **Project Settings → Authentication → SMTP Settings**, enable custom SMTP, and set the Brevo SMTP host, port, login, and SMTP key. Use a sender address/domain verified in Brevo. Configure SMTP credentials only in Supabase (never in `VITE_*` variables or frontend code). In **Authentication → Sign In / Providers → Email**, enable email sign-in and configure OTP delivery with a six-digit code; disable email-link-only delivery if the UI should send numeric codes. The frontend requires the existing `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`; no Brevo API key or backend secret is needed for this Supabase SMTP integration.
+
+For numeric codes on both paths, update **Authentication → Email Templates** in the Supabase Dashboard:
+
+- **Confirm signup** is used for account creation. Set its subject to `{{ .Token }} is your PR Mentor verification code` and make the body display `{{ .Token }}`. Remove `{{ .ConfirmationURL }}` so signup sends a code rather than a confirmation link.
+- **Magic Link** is used for existing-user login. Set its subject to `{{ .Token }} is your PR Mentor sign-in code` and make the body display `{{ .Token }}` instead of `{{ .ConfirmationURL }}`.
+
+The frontend verifies signup codes with OTP type `signup` and login codes with OTP type `email`. The login screen reports Supabase's missing-account OTP error and directs the user to create an account (or choose GitHub if the account uses GitHub sign-in).
