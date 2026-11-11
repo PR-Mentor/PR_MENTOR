@@ -70,14 +70,14 @@ jobs:
           esac
 
       - name: Build frontend
-        working-directory: frontend
-        env:
-          VITE_API_BASE_URL: https://pr-mentor.onrender.com
-          VITE_BASE_PATH: /${{ github.event.repository.name }}/
-          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
-        run: npm run build
-
+  working-directory: frontend
+  env:
+    VITE_API_BASE_URL: https://pr-mentor.onrender.com
+    VITE_BASE_PATH: /
+    VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+    VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+  run: npm run build
+  
       - name: Add SPA fallback for GitHub Pages
         working-directory: frontend
         run: cp dist/index.html dist/404.html
