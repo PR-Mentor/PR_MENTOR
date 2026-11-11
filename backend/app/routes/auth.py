@@ -51,7 +51,11 @@ def verify_firebase_token(authorization: str | None) -> dict[str, Any]:
     try:
         from firebase_admin import auth
 
-        return auth.verify_id_token(authorization[7:].strip(), app=_firebase_app(), check_revoked=True)
+        claims = auth.verify_id_token(authorization[7:].strip(), app=_firebase_app(), check_revoked=True)
+        firebase_claims = claims.get("firebase") or {}
+        if firebase_claims.get("sign_in_provider") == "phone":
+            raise HTTPException(status_code=403, detail="Phone authentication is disabled.")
+        return claims
     except HTTPException:
         raise
     except Exception as exc:
@@ -94,6 +98,8 @@ def verify_supabase_token(authorization: str | None) -> dict[str, Any]:
     metadata = user.get("user_metadata") or {}
     app_metadata = user.get("app_metadata") or {}
     provider = app_metadata.get("provider") or "github"
+    if provider == "phone":
+        raise HTTPException(status_code=403, detail="Phone authentication is disabled.")
     return {
         "uid": f"supabase:{uid}",
         "name": metadata.get("full_name") or metadata.get("name"),
@@ -209,7 +215,7 @@ legacy_router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 class LegacyOtpRequest(BaseModel):
     identity: str = Field(min_length=3, max_length=320)
-    channel: str = Field(pattern="^(email|phone)$")
+    channel: str = Field(pattern="^email$")
 
 
 class LegacyOtpVerifyRequest(BaseModel):
@@ -219,9 +225,9 @@ class LegacyOtpVerifyRequest(BaseModel):
 
 @legacy_router.post("/otp/send")
 def legacy_send_otp(_payload: LegacyOtpRequest):
-    raise HTTPException(status_code=503, detail="Standalone OTP delivery is not configured; use Firebase Phone Authentication.")
+    raise HTTPException(status_code=503, detail="Standalone OTP delivery is not configured; use Supabase email authentication.")
 
 
 @legacy_router.post("/otp/verify")
 def legacy_verify_otp(_payload: LegacyOtpVerifyRequest):
-    raise HTTPException(status_code=503, detail="Standalone OTP verification is not configured; use Firebase Phone Authentication.")
+    raise HTTPException(status_code=503, detail="Standalone OTP verification is not configured; use Supabase email authentication.")

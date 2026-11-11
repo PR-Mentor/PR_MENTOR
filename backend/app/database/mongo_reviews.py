@@ -73,7 +73,11 @@ class MongoReviewStore:
 
     def list_reviews(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
         bounded = max(1, min(int(limit), 100))
+ codex/fix-blank-auth
+        cursor = self.reviews.find({"user_id": user_id}, {"_id": 0}).sort([("created_at", -1), ("_id", -1)]).limit(bounded)
+
         cursor = self.reviews.find({"user_id": user_id}, {"_id": 0, "user_id": 0}).sort([("created_at", -1), ("_id", -1)]).limit(bounded)
+main
         return list(cursor)
 
     def save_pull_request(self, url: str, user_id: str) -> dict[str, Any]:
