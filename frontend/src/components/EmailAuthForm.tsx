@@ -4,13 +4,19 @@ import { supabase, supabaseConfigurationError } from '../services/supabase';
 
 type Step = 'email' | 'code';
 type EmailIntent = 'login' | 'signup';
+ codex/phone-otp-login
 type OtpType = 'email' | 'signup';
+
+ main
 
 export default function EmailAuthForm({ disabled = false }: { disabled?: boolean }) {
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [intent, setIntent] = useState<EmailIntent>('login');
+codex/phone-otp-login
   const [otpType, setOtpType] = useState<OtpType>('email');
+
+main
   const [step, setStep] = useState<Step>('email');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -23,6 +29,7 @@ export default function EmailAuthForm({ disabled = false }: { disabled?: boolean
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) { setError('Enter a valid email address.'); return; }
     setBusy(true);
     try {
+ codex/phone-otp-login
       if (intent === 'signup') {
         // Supabase returns an obfuscated user with no identities when this
         // address already belongs to an account (email enumeration protection).
@@ -40,6 +47,10 @@ export default function EmailAuthForm({ disabled = false }: { disabled?: boolean
         if (sendError) throw sendError;
         setOtpType('email');
       }
+
+      const { error: sendError } = await supabase.auth.signInWithOtp({ email: normalizedEmail, options: { shouldCreateUser: intent === 'signup' } });
+      if (sendError) throw sendError;
+ main
       setEmail(normalizedEmail); setCode(''); setStep('code'); setNotice(`A verification code was sent to ${normalizedEmail}.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Email code could not be sent. Please try again.');
