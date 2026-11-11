@@ -6,6 +6,12 @@ type Step = 'email' | 'code';
 type EmailIntent = 'login' | 'signup';
 type OtpType = 'email' | 'signup';
 
+function isMissingEmailAccountError(reason: unknown): boolean {
+  if (!(reason instanceof Error)) return false;
+  const code = 'code' in reason && typeof reason.code === 'string' ? reason.code : '';
+  return code === 'otp_disabled' || /signups not allowed for otp|user not found|email not found/i.test(reason.message);
+}
+
 export default function EmailAuthForm({ disabled = false }: { disabled?: boolean }) {
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
@@ -29,7 +35,13 @@ export default function EmailAuthForm({ disabled = false }: { disabled?: boolean
         const passwordBytes = crypto.getRandomValues(new Uint8Array(32));
         const generatedPassword = Array.from(passwordBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
         const { data, error: signUpError } = await supabase.auth.signUp({ email: normalizedEmail, password: generatedPassword });
-        if (signUpError) throw signUpError;
+        if (signUpError) {
+          if (/user already registered|email already registered/i.test(signUpError.message)) {
+            setError('An account with this email already exists. Please log in instead.');
+            return;
+          }
+          throw signUpError;
+        }
         if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
           setError('An account with this email already exists. Please log in instead.');
           return;
@@ -37,7 +49,13 @@ export default function EmailAuthForm({ disabled = false }: { disabled?: boolean
         setOtpType('signup');
       } else {
         const { error: sendError } = await supabase.auth.signInWithOtp({ email: normalizedEmail, options: { shouldCreateUser: false } });
-        if (sendError) throw sendError;
+        if (sendError) {
+          if (isMissingEmailAccountError(sendError)) {
+            setError('No email account exists for this address. Please create an account, or use GitHub if you registered there.');
+            return;
+          }
+          throw sendError;
+        }
         setOtpType('email');
       }
       setEmail(normalizedEmail); setCode(''); setStep('code'); setNotice(`A verification code was sent to ${normalizedEmail}.`);
