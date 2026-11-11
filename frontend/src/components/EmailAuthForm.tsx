@@ -3,10 +3,12 @@ import { ArrowLeft, AtSign, LoaderCircle, MailCheck } from 'lucide-react';
 import { supabase, supabaseConfigurationError } from '../services/supabase';
 
 type Step = 'email' | 'code';
+type EmailIntent = 'login' | 'signup';
 
 export default function EmailAuthForm({ disabled = false }: { disabled?: boolean }) {
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
+  const [intent, setIntent] = useState<EmailIntent>('login');
   const [step, setStep] = useState<Step>('email');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -19,7 +21,7 @@ export default function EmailAuthForm({ disabled = false }: { disabled?: boolean
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) { setError('Enter a valid email address.'); return; }
     setBusy(true);
     try {
-      const { error: sendError } = await supabase.auth.signInWithOtp({ email: normalizedEmail, options: { shouldCreateUser: true } });
+      const { error: sendError } = await supabase.auth.signInWithOtp({ email: normalizedEmail, options: { shouldCreateUser: intent === 'signup' } });
       if (sendError) throw sendError;
       setEmail(normalizedEmail); setCode(''); setStep('code'); setNotice(`A verification code was sent to ${normalizedEmail}.`);
     } catch (reason) {
@@ -44,12 +46,17 @@ export default function EmailAuthForm({ disabled = false }: { disabled?: boolean
 
   return <section className="phone-auth email-auth" aria-labelledby="email-auth-title">
     <div className="auth-divider" aria-hidden="true"><span/>OR<span/></div>
-    <div className="phone-auth-heading"><h3 id="email-auth-title"><AtSign size={15}/> Continue with email</h3><p>Sign in or create an account with a one-time email code.</p></div>
+    <div className="phone-auth-heading"><h3 id="email-auth-title"><AtSign size={15}/> Continue with email</h3><p>Use a one-time email code to access PR Mentor.</p></div>
     {!supabase && <p className="auth-note" role="status">{supabaseConfigurationError}</p>}
     {step === 'email' ? <form className="phone-form" onSubmit={(event) => { event.preventDefault(); void requestCode(); }}>
+      <div className="email-auth-modes" role="group" aria-label="Choose email authentication">
+        <button type="button" className={intent === 'login' ? 'active' : ''} aria-pressed={intent === 'login'} onClick={() => setIntent('login')} disabled={busy}>Log in</button>
+        <button type="button" className={intent === 'signup' ? 'active' : ''} aria-pressed={intent === 'signup'} onClick={() => setIntent('signup')} disabled={busy}>Create account</button>
+      </div>
+      <p className="email-auth-hint">{intent === 'login' ? 'Already have an account? We’ll email you a secure sign-in code.' : 'New to PR Mentor? We’ll create your account after you verify your email.'}</p>
       <label htmlFor="email-address">Email address</label>
       <input id="email-address" type="email" autoComplete="email" placeholder="you@example.com" value={email} onChange={(event) => setEmail(event.target.value)} disabled={disabled || busy || !supabase} required />
-      <button className="auth-provider phone-primary" type="submit" disabled={disabled || busy || !supabase}>{busy ? <><LoaderCircle className="spin" size={16}/> Sending code…</> : <><MailCheck size={16}/> Send email code</>}</button>
+      <button className="auth-provider phone-primary" type="submit" disabled={disabled || busy || !supabase}>{busy ? <><LoaderCircle className="spin" size={16}/> Sending code…</> : <><MailCheck size={16}/> {intent === 'login' ? 'Send login code' : 'Send sign-up code'}</>}</button>
     </form> : <form className="phone-form" onSubmit={(event) => void verifyCode(event)}>
       <label htmlFor="email-code">Verification code</label>
       <input id="email-code" className="otp-input" type="text" autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]*" maxLength={6} placeholder="••••••" value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={busy} aria-describedby="email-code-help" />
