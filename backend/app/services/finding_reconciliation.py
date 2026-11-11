@@ -15,7 +15,22 @@ from app.schemas.issue import CanonicalIssue, FindingObservation
 _TOKEN = re.compile(r"[^\w]+", re.UNICODE)
 _SEVERITY_RANK = {"informational": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 _SIMILARITY_THRESHOLD = 0.82
-_AI_SIMILARITY_THRESHOLD = 0.90
+_AI_SIMILARITY_THRESHOLD = 0.50
+
+_COMPATIBLE_CATEGORIES: dict[str, set[str]] = {
+    "security": {"security", "bug", "code_quality"},
+    "bug": {"bug", "security", "code_quality", "maintainability"},
+    "code_quality": {"code_quality", "maintainability", "bug", "security"},
+    "maintainability": {"maintainability", "code_quality", "bug"},
+}
+
+
+def _categories_compatible(left_cat: str, right_cat: str, *, is_ai: bool) -> bool:
+    if left_cat == right_cat:
+        return True
+    if not is_ai:
+        return False
+    return right_cat in _COMPATIBLE_CATEGORIES.get(left_cat, set())
 
 
 @dataclass(frozen=True)
@@ -62,7 +77,14 @@ def _same_issue(left: FindingObservation, right: FindingObservation) -> bool:
     right_finding = right.original_finding
     if _normalize_path(left_finding.file_path) != _normalize_path(right_finding.file_path):
         return False
-    if left_finding.category != right_finding.category:
+
+    is_ai = (
+        left_finding.source == "ai_candidate"
+        or right_finding.source == "ai_candidate"
+        or left.tool_name == "ai_review"
+        or right.tool_name == "ai_review"
+    )
+    if not _categories_compatible(left_finding.category, right_finding.category, is_ai=is_ai):
         return False
 
     left_rule = _normalize_rule(left.rule_id)
@@ -74,7 +96,7 @@ def _same_issue(left: FindingObservation, right: FindingObservation) -> bool:
     right_text = _normalize_text(right_finding.description)
     same_text = bool(left_text) and left_text == right_text
     same_location = _locations_overlap(left_finding, right_finding)
-    same_evidence = _evidence_overlaps(left_finding, right_finding)
+    same_evidence = _evidence_overlaps(left_finding, right_finding, left_rule, right_rule)
     has_ai_without_rule = (
         (left_finding.source == "ai_candidate" and not left_rule)
         or (right_finding.source == "ai_candidate" and not right_rule)
@@ -94,18 +116,28 @@ def _same_issue(left: FindingObservation, right: FindingObservation) -> bool:
         return False
 
     similarity = _text_similarity(left_text, right_text)
+    overlap_sim = _token_overlap_similarity(left_text, right_text)
+    rule_mentioned = bool(
+        (left_rule and (left_rule in right_text or any(left_rule in _normalize_text(e) for e in right_finding.evidence)))
+        or (right_rule and (right_rule in left_text or any(right_rule in _normalize_text(e) for e in left_finding.evidence)))
+    )
+
     if has_ai_without_rule:
         # AI has no stable rule identifier to corroborate the match. Require
-        # location, shared evidence, and either exact wording or very high
-        # lexical similarity.
-        return same_evidence and (same_text or similarity >= _AI_SIMILARITY_THRESHOLD)
+        # location, shared evidence, and semantic correspondence.
+        semantic_match = (
+            same_text
+            or similarity >= _AI_SIMILARITY_THRESHOLD
+            or (same_evidence and (similarity >= 0.35 or overlap_sim >= 0.45 or rule_mentioned))
+        )
+        return same_evidence and semantic_match
 
     if left_rule and right_rule:
         return same_text or similarity >= _SIMILARITY_THRESHOLD
 
     # When at least one side lacks a rule, require shared evidence and a strong
     # description match; proximity by itself is never enough.
-    return same_evidence and (same_text or similarity >= _SIMILARITY_THRESHOLD)
+    return same_evidence and (same_text or similarity >= _SIMILARITY_THRESHOLD or overlap_sim >= 0.60)
 
 
 def _locations_overlap(left: ReviewFinding, right: ReviewFinding) -> bool | None:
@@ -126,10 +158,41 @@ def _line_range(finding: ReviewFinding) -> tuple[int, int] | None:
     return min(start, end), max(start, end)
 
 
-def _evidence_overlaps(left: ReviewFinding, right: ReviewFinding) -> bool:
+def _evidence_overlaps(
+    left: ReviewFinding,
+    right: ReviewFinding,
+    left_rule: str = "",
+    right_rule: str = "",
+) -> bool:
     left_evidence = {_normalize_text(item) for item in left.evidence if _normalize_text(item)}
     right_evidence = {_normalize_text(item) for item in right.evidence if _normalize_text(item)}
-    return bool(left_evidence & right_evidence)
+    if not left_evidence or not right_evidence:
+        return False
+    if left_evidence & right_evidence:
+        return True
+    for l_item in left_evidence:
+        for r_item in right_evidence:
+            if len(l_item) >= 4 and len(r_item) >= 4 and (l_item in r_item or r_item in l_item):
+                return True
+            l_toks = set(l_item.split())
+            r_toks = set(r_item.split())
+            if len(l_toks & r_toks) >= 2:
+                overlap = len(l_toks & r_toks) / len(l_toks | r_toks)
+                if overlap >= 0.4:
+                    return True
+    if left_rule and any(left_rule in r_item for r_item in right_evidence):
+        return True
+    if right_rule and any(right_rule in l_item for l_item in left_evidence):
+        return True
+    return False
+
+
+def _token_overlap_similarity(left: str, right: str) -> float:
+    left_tokens = set(left.split())
+    right_tokens = set(right.split())
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / min(len(left_tokens), len(right_tokens))
 
 
 def _text_similarity(left: str, right: str) -> float:
@@ -191,13 +254,14 @@ def _build_issue(group: list[FindingObservation]) -> CanonicalIssue:
         key=lambda value: _SEVERITY_RANK[value],
     )
     normalized_description = _normalize_display_text(anchor_finding.description)
-    issue_id = _stable_issue_id(anchor, path, normalized_description)
+    category = "security" if any(item.original_finding.category == "security" for item in group) else anchor_finding.category
+    issue_id = _stable_issue_id(anchor, path, normalized_description, category=category)
     return CanonicalIssue(
         issue_id=issue_id,
         file_path=path,
         line_start=line_start,
         line_end=line_end,
-        category=anchor_finding.category,
+        category=category,
         severity=severity,
         normalized_description=normalized_description,
         observations=group,
@@ -212,13 +276,13 @@ def _identity_anchor_sort_key(observation: FindingObservation) -> tuple[int, tup
     return rank, _observation_sort_key(observation)
 
 
-def _stable_issue_id(anchor: FindingObservation, path: str, description: str) -> str:
+def _stable_issue_id(anchor: FindingObservation, path: str, description: str, category: str | None = None) -> str:
     finding = anchor.original_finding
     line_range = _line_range(finding)
     rule_id = _normalize_rule(anchor.rule_id)
     identity = {
         "path": path,
-        "category": finding.category,
+        "category": category or finding.category,
         "rule_id": rule_id,
         "line": line_range,
         "description": _normalize_text(description),

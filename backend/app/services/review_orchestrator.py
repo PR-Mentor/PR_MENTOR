@@ -378,10 +378,11 @@ def _static_finding(tool: str, item: Finding, root: Path) -> ReviewFinding:
     except (OSError, ValueError):
         file_path = ""
     severity = item.severity if item.severity in {"low", "medium", "high", "critical"} else "medium"
+    is_security_rule = tool == "bandit" or bool(item.rule_id and item.rule_id.upper().startswith("S"))
     return ReviewFinding(
         id=uuid4().hex, title=f"{tool.title()} {item.rule_id or 'finding'}", description=item.message or "Static analyzer reported a diagnostic.",
         file_path=file_path, line_start=item.line, line_end=item.line, severity=severity,
-        category="security" if tool == "bandit" else "code_quality", confidence=0.75,
+        category="security" if is_security_rule else "code_quality", confidence=0.75,
         source="static_analysis", verification_status="needs_review",
         evidence=[value for value in (f"{tool.title()} {item.rule_id}" if item.rule_id else None, item.evidence, item.message) if value],
         why_it_matters="A static analyzer emitted this diagnostic. It is evidence to review, not proof of exploitability.",

@@ -167,3 +167,106 @@ def test_unique_issue_count_is_distinct_from_raw_observation_count():
     assert result.unique_issue_count == 2
     assert result.observation_count == 3
     assert sum(len(issue.observations) for issue in result.issues) == 3
+
+
+def test_ruff_and_ai_duplicate_group_with_rephrased_description_and_code_evidence():
+    ruff = observation(
+        finding_id="ruff-s608",
+        tool_name="ruff",
+        rule_id="S608",
+        category="code_quality",
+        description="Possible SQL injection vector through string-based query construction.",
+        evidence=["Ruff S608", "query = f'SELECT * FROM users WHERE id={user_id}'"],
+    )
+    ai = observation(
+        finding_id="ai-sql",
+        source="ai_candidate",
+        tool_name="ai_review",
+        rule_id=None,
+        category="security",
+        description="SQL injection vulnerability detected in query construction.",
+        evidence=["query = f'SELECT * FROM users WHERE id={user_id}'"],
+    )
+
+    result = reconcile_observations([ruff, ai])
+
+    assert result.unique_issue_count == 1
+    assert result.observation_count == 2
+    assert len(result.issues[0].observations) == 2
+    assert result.issues[0].category == "security"
+    assert {obs.original_finding.id for obs in result.issues[0].observations} == {"ruff-s608", "ai-sql"}
+
+
+def test_bandit_and_ai_duplicate_group_with_rephrased_description_and_code_evidence():
+    bandit = observation(
+        finding_id="bandit-b608",
+        tool_name="bandit",
+        rule_id="B608",
+        category="security",
+        description="Possible SQL injection vector through string-based query construction.",
+        evidence=["Bandit B608", "query = f'SELECT * FROM users WHERE id={user_id}'"],
+    )
+    ai = observation(
+        finding_id="ai-sql-2",
+        source="ai_candidate",
+        tool_name="ai_review",
+        rule_id=None,
+        category="security",
+        description="SQL injection vulnerability via raw string query construction.",
+        evidence=["query = f'SELECT * FROM users WHERE id={user_id}'"],
+    )
+
+    result = reconcile_observations([bandit, ai])
+
+    assert result.unique_issue_count == 1
+    assert result.observation_count == 2
+    assert len(result.issues[0].observations) == 2
+    assert result.issues[0].category == "security"
+
+
+def test_same_location_different_underlying_issues_do_not_merge():
+    ruff_unused = observation(
+        finding_id="ruff-unused",
+        tool_name="ruff",
+        rule_id="F841",
+        category="code_quality",
+        description="Local variable 'x' is assigned to but never used.",
+        evidence=["Ruff F841", "x = 1"],
+    )
+    ai_sql = observation(
+        finding_id="ai-sql-diff",
+        source="ai_candidate",
+        tool_name="ai_review",
+        rule_id=None,
+        category="security",
+        description="SQL injection vulnerability detected in query construction.",
+        evidence=["query = f'SELECT * FROM users WHERE id={user_id}'"],
+    )
+
+    result = reconcile_observations([ruff_unused, ai_sql])
+
+    assert result.unique_issue_count == 2
+    assert result.observation_count == 2
+    assert {issue.issue_id for issue in result.issues} == {result.issues[0].issue_id, result.issues[1].issue_id}
+
+
+def test_insufficient_matching_evidence_does_not_merge():
+    first = observation(
+        finding_id="f-missing-check",
+        rule_id=None,
+        source="static_analysis",
+        description="Missing return value validation.",
+        evidence=["check(val)"],
+    )
+    second = observation(
+        finding_id="f-unclosed-file",
+        rule_id=None,
+        source="static_analysis",
+        description="Unclosed file handle after execution.",
+        evidence=["open(filename)"],
+    )
+
+    result = reconcile_observations([first, second])
+
+    assert result.unique_issue_count == 2
+    assert result.observation_count == 2
