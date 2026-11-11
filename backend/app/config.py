@@ -41,7 +41,13 @@ def mongodb_database() -> str:
 def cors_origins() -> list[str]:
     defaults = "http://localhost:5173,http://127.0.0.1:5173,https://18rajritik.github.io,https://pr-mentor.github.io"
     value = os.getenv("PR_MENTOR_CORS_ORIGINS", defaults)
-    return [origin.strip() for origin in value.split(",") if origin.strip()]
+    origins = [origin.strip() for origin in value.split(",") if origin.strip()]
+    # Keep this app's production domains enabled when the host supplies a
+    # custom PR_MENTOR_CORS_ORIGINS list.
+    for origin in ("https://prmentor.in", "https://www.prmentor.in"):
+        if origin not in origins:
+            origins.append(origin)
+    return origins
 
 
 def http_timeout() -> float:
