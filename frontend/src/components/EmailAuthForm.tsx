@@ -5,12 +5,15 @@ import { supabase, supabaseConfigurationError } from '../services/supabase';
 type Step = 'email' | 'code';
 type EmailIntent = 'login' | 'signup';
 type OtpType = 'email' | 'signup';
+ codex/phone-otp-login
 
 function isMissingEmailAccountError(reason: unknown): boolean {
   if (!(reason instanceof Error)) return false;
   const code = 'code' in reason && typeof reason.code === 'string' ? reason.code : '';
   return code === 'otp_disabled' || /signups not allowed for otp|user not found|email not found/i.test(reason.message);
 }
+
+ main
 
 export default function EmailAuthForm({ disabled = false }: { disabled?: boolean }) {
   const [email, setEmail] = useState('');
@@ -35,6 +38,7 @@ export default function EmailAuthForm({ disabled = false }: { disabled?: boolean
         const passwordBytes = crypto.getRandomValues(new Uint8Array(32));
         const generatedPassword = Array.from(passwordBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
         const { data, error: signUpError } = await supabase.auth.signUp({ email: normalizedEmail, password: generatedPassword });
+codex/phone-otp-login
         if (signUpError) {
           if (/user already registered|email already registered/i.test(signUpError.message)) {
             setError('An account with this email already exists. Please log in instead.');
@@ -42,6 +46,9 @@ export default function EmailAuthForm({ disabled = false }: { disabled?: boolean
           }
           throw signUpError;
         }
+
+        if (signUpError) throw signUpError;
+ main
         if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
           setError('An account with this email already exists. Please log in instead.');
           return;
@@ -49,6 +56,7 @@ export default function EmailAuthForm({ disabled = false }: { disabled?: boolean
         setOtpType('signup');
       } else {
         const { error: sendError } = await supabase.auth.signInWithOtp({ email: normalizedEmail, options: { shouldCreateUser: false } });
+ codex/phone-otp-login
         if (sendError) {
           if (isMissingEmailAccountError(sendError)) {
             setError('No email account exists for this address. Please create an account, or use GitHub if you registered there.');
@@ -56,6 +64,9 @@ export default function EmailAuthForm({ disabled = false }: { disabled?: boolean
           }
           throw sendError;
         }
+
+        if (sendError) throw sendError;
+ main
         setOtpType('email');
       }
       setEmail(normalizedEmail); setCode(''); setStep('code'); setNotice(`A verification code was sent to ${normalizedEmail}.`);
