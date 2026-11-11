@@ -1,3 +1,4 @@
+
 name: Deploy PR Mentor Frontend
 
 on:
@@ -44,40 +45,38 @@ jobs:
           SUPABASE_PUBLIC_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
         run: |
           if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_PUBLIC_KEY" ]; then
-            echo "Missing GitHub Actions repository variables: VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY. Add the Supabase project URL and publishable key under Settings > Secrets and variables > Actions > Variables."
+            echo "Missing GitHub Actions repository variables: VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY."
             exit 1
           fi
           case "$SUPABASE_PUBLIC_KEY" in
             sb_secret_*)
-              echo "VITE_SUPABASE_ANON_KEY must contain a publishable key (sb_publishable_…) or legacy anon key, never a secret key."
+              echo "VITE_SUPABASE_ANON_KEY must contain a publishable key, never a secret key."
               exit 1
               ;;
           esac
           case "$SUPABASE_URL" in
             */rest/v1/) SUPABASE_URL="${SUPABASE_URL%/}" ;;
           esac
-          # The frontend client strips this API path before initializing Supabase.
-          # Normalize it here too so the build check accepts the same supported URL.
           case "$SUPABASE_URL" in
             */rest/v1) SUPABASE_URL="${SUPABASE_URL%/rest/v1}" ;;
           esac
           case "$SUPABASE_URL" in
             https://*|http://localhost:*|http://127.0.0.1:*) ;;
             *)
-              echo "VITE_SUPABASE_URL must be a Supabase project URL (optionally ending in /rest/v1)."
+              echo "VITE_SUPABASE_URL must be a valid Supabase project URL."
               exit 1
               ;;
           esac
 
       - name: Build frontend
-  working-directory: frontend
-  env:
-    VITE_API_BASE_URL: https://pr-mentor.onrender.com
-    VITE_BASE_PATH: /
-    VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
-    VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
-  run: npm run build
-  
+        working-directory: frontend
+        env:
+          VITE_API_BASE_URL: https://pr-mentor.onrender.com
+          VITE_BASE_PATH: /
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.VITE_SUPABASE_ANON_KEY }}
+        run: npm run build
+
       - name: Add SPA fallback for GitHub Pages
         working-directory: frontend
         run: cp dist/index.html dist/404.html
@@ -99,3 +98,4 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
