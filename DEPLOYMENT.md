@@ -21,4 +21,6 @@ For numeric codes on both paths, update **Authentication → Email Templates** i
 - **Confirm signup** is used for account creation. Set its subject to `{{ .Token }} is your PR Mentor verification code` and make the body display `{{ .Token }}`. Remove `{{ .ConfirmationURL }}` so signup sends a code rather than a confirmation link.
 - **Magic Link** is used for existing-user login. Set its subject to `{{ .Token }} is your PR Mentor sign-in code` and make the body display `{{ .Token }}` instead of `{{ .ConfirmationURL }}`.
 
+Use valid, simple HTML in the template body, for example `<p><strong>{{ .Token }}</strong></p>`. Avoid escaped quotes in HTML attributes; malformed attributes cause Supabase Auth to fail the email request before sending it.
+
 The frontend verifies signup codes with OTP type `signup` and login codes with OTP type `email`. The login screen reports Supabase's missing-account OTP error and directs the user to create an account (or choose GitHub if the account uses GitHub sign-in).
