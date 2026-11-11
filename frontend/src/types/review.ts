@@ -440,10 +440,27 @@ export interface RepositoryIntelligence {
   snapshot_sha: string;
   manifest_count: number;
   manifest_truncated: boolean;
+  manifest?: Array<{ path: string; type: string; size_bytes?: number | null; extension: string }>;
   python_files_considered: number;
   python_modules: Array<{ path: string; parse_status: string; definitions: Array<{ name: string; kind: string; line: number; scope?: string | null }>; imports: string[] }>;
   internal_import_edges: Array<{ from: string; to: string }>;
   circular_dependencies: string[][];
+  dependency_context?: Array<{ manifest: string; packages: string[] }>;
+  impact_analysis?: {
+    changed_paths: string[];
+    direct_importers: Record<string, string[]>;
+    affected_module_count: number;
+    affected_modules: string[];
+    unchanged_dependents_note: string;
+    limitations: string[];
+  };
+  conventions?: {
+    naming_conventions: Array<{ scope: string; pattern: string; observation_count: number; total_sampled: number }>;
+    structural_conventions: Array<{ observation: string; value: boolean | number; detail: string }>;
+    sample_size: number;
+    evidence_based: boolean;
+    limitations: string[];
+  };
   limitations: string[];
 }
 

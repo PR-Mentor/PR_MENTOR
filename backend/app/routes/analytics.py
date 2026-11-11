@@ -9,7 +9,7 @@ from app.database.reviews import get_store
 from app.github_service.access import ensure_public_repository
 from app.github_service.client import GitHubAPIError
 from app.routes.auth import current_user
-from app.services.repository_intelligence import analyze_repository
+from app.services.repository_intelligence import analyze_repository, get_or_analyze_repository, resolve_ref_to_sha
 
 router = APIRouter(prefix="/api", tags=["insights and analytics"])
 ANALYSIS_WINDOW = 100
@@ -152,7 +152,10 @@ async def repository_intelligence(
 ):
     try:
         await ensure_public_repository(owner, repository)
-        return await analyze_repository(owner, repository, ref)
+        # Resolve branch/tag refs to a full commit SHA before cache lookup.
+        # This prevents stale cache results when a branch advances.
+        full_sha = await resolve_ref_to_sha(owner, repository, ref)
+        return await get_or_analyze_repository(owner, repository, full_sha)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except GitHubAPIError as exc:
