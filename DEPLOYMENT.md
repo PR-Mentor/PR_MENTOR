@@ -4,7 +4,9 @@
 
 Set the Vercel project's **Root Directory** to `frontend` and its framework preset to **Vite**. The checked-in `frontend/vercel.json` serves the generated `dist` directory and routes client-side paths to the React app. The build command is the `build` script in `frontend/package.json` (`tsc -b && vite build`).
 
-Set `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in Vercel's project environment variables for each environment that should use the backend and Supabase. The npm `cache-dir` warning is non-fatal; remove any manually configured `npm_config_cache_dir` / `NPM_CONFIG_CACHE_DIR` variable from the Vercel project if that warning needs to be cleared.
+Set `VITE_API_BASE_URL=https://pr-mentor.onrender.com`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in Vercel's project environment variables for each environment that should use the backend and Supabase. The frontend uses the Render URL as its production-safe fallback if the API variable is omitted. Redeploy the frontend after changing build variables; Vite embeds them at build time. The npm `cache-dir` warning is non-fatal; remove any manually configured `npm_config_cache_dir` / `NPM_CONFIG_CACHE_DIR` variable from the Vercel project if that warning needs to be cleared.
+
+For the custom domain, add both `https://prmentor.in` and `https://www.prmentor.in` to `PR_MENTOR_CORS_ORIGINS` on the Render backend, alongside any existing origins. This variable replaces the backend's defaults when set. Redeploy/restart the backend after changing it. Check `https://pr-mentor.onrender.com/health` for API liveness and `/api/health/ready` for configured database readiness.
 
 ## Render backend
 
