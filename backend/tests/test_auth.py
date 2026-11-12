@@ -3,7 +3,19 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
+from app.database import auth as auth_store
 from app.main import app
+
+
+def test_account_lookup_for_profile_returns_only_public_identity(tmp_path, monkeypatch):
+    monkeypatch.setenv("PR_MENTOR_STORAGE", "sqlite")
+    monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / "profile-identity.sqlite3"))
+    assert auth_store.create_user("profile-user", "profile@example.com", "private-password-hash")
+    assert auth_store.get_user_by_id("profile-user") == {
+        "user_id": "profile-user",
+        "email": "profile@example.com",
+    }
+    assert auth_store.get_user_by_id("missing-user") is None
 
 
 def test_otp_routes_fail_closed_without_delivery_or_storage():
@@ -26,8 +38,11 @@ def test_firebase_profile_lifecycle_and_missing_token(tmp_path, monkeypatch):
     monkeypatch.setenv("PR_MENTOR_STORAGE", "sqlite")
     monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / "auth.sqlite3"))
     claims = {
-        "uid": "firebase-user-1", "name": "Ada Lovelace", "email": "ada@example.com",
-        "email_verified": True, "picture": "https://example.test/avatar.png",
+        "uid": "firebase-user-1",
+        "name": "Ada Lovelace",
+        "email": "ada@example.com",
+        "email_verified": True,
+        "picture": "https://example.test/avatar.png",
         "firebase": {"sign_in_provider": "google.com"},
     }
     monkeypatch.setattr(auth_routes, "delete_firebase_identity", lambda _uid: None)
@@ -67,7 +82,11 @@ def test_invalid_or_expired_firebase_token_is_rejected(monkeypatch, token_error)
     import app.routes.auth as auth_routes
 
     monkeypatch.setattr(auth_routes, "_firebase_app", lambda: object())
-    error = firebase_auth.InvalidIdTokenError("invalid token") if token_error == "invalid" else firebase_auth.ExpiredIdTokenError("expired token", None)
+    error = (
+        firebase_auth.InvalidIdTokenError("invalid token")
+        if token_error == "invalid"
+        else firebase_auth.ExpiredIdTokenError("expired token", None)
+    )
 
     def reject_token(*_args, **_kwargs):
         raise error

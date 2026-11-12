@@ -55,32 +55,28 @@ def test_normalizers_use_shared_schema_and_preserve_provenance():
 @pytest.mark.parametrize("module,func", [("app.verification.ruff_runner", run_ruff), ("app.verification.bandit_runner", run_bandit)])
 def test_missing_executable(module, func, tmp_path):
     make_python_file(tmp_path)
-    with patch(f"{module}.subprocess.run", side_effect=FileNotFoundError):
-        with pytest.raises(ToolExecutionError, match="not found"):
-            func(["a.py"], root=tmp_path)
+    with patch(f"{module}.subprocess.run", side_effect=FileNotFoundError), pytest.raises(ToolExecutionError, match="not found"):
+        func(["a.py"], root=tmp_path)
 
 
 @pytest.mark.parametrize("module,func", [("app.verification.ruff_runner", run_ruff), ("app.verification.bandit_runner", run_bandit)])
 def test_timeout(module, func, tmp_path):
     make_python_file(tmp_path)
-    with patch(f"{module}.subprocess.run", side_effect=subprocess.TimeoutExpired("tool", 1)):
-        with pytest.raises(ToolExecutionError, match="timed out"):
-            func(["a.py"], timeout=1, root=tmp_path)
+    with patch(f"{module}.subprocess.run", side_effect=subprocess.TimeoutExpired("tool", 1)), pytest.raises(ToolExecutionError, match="timed out"):
+        func(["a.py"], timeout=1, root=tmp_path)
 
 
 @pytest.mark.parametrize("module,func", [("app.verification.ruff_runner", run_ruff), ("app.verification.bandit_runner", run_bandit)])
 def test_malformed_json(module, func, tmp_path):
     make_python_file(tmp_path)
-    with patch(f"{module}.subprocess.run", return_value=completed("not json")):
-        with pytest.raises(ToolExecutionError, match="malformed JSON"):
-            func(["a.py"], root=tmp_path)
+    with patch(f"{module}.subprocess.run", return_value=completed("not json")), pytest.raises(ToolExecutionError, match="malformed JSON"):
+        func(["a.py"], root=tmp_path)
 
 
 def test_invalid_tool_exit_code_is_execution_error(tmp_path):
     make_python_file(tmp_path)
-    with patch("app.verification.ruff_runner.subprocess.run", return_value=completed("[]", 2, "bad args")):
-        with pytest.raises(ToolExecutionError, match="exit code 2"):
-            run_ruff(["a.py"], root=tmp_path)
+    with patch("app.verification.ruff_runner.subprocess.run", return_value=completed("[]", 2, "bad args")), pytest.raises(ToolExecutionError, match="exit code 2"):
+        run_ruff(["a.py"], root=tmp_path)
 
 
 def test_test_runner_never_executes_supplied_target_or_command():
@@ -97,9 +93,8 @@ def test_test_runner_never_executes_supplied_target_or_command():
 ])
 def test_invalid_json_structure_is_reported(module, func, stdout, tmp_path):
     make_python_file(tmp_path)
-    with patch(f"{module}.subprocess.run", return_value=completed(stdout)):
-        with pytest.raises(ToolExecutionError):
-            func(["a.py"], root=tmp_path)
+    with patch(f"{module}.subprocess.run", return_value=completed(stdout)), pytest.raises(ToolExecutionError):
+        func(["a.py"], root=tmp_path)
 
 
 def test_ruff_skips_non_objects_and_sanitizes_malformed_fields(tmp_path):
@@ -163,9 +158,8 @@ def test_normalizers_accept_non_iterable_input_safely():
 
 def test_bandit_invalid_exit_code_is_execution_error(tmp_path):
     make_python_file(tmp_path)
-    with patch("app.verification.bandit_runner.subprocess.run", return_value=completed("{}", 2, "bad args")):
-        with pytest.raises(ToolExecutionError, match="exit code 2"):
-            run_bandit(["a.py"], root=tmp_path)
+    with patch("app.verification.bandit_runner.subprocess.run", return_value=completed("{}", 2, "bad args")), pytest.raises(ToolExecutionError, match="exit code 2"):
+        run_bandit(["a.py"], root=tmp_path)
 
 
 @pytest.mark.parametrize("func", [run_ruff, run_bandit])

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+usage() {
+  cat <<'EOF'
+PR Mentor Stage 6 infrastructure CLI
+
+Usage:
+  ./stage6 setup   Configure rootful Docker + gVisor and build the executor image
+  ./stage6 verify  Run real gVisor, isolation, resource-limit and cleanup checks
+  ./stage6 audit   Run setup (if needed) followed by verification
+
+Run as your normal Ubuntu user. Do not run this CLI with sudo.
+EOF
+}
+[[ $# -eq 1 ]] || { usage; exit 2; }
+case "$1" in
+  setup)
+    for f in "$ROOT"/scripts/01_configure_rootful_gvisor.sh "$ROOT"/scripts/02_build_image.sh; do
+      bash "$f"
+    done
+    ;;
+  verify)
+    for f in "$ROOT"/scripts/03_runtime_smoke.sh "$ROOT"/scripts/04_resource_limits.sh "$ROOT"/scripts/05_isolation.sh "$ROOT"/scripts/06_timeout_cleanup.sh "$ROOT"/scripts/07_security_audit.sh; do
+      bash "$f"
+    done
+    ;;
+  audit)
+    for f in "$ROOT"/scripts/01_configure_rootful_gvisor.sh "$ROOT"/scripts/02_build_image.sh "$ROOT"/scripts/03_runtime_smoke.sh "$ROOT"/scripts/04_resource_limits.sh "$ROOT"/scripts/05_isolation.sh "$ROOT"/scripts/06_timeout_cleanup.sh "$ROOT"/scripts/07_security_audit.sh; do
+      bash "$f"
+    done
+    ;;
+  -h|--help|help) usage ;;
+  *) usage; exit 2 ;;
+esac
+echo
+echo "STAGE 6 INFRASTRUCTURE CLI: $1 completed successfully."
+echo "This verifies the host/runtime controls exercised here; it does NOT certify the Python worker or the complete Stage 6 security boundary."

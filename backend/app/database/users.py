@@ -65,7 +65,11 @@ def upsert_user(claims: dict[str, Any]) -> dict[str, Any]:
             updates["display_name"] = incoming["display_name"]
         for key in ("email_verified", "phone_verified"):
             updates[key] = bool(incoming[key] or (existing and existing.get(key)))
-        updates["providers"] = sorted(set(incoming["providers"]) | set((existing or {}).get("providers", [])))
+        existing_providers = list((existing or {}).get("providers", []))
+        for p in incoming["providers"]:
+            if p not in existing_providers:
+                existing_providers.append(p)
+        updates["providers"] = existing_providers
         collection.update_one({"firebase_uid": uid}, {"$set": updates, "$setOnInsert": {"created_at": _now(), "preferences": incoming["preferences"], "role": "user"}}, upsert=True)
         return collection.find_one({"firebase_uid": uid}, {"_id": 0}) or {}
     with connection() as db:
@@ -78,7 +82,11 @@ def upsert_user(claims: dict[str, Any]) -> dict[str, Any]:
                 merged[key] = incoming[key]
         for key in ("email_verified", "phone_verified"):
             merged[key] = bool(incoming[key] or old.get(key, False))
-        merged["providers"] = sorted(set(incoming["providers"]) | set(old.get("providers", [])))
+        existing_providers = list(old.get("providers", []))
+        for p in incoming["providers"]:
+            if p not in existing_providers:
+                existing_providers.append(p)
+        merged["providers"] = existing_providers
         for key in ("updated_at", "last_login", "is_active"):
             merged[key] = incoming[key]
         for key in ("display_name", "avatar_url"):

@@ -1,0 +1,39 @@
+[Unit]
+Description=PR Mentor isolated test execution coordinator
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prmentor-worker
+Group=prmentor-worker
+WorkingDirectory=/opt/prmentor/backend
+EnvironmentFile=/etc/pr-mentor/execution-worker.env
+Environment=TMPDIR=/var/lib/pr-mentor/execution-tmp
+Environment=PR_MENTOR_STAGE6_TEMP_ROOT=/var/lib/pr-mentor/execution-tmp
+Environment=DOCKER_HOST=unix://%t/docker.sock
+StateDirectory=pr-mentor
+StateDirectoryMode=0700
+UMask=0077
+ExecStartPre=/usr/bin/mkdir -p /var/lib/pr-mentor/execution-tmp
+ExecStart=/opt/prmentor/backend/.venv/bin/python -m app.test_execution.execution_worker
+Restart=always
+RestartSec=2s
+TimeoutStopSec=30s
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=1G
+TasksMax=128
+ReadWritePaths=/var/lib/pr-mentor
+
+[Install]
+WantedBy=multi-user.target

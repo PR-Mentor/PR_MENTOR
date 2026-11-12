@@ -1,33 +1,3 @@
-"""Request and response models for the review API."""
-
-from typing import Literal
-
-from pydantic import BaseModel, Field
-
-
-class ReviewAnalyzeRequest(BaseModel):
-    url: str = Field(min_length=1, max_length=2048)
-
-
-class ReviewFindingResponse(BaseModel):
-    severity: Literal["Critical", "High", "Medium", "Low", "Informational"]
-    title: str
-    file: str
-    line: int | str
-    text: str
-    proof: str | None = None
-    status: str | None = None
-
-
-class ReviewResponse(BaseModel):
-    repository: str
-    pull_request_title: str
-    pull_request_number: int
-    url: str | None = None
-    review_id: str | None = None
-    findings: list[ReviewFindingResponse]
-    status: str | None = None
-
 """Public review request and response contracts consumed by the frontend."""
 
 from datetime import datetime
@@ -37,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.finding import ReviewFinding
 from app.schemas.github import PullRequestMetadata
+from app.schemas.issue import CanonicalIssue
 
 
 class AnalyzeRequest(BaseModel):
@@ -44,11 +15,15 @@ class AnalyzeRequest(BaseModel):
     pull_request_url: str | None = None
     mode: Literal["demo", "live"] = "demo"
     include_learning: bool = True
+    include_suggested_fixes: bool = False
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def require_url(self):
         if not (self.pull_request_url or self.url):
             raise ValueError("A pull request URL is required.")
+        if self.workspace_id and self.mode != "live":
+            raise ValueError("Only live reviews can be created in a workspace.")
         return self
 
 
@@ -64,21 +39,50 @@ class SavedPullRequestRequest(BaseModel):
 
 
 class ReviewResponse(BaseModel):
+    """Review contract during the additive findings-to-issues migration.
+
+    ``findings`` remains the original, ungrouped source output for existing
+    consumers. ``canonical_issues`` groups those findings; each linked
+    observation retains its complete original finding. Counts are nullable for
+    legacy records where unique reconciliation cannot be inferred safely.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     review_id: str
+    workspace_id: str | None = None
     status: Literal["completed", "partial"]
     analysis_mode: Literal["demo", "live"]
     is_demo: bool
+    model_provider: str | None = None
+    model_name: str | None = None
+    model_usage: dict[str, int] | None = None
+    model_fallback_used: bool | None = None
+    model_latency_ms: int | None = Field(default=None, ge=0)
+    model_configuration: dict[str, Any] | None = None
     pull_request: PullRequestMetadata
     summary: str
     findings: list[ReviewFinding] = Field(default_factory=list)
+    canonical_issues: list[CanonicalIssue] = Field(default_factory=list)
+    unique_issue_count: int | None = Field(default=None, ge=0)
+    raw_observation_count: int | None = Field(default=None, ge=0)
+    observation_counts_by_source: dict[str, int] = Field(default_factory=dict)
+    issue_counts_by_severity: dict[str, int] = Field(default_factory=dict)
+    issue_counts_by_category: dict[str, int] = Field(default_factory=dict)
     verification_summary: dict[str, int]
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     created_at: datetime
     duration_ms: int = Field(default=0, ge=0)
     diff_files: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def provide_legacy_observation_count(self):
+        if self.raw_observation_count is None and not self.canonical_issues:
+            # A legacy review's findings are the best available raw diagnostic
+            # count. Do not invent canonical issues or observation wrappers.
+            self.raw_observation_count = len(self.findings)
+        return self
 
 
 class DiffLine(BaseModel):

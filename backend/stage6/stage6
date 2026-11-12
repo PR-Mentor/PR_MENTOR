@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+mkdir -p "$ROOT/reports"
+LOG="$ROOT/reports/stage6-$(date -u +%Y%m%dT%H%M%SZ).log"
+run(){ echo "[$(date -u +%FT%TZ)] RUN $1" | tee -a "$LOG"; bash "$ROOT/scripts/$1" 2>&1 | tee -a "$LOG"; }
+case "${1:-}" in
+  audit) run 01_audit.sh; run 04_runtime_smoke.sh ;;
+  setup) run 02_prerequisites.sh; run 03_docker_rootless.sh; run 03_gvisor.sh; run 03_image.sh ;;
+  verify) run 04_runtime_smoke.sh; run 05_resource_limits.sh; run 06_isolation.sh; run 07_cleanup.sh; run 08_security_checklist.sh ;;
+  -h|--help|"") echo "Usage: ./stage6 {audit|setup|verify}";;
+  *) echo "Unknown command: $1"; exit 2;;
+esac

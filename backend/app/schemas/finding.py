@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -7,15 +7,15 @@ class Finding(BaseModel):
     """Shared representation of an AI or tool-reported code finding."""
 
     file_path: str
-    line: Optional[int] = None
-    rule_id: Optional[str] = None
+    line: int | None = None
+    rule_id: str | None = None
     severity: Literal["info", "low", "medium", "high", "critical"]
     message: str
     source: Literal["ruff", "bandit", "test", "ai"]
-    evidence: Optional[str] = None
+    evidence: str | None = None
     verification_status: Literal["tool_flagged", "reproduced", "unverified"] = "tool_flagged"
-    explanation: Optional[str] = None
-    suggested_fix: Optional[str] = None
+    explanation: str | None = None
+    suggested_fix: str | None = None
 
 
 class ReviewFinding(BaseModel):

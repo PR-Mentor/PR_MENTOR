@@ -219,3 +219,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local development environments and worktrees
+backend/.venv-linux/
+.worktrees/

@@ -1,0 +1,31 @@
+[Unit]
+Description=PR Mentor durable background review worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=prmentor
+Group=prmentor
+WorkingDirectory=/opt/prmentor/backend
+EnvironmentFile=/etc/pr-mentor/worker.env
+ExecStart=/opt/prmentor/backend/.venv/bin/python -m app.review_worker
+Restart=always
+RestartSec=2s
+TimeoutStopSec=30s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryMax=1G
+TasksMax=128
+ReadWritePaths=/var/lib/pr-mentor
+
+[Install]
+WantedBy=multi-user.target
