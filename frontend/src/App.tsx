@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Activity, ArrowRight, BarChart3, Bookmark, BookOpen, CheckCircle2, ChevronRight, CircleAlert,
+  Activity, ArrowRight, BarChart3, Bookmark, BookOpen, CheckCircle2, ChevronRight, ChevronDown, CircleAlert,
   Code2, ExternalLink, FileCode2,
-  GitPullRequest, GraduationCap, History, LoaderCircle, Menu, Search,
-  ShieldCheck, Sparkles, UserRound, Users, X,
+  GitPullRequest, GraduationCap, History, LoaderCircle, LogOut, Menu, Moon, Search,
+  ShieldCheck, Sparkles, Sun, UserRound, Users, X,
 } from 'lucide-react';
 import {
   analyzePullRequest, deleteSavedPullRequest, getLearningExercises, getLearningHistory, getLearningInsights,
@@ -23,8 +23,18 @@ import type {
   AnalysisMode, DiffFile, LearningExercise, LearningHistory, LearningProgress,
   LearningInsights, LearningResult, PersonalAnalytics, ReviewFinding, ReviewResponse, SavedPullRequest, Severity, SuggestedFix,
 } from './types/review';
+import { useAuth } from './auth/AuthContext';
+import LoginPage from './pages/LoginPage';
+import LandingPage from './components/LandingPage';
 
 type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces' | 'benchmarks';
+type Theme = 'light' | 'dark';
+
+function setDocumentTheme(theme: Theme) {
+  document.documentElement.dataset.theme = theme;
+  try { window.localStorage.setItem('pr-mentor-theme', theme); }
+  catch { /* Theme still applies for this session when storage is unavailable. */ }
+}
 
 const nav: Array<{ id: Page; label: string; icon: typeof Search }> = [
   { id: 'discover', label: 'Discover', icon: Search },
@@ -48,13 +58,29 @@ function pretty(value: string) {
 }
 
 export default function App() {
+  const auth = useAuth();
+  const location = useLocation();
+  const isLoginRoute = location.pathname.replace(/\/$/, '') === '/login';
+  if (isLoginRoute) return <LoginPage />;
+  if (auth.loading) return <div className="app-auth-loading" role="status"><span className="brand-mark"><Code2 size={17}/><i/></span><LoaderCircle className="spin" size={18}/> Restoring your workspace…</div>;
+  if (!auth.user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  return <Workspace />;
+}
+
+function Workspace() {
+  const auth = useAuth();
   const navigateRouter = useNavigate();
   const location = useLocation();
   const route = useMemo(() => resolvePageRoute(location.pathname), [location.pathname]);
   const page = route.page as Page;
   const [mobileNav, setMobileNav] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
   const [mobileViewport, setMobileViewport] = useState(() => window.matchMedia('(max-width: 760px)').matches);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+  const profileTriggerRef = useRef<HTMLButtonElement>(null);
+  const profileSignOutRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const [url, setUrl] = useState('');
   const [mode, setMode] = useState<AnalysisMode>('demo');
@@ -169,6 +195,28 @@ export default function App() {
   }, [reviewJob?.job_id, reviewJob?.status, openReviewRoute]);
 
   useEffect(() => {
+    if (!profileMenuOpen) return;
+    profileSignOutRef.current?.focus();
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (event.target instanceof Node && !profileMenuRef.current?.contains(event.target)) {
+        setProfileMenuOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setProfileMenuOpen(false);
+        profileTriggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [profileMenuOpen]);
+
+  useEffect(() => {
     if (!mobileNav || !mobileViewport) return;
     sidebarRef.current?.querySelector<HTMLButtonElement>('nav button')?.focus();
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -273,7 +321,7 @@ export default function App() {
     setSaveMessage('');
     try {
       await savePullRequest(review.pull_request.pull_request_url);
-      setSaveMessage('Pull request saved in backend storage.');
+      setSaveMessage('Pull request saved to your account. Review history is saved automatically.');
     } catch (error) { setSaveMessage(error instanceof Error ? error.message : 'Could not save this pull request.'); }
   };
 
@@ -313,6 +361,12 @@ export default function App() {
   const activeTitle = useMemo(() => ({ discover: 'Discover', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab', analytics: 'Insights & analytics', profile: 'Developer profile', workspaces: 'Workspaces', benchmarks: 'Benchmarks' }[page]), [page]);
   const reviewRouteView = getReviewRouteView(route.reviewId, review, reviewBusy, reviewError, reviewNotFound);
 
+  const toggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    setDocumentTheme(nextTheme);
+  };
+
   if (authLoading) return <div className="auth-loading" role="status">Loading your PR Mentor workspace…</div>;
   if (!user) return <AuthScreen onAuthenticated={setUser}/>;
 
@@ -326,45 +380,37 @@ export default function App() {
           <span className="brand-mark"><Code2 size={17}/><i/></span><span>PR <b>Mentor</b></span>
         </button>
         <div className="top-context"><span>PR REVIEW WORKSPACE</span><ChevronRight size={13}/><strong>{activeTitle}</strong></div>
-        <div className="account-controls"><span>{user.email}</span><button type="button" onClick={() => { void logout().finally(() => setUser(null)); }}>Sign out</button></div>
-        <a className="top-github" href="https://github.com/MAANDUBEY07/PR_MENTOR" target="_blank" rel="noreferrer"><Code2 size={16}/><span>Project</span><ExternalLink size={12}/></a>
+        <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} aria-pressed={theme === 'dark'} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
+          {theme === 'dark' ? <Sun size={17}/> : <Moon size={17}/>}
+        </button>
+        <div className="profile-menu" ref={profileMenuRef}>
+          <button ref={profileTriggerRef} className="profile-trigger" type="button" aria-label={profileMenuOpen ? 'Close profile menu' : 'Open profile menu'} aria-haspopup="menu" aria-expanded={profileMenuOpen} aria-controls="profile-menu-options" onClick={() => setProfileMenuOpen((open) => !open)}>
+            {auth.user?.avatar_url ? <img className="profile-trigger-avatar" src={auth.user.avatar_url} alt=""/> : <span className="profile-trigger-avatar profile-trigger-initials">{auth.user?.display_name?.slice(0, 2).toUpperCase() ?? 'PM'}</span>}
+            <span className="profile-trigger-copy"><strong>{auth.user?.display_name ?? 'Your profile'}</strong><small>Account</small></span>
+            <ChevronDown className="profile-trigger-chevron" size={15}/>
+          </button>
+          {profileMenuOpen && <div className="profile-dropdown" id="profile-menu-options" role="menu" aria-label="Profile options">
+            <div className="profile-dropdown-identity" role="presentation">
+              {auth.user?.avatar_url ? <img className="profile-trigger-avatar" src={auth.user.avatar_url} alt=""/> : <span className="profile-trigger-avatar profile-trigger-initials">{auth.user?.display_name?.slice(0, 2).toUpperCase() ?? 'PM'}</span>}
+              <span><strong>{auth.user?.display_name ?? 'Your profile'}</strong><small>{auth.user?.email ?? ''}</small></span>
+            </div>
+            <div className="profile-dropdown-divider" role="presentation"/>
+            <button ref={profileSignOutRef} className="profile-option" type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); void auth.logout(); }}><LogOut size={16}/>Sign out</button>
+          </div>}
+        </div>
       </header>
       {mobileNav && <button className="drawer-backdrop" type="button" onClick={() => { setMobileNav(false); mobileMenuRef.current?.focus(); }} aria-label="Close navigation"/>}
       <div className={`app-body ${mobileNav ? 'nav-open' : ''}`}>
         <aside ref={sidebarRef} id="main-navigation" className="sidebar" aria-label="Main navigation" aria-hidden={mobileViewport && !mobileNav} inert={mobileViewport && !mobileNav}>
           <div className="sidebar-label">WORKSPACE</div>
           <nav className="side-nav">
-            {nav.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={`side-link ${page === id ? 'selected' : ''}`} aria-current={page === id ? 'page' : undefined} onClick={() => go(id)}><Icon size={17}/><span>{label}</span>{id === 'history' && history.length > 0 && <small>{history.length}</small>}</button>)}
+            {nav.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={`side-link ${page === id ? 'selected' : ''}`} aria-label={label} title={label} aria-current={page === id ? 'page' : undefined} onClick={() => go(id)}><Icon size={17}/><span>{label}</span>{id === 'history' && history.length > 0 && <small>{history.length}</small>}</button>)}
           </nav>
           <div className="sidebar-note"><div className="note-icon"><ShieldCheck size={16}/></div><strong>Evidence first</strong><p>AI suggestions need a human review. Static analyzer output is shown with its source.</p></div>
-          <div className="sidebar-bottom"><span className="guest-avatar">PM</span><span><strong>Guest workspace</strong><small>Backend-stored data</small></span><Activity size={15}/></div>
         </aside>
 
         <main className="main-content">
-          {page === 'discover' && <section className="discover-page">
-            <div className="hero-kicker"><span className="kicker-line"/> PULL REQUESTS, MADE CLEAR <span className="kicker-index">01 / REVIEW</span></div>
-            <h1>Understand the Code.<br/><span>Review With Confidence.</span></h1>
-            <p className="hero-description">A thoughtful workspace for reading changes, weighing evidence, and learning what deserves a closer look.</p>
-            <div className="review-entry">
-              <div className="entry-heading"><div><span className="section-index">01</span><strong>Start with a pull request</strong></div><span>PUBLIC GITHUB URL</span></div>
-              <form onSubmit={runAnalysis}>
-                <label className="url-label" htmlFor="pr-url">Pull request URL</label>
-                <div className="url-field"><Code2 size={18}/><input id="pr-url" type="url" value={url} onChange={(event) => { setUrl(event.target.value); setReviewError(''); }} placeholder="https://github.com/owner/repository/pull/42" autoComplete="url"/><button className="analyze-button" type="submit" disabled={reviewBusy}>{reviewBusy ? <><LoaderCircle className="spin" size={16}/> Working</> : <>Analyze PR <ArrowRight size={16}/></>}</button></div>
-                <button type="button" className="secondary-button" disabled={reviewBusy} onClick={() => void queueAnalysis()}>Queue background review</button>
-                {reviewJob && <div className="inline-message" role="status">Background review {reviewJob.status}{reviewJob.status === 'queued' || reviewJob.status === 'running' ? '…' : '.'}{reviewJob.message ? ` ${reviewJob.message}` : ''}</div>}
-                <fieldset className="mode-select"><legend>Choose review mode <span>Required</span></legend><label className={`mode-option ${mode === 'demo' ? 'chosen' : ''}`}><input type="radio" name="mode" value="demo" checked={mode === 'demo'} onChange={() => setMode('demo')}/><span className="radio-mark"/><span><strong>Demo</strong><small>Fictional educational findings, clearly labeled</small></span><Sparkles size={15}/></label><label className={`mode-option ${mode === 'live' ? 'chosen' : ''}`}><input type="radio" name="mode" value="live" checked={mode === 'live'} onChange={() => setMode('live')}/><span className="radio-mark"/><span><strong>Live analysis</strong><small>Fetch public PR details and available Python checks</small></span><GitPullRequest size={15}/></label></fieldset>
-                {reviewError && <div className="alert error-alert" role="alert"><CircleAlert size={16}/><span>{reviewError}</span></div>}
-              </form>
-              <div className="entry-foot"><span><ShieldCheck size={14}/> Submitted code is not executed.</span><span>Live analysis depends on GitHub access and installed analyzers.</span></div>
-            </div>
-            <div className="section-rule"><span>THE REVIEW PRACTICE</span><i/></div>
-            <section className="principles" aria-label="Review principles">
-              <article><span className="principle-no">01</span><div><h2>Read the change</h2><p>Review the actual pull request metadata and diff returned by the service.</p></div><FileCode2 size={19}/></article>
-              <article><span className="principle-no">02</span><div><h2>Separate signal from certainty</h2><p>See whether a finding came from a static analyzer or an AI candidate needing review.</p></div><ShieldCheck size={19}/></article>
-              <article><span className="principle-no">03</span><div><h2>Build the habit</h2><p>Practice with the learning exercises served by the backend.</p></div><BookOpen size={19}/></article>
-            </section>
-            <div className="notice-strip"><span className="notice-mark">i</span><p>Reviews, saved links, and exercise progress are stored by the backend. Retention depends on its configured storage.</p></div>
-          </section>}
+          {page === 'discover' && <LandingPage url={url} setUrl={(value) => { setUrl(value); setReviewError(''); }} mode={mode} setMode={setMode} busy={reviewBusy} error={reviewError} onSubmit={runAnalysis}/>}
 
           {page === 'review' && route.reviewId !== null && reviewRouteView.review
             ? <ReviewWorkspacePage accountId={user?.user_id ?? ''} review={reviewRouteView.review} history={history} historyState={historyState} historyError={historyError} diffFiles={reviewRouteView.review.diff_files ?? []} diffWarnings={diffWarnings} onBackToHistory={() => go('history')} onSave={() => void saveCurrent()} saveMessage={saveMessage} onOpenDiff={() => go('diff')} onOpenReview={openReview} onFixDecision={decideFix}/>
@@ -423,7 +469,7 @@ function ReviewPage({ review, busy, error, notFound, onRetry, onSave, saveMessag
     {!isDemo && <div className="alert live-alert"><ShieldCheck size={17}/><span>Live PR metadata and available checks. Submitted code was not executed; analyzer and AI availability is listed below.</span></div>}
     {review.warnings.length > 0 && <div className="warning-list" aria-label="Review warnings">{review.warnings.map((warning, index) => <div key={`${index}-${warning}`}><CircleAlert size={15}/>{warning}</div>)}</div>}
     <div className="review-summary"><div><span>FINDINGS</span><strong>{review.findings.length}</strong></div><div><span>VERIFIED</span><strong>{review.verification_summary.verified ?? 0}</strong></div><div><span>NEEDS REVIEW</span><strong>{review.verification_summary.needs_review ?? 0}</strong></div><div><span>UNSUPPORTED</span><strong>{review.verification_summary.unsupported ?? 0}</strong></div></div>
-    <div className="results-heading"><div><span className="section-index">02</span><div><h2>Findings & evidence</h2><p>{review.findings.length ? 'Each item retains its source and verification status.' : 'No findings were returned for this review.'}</p></div></div><span>{review.findings.length} TOTAL</span></div>
+    <div className="results-heading"><div><span className="section-index">02</span><div><h2>Findings &amp; evidence</h2><p>{review.findings.length ? 'Each item retains its source and verification status.' : 'No findings were returned for this review.'}</p></div></div><span>{review.findings.length} TOTAL</span></div>
     {review.findings.length ? <div className="finding-list">{review.findings.map((finding) => <Finding key={finding.id} finding={finding}/>)}</div> : <div className="empty-inline"><CheckCircle2 size={18}/><span>No findings were returned. Check the tool results and warnings before treating this as a clean bill of health.</span></div>}
     <section className="tool-results"><div className="results-heading compact"><div><span className="section-index">03</span><div><h2>Analysis tools</h2><p>Backend-reported status; this is not a test-run summary.</p></div></div></div>{review.tool_results.length ? <div className="tool-table">{review.tool_results.map((tool, index) => <div className="tool-row" key={`${tool.tool}-${index}`}><span className="tool-name">{tool.tool}</span><span className={`tool-status status-${tool.status.replace(/[^a-z]/gi, '-').toLowerCase()}`}>{pretty(tool.status)}</span><span>{tool.reason ?? tool.message ?? (tool.findings ? `${tool.findings.length} diagnostics` : tool.executed === false ? 'Submitted code not executed' : 'Status returned by API')}</span></div>)}</div> : <div className="empty-inline">No tool status was returned.</div>}</section>
     <div className="review-meta"><span>Created {formatDate(review.created_at)}</span><span>{review.duration_ms} ms reported</span><span>Review ID <code>{review.review_id}</code></span></div>
@@ -441,11 +487,11 @@ function Finding({ finding }: { finding: ReviewFinding }) {
 function SeverityBadge({ severity }: { severity: Severity }) { return <span className={`severity-badge severity-${severity}`}><i/>{pretty(severity)}</span>; }
 
 function HistoryPage({ state, error, items, onOpen, onDiscover }: { state: string; error: string; items: ReviewResponse[]; onOpen: (id: string) => void; onDiscover: () => void }) {
-  return <section className="content-page"><PageHeading eyebrow="WORKSPACE / REVIEWS" title="Recent reviews" intro="Reviews stored by the configured backend."/>{state === 'loading' && <LoadingState title="Loading history" detail="Fetching recent reviews from the API."/>}{state === 'error' && <ErrorState title="History unavailable" message={error} action="Try analysis" onAction={onDiscover}/ >}{state === 'ready' && (items.length ? <div className="record-list">{items.map((item) => <button className="record-row" key={item.review_id} type="button" onClick={() => onOpen(item.review_id)}><span className="record-icon"><GitPullRequest size={17}/></span><span className="record-main"><strong>{item.pull_request.title}</strong><small>{item.pull_request.repository_owner}/{item.pull_request.repository_name} · #{item.pull_request.pull_request_number}</small></span><span className={`mode-badge ${item.is_demo ? 'demo' : 'live'}`}>{item.is_demo ? 'Demo' : 'Live'}</span><span className="record-time">{formatDate(item.created_at)}</span><ArrowRight size={15}/></button>)}</div> : <EmptyState icon={<History size={22}/>} title="No saved reviews" detail="The backend has not stored a review yet." action="Analyze a PR" onAction={onDiscover}/> )}</section>;
+  return <section className="content-page"><PageHeading eyebrow="WORKSPACE / REVIEWS" title="Recent reviews" intro="Reviews stored by the configured backend."/>{state === 'loading' && <LoadingState title="Loading history" detail="Fetching recent reviews from the API."/>}{state === 'error' && <ErrorState title="History unavailable" message={error} action="Try analysis" onAction={onDiscover}/>}{state === 'ready' && (items.length ? <div className="record-list">{items.map((item) => <button className="record-row" key={item.review_id} type="button" onClick={() => onOpen(item.review_id)}><span className="record-icon"><GitPullRequest size={17}/></span><span className="record-main"><strong>{item.pull_request.title}</strong><small>{item.pull_request.repository_owner}/{item.pull_request.repository_name} · #{item.pull_request.pull_request_number}</small></span><span className={`mode-badge ${item.is_demo ? 'demo' : 'live'}`}>{item.is_demo ? 'Demo' : 'Live'}</span><span className="record-time">{formatDate(item.created_at)}</span><ArrowRight size={15}/></button>)}</div> : <EmptyState icon={<History size={22}/>} title="No saved reviews" detail="The backend has not stored a review yet." action="Analyze a PR" onAction={onDiscover}/> )}</section>;
 }
 
 function SavedPage({ state, error, items, onRemove, onSelect, onRefresh, onDiscover }: { state: string; error: string; items: SavedPullRequest[]; onRemove: (item: SavedPullRequest) => void; onSelect: (item: SavedPullRequest) => void; onRefresh: () => void; onDiscover: () => void }) {
-  return <section className="content-page"><PageHeading eyebrow="WORKSPACE / SAVED" title="Saved pull requests" intro="Links saved by the backend. Saving a link does not save review history."/><div className="page-heading-action"><button className="secondary-button" type="button" onClick={onRefresh}>Refresh <Activity size={14}/></button></div>{state === 'loading' && <LoadingState title="Loading saved links" detail="Fetching saved pull requests."/>}{state === 'error' && <ErrorState title="Saved links unavailable" message={error} action="Try again" onAction={onRefresh}/>}{state === 'ready' && (items.length ? <div className="record-list">{items.map((item) => <div className="record-row saved-row" key={item.saved_id}><span className="record-icon"><Bookmark size={17}/></span><button className="saved-url" type="button" onClick={() => onSelect(item)}>{item.url}</button><span className="temporary-label">{item.temporary ? 'Temporary' : 'Persistent'}</span><button className="remove-button" type="button" onClick={() => onRemove(item)} aria-label={`Remove ${item.url}`}><X size={16}/></button></div>)}</div> : <EmptyState icon={<Bookmark size={22}/>} title="No saved pull requests" detail="Save a pull request from its review workspace." action="Analyze a PR" onAction={onDiscover}/> )}</section>;
+  return <section className="content-page"><PageHeading eyebrow="WORKSPACE / SAVED" title="Saved pull requests" intro="Your saved pull requests and review history follow your account across devices."/><div className="page-heading-action"><button className="secondary-button" type="button" onClick={onRefresh}>Refresh <Activity size={14}/></button></div>{state === 'loading' && <LoadingState title="Loading saved links" detail="Fetching saved pull requests."/>}{state === 'error' && <ErrorState title="Saved links unavailable" message={error} action="Try again" onAction={onRefresh}/>}{state === 'ready' && (items.length ? <div className="record-list">{items.map((item) => <div className="record-row saved-row" key={item.saved_id}><span className="record-icon"><Bookmark size={17}/></span><button className="saved-url" type="button" onClick={() => onSelect(item)}>{item.url}</button><span className="temporary-label">{item.temporary ? 'Temporary' : 'Persistent'}</span><button className="remove-button" type="button" onClick={() => onRemove(item)} aria-label={`Remove ${item.url}`}><X size={16}/></button></div>)}</div> : <EmptyState icon={<Bookmark size={22}/>} title="No saved pull requests" detail="Save a pull request from its review workspace." action="Analyze a PR" onAction={onDiscover}/> )}</section>;
 }
 
 function DiffPage({ review, state, error, files, warnings, onBack, onDiscover }: { review: ReviewResponse | null; state: string; error: string; files: DiffFile[]; warnings: string[]; onBack: () => void; onDiscover: () => void }) {
@@ -457,10 +503,10 @@ function DiffFileView({ file }: { file: DiffFile }) {
 }
 
 function AnalyticsPage({ state, error, analytics, insights, onRetry }: { state: string; error: string; analytics: PersonalAnalytics | null; insights: LearningInsights | null; onRetry: () => void }) {
-  if (state === 'loading') return <section className="content-page"><PageHeading eyebrow="WORKSPACE / ANALYTICS" title="Insights & analytics" intro="Only your stored review and learning evidence is included."/><LoadingState title="Building your dashboard" detail="Summarizing recent account-owned records."/></section>;
-  if (state === 'error' || !analytics || !insights) return <section className="content-page"><PageHeading eyebrow="WORKSPACE / ANALYTICS" title="Insights & analytics" intro="Only your stored review and learning evidence is included."/><ErrorState title="Analytics unavailable" message={error || 'No analytics response was returned.'} action="Try again" onAction={onRetry}/></section>;
+  if (state === 'loading') return <section className="content-page"><PageHeading eyebrow="WORKSPACE / ANALYTICS" title="Insights &amp; analytics" intro="Only your stored review and learning evidence is included."/><LoadingState title="Building your dashboard" detail="Summarizing recent account-owned records."/></section>;
+  if (state === 'error' || !analytics || !insights) return <section className="content-page"><PageHeading eyebrow="WORKSPACE / ANALYTICS" title="Insights &amp; analytics" intro="Only your stored review and learning evidence is included."/><ErrorState title="Analytics unavailable" message={error || 'No analytics response was returned.'} action="Try again" onAction={onRetry}/></section>;
   const ranked = (items: Record<string, number>) => Object.entries(items).sort((a, b) => b[1] - a[1]);
-  return <section className="content-page analytics-page"><PageHeading eyebrow="WORKSPACE / ANALYTICS" title="Insights & analytics" intro="Patterns and measures from your account’s stored activity. These are descriptive, not developer rankings."/>
+  return <section className="content-page analytics-page"><PageHeading eyebrow="WORKSPACE / ANALYTICS" title="Insights &amp; analytics" intro="Patterns and measures from your account's stored activity. These are descriptive, not developer rankings."/>
     <div className="analytics-cards"><AnalyticsMetric label="LIVE REVIEW RECORDS" value={String(analytics.total_reviews)} detail={`${analytics.reviews_analyzed} non-demo reviews in the recent window`}/><AnalyticsMetric label="SUGGESTED FIXES" value={String(analytics.suggested_fix_count)} detail="Stored proposals in analyzed reviews"/><AnalyticsMetric label="AVG REVIEW TIME" value={analytics.average_review_duration_ms === null ? '—' : `${(analytics.average_review_duration_ms / 1000).toFixed(1)}s`} detail="Recent-window backend duration"/><AnalyticsMetric label="FIX ACCEPTANCE" value={String(analytics.fix_decisions.accepted ?? 0)} detail={`${analytics.fix_decisions.rejected ?? 0} rejected by you`}/></div>
     <div className="analytics-grid"><section className="analytics-panel"><h2>Finding patterns</h2><p>Based on {analytics.reviews_analyzed} of at most {analytics.analysis_window_limit} recent reviews.</p>{ranked(analytics.findings_by_category).length ? ranked(analytics.findings_by_category).map(([name, count]) => <div className="analytics-row" key={name}><span>{pretty(name)}</span><strong>{count}</strong></div>) : <p>No stored findings in this window.</p>}</section>
       <section className="analytics-panel"><h2>Validation history</h2><p>Reports recorded on suggested fixes.</p>{ranked(analytics.validation_reports_by_status).length ? ranked(analytics.validation_reports_by_status).map(([name, count]) => <div className="analytics-row" key={name}><span>{pretty(name)}</span><strong>{count}</strong></div>) : <p>No validation reports are stored yet.</p>}</section>

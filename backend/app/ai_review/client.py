@@ -13,7 +13,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.ai_review.providers import ProviderConfig, provider_registry
-from app.config import http_timeout
+from app.config import http_timeout, llm_configuration
 
 _current_task: ContextVar[str | None] = ContextVar("pr_mentor_llm_task", default=None)
 _last_call: ContextVar[dict | None] = ContextVar("pr_mentor_last_provider_call", default=None)
@@ -142,10 +142,19 @@ async def complete_json(
         isinstance(max_response_bytes, bool) or not isinstance(max_response_bytes, int) or max_response_bytes < 1
     ):
         raise ValueError("max_response_bytes must be a positive integer")
-    providers = [item for item in provider_registry(selected_task) if item.name not in set(exclude_providers or [])]
+    api_key, model_name, _ = llm_configuration()
+    if not api_key or not model_name:
+        # Allow provider_registry to be patched in tests even without env vars.
+        all_providers = provider_registry(selected_task)
+        if not all_providers:
+            providers = []
+        else:
+            providers = [item for item in all_providers if item.name not in set(exclude_providers or [])]
+    else:
+        providers = [item for item in provider_registry(selected_task) if item.name not in set(exclude_providers or [])]
     if not providers:
         _last_call.set({"status": "unavailable", "providers_attempted": [], "attempt_count": 0})
-        raise AIReviewUnavailable("AI provider is not configured with credentials and a model.")
+        raise AIReviewUnavailable("AI review is unavailable because LLM_API_KEY and LLM_MODEL are not configured.")
     try:
         retries = max(0, min(int(os.getenv("LLM_PROVIDER_RETRIES", "1")), 2))
     except ValueError:

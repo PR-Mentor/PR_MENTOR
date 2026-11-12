@@ -1,3 +1,47 @@
+"""Build the agreed ingestion payload for a public GitHub pull request."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.github_service.client import GitHubClient
+from app.github_service.files import fetch_pull_request_files
+from app.github_service.parser import (
+    parse_pull_request_file,
+    parse_pull_request_metadata,
+    parse_pull_request_url,
+)
+
+
+def ingest_pull_request(
+    url: str,
+    *,
+    client: GitHubClient | None = None,
+    max_file_pages: int = 10,
+) -> dict[str, Any]:
+    """Fetch PR metadata and changed-file patches without checking out code."""
+    coordinates = parse_pull_request_url(url)
+    active_client = client or GitHubClient()
+    api_prefix = f"/repos/{coordinates.owner}/{coordinates.repo}"
+
+    pull_request_data = active_client.get_json(
+        f"{api_prefix}/pulls/{coordinates.number}"
+    )
+    metadata = parse_pull_request_metadata(pull_request_data, coordinates)
+    file_data, files_truncated = fetch_pull_request_files(
+        active_client,
+        coordinates.owner,
+        coordinates.repo,
+        coordinates.number,
+        max_pages=max_file_pages,
+    )
+
+    return {
+        "pull_request": metadata,
+        "files": [parse_pull_request_file(file) for file in file_data],
+        "files_truncated": files_truncated,
+    }
+
 """Fetch bounded pull-request metadata and changed-file pages from GitHub."""
 
 import base64
@@ -35,10 +79,17 @@ class GitHubFileSnapshotError(ValueError):
     """GitHub returned a source object that cannot serve as a verified file snapshot."""
 
 
-async def fetch_pull_request(url: str) -> PullRequestBundle:
+async def _request_json(client: httpx.AsyncClient, path: str, *, params=None, github_token: str | None = None):
+    kwargs = {"params": params} if params is not None else {}
+    if github_token:
+        kwargs["github_token"] = github_token
+    return await request_json(client, path, **kwargs)
+
+
+async def fetch_pull_request(url: str, github_token: str | None = None) -> PullRequestBundle:
     owner, repo, number = parse_pull_request_url(url)
     async with async_client() as client:
-        raw = await request_json(client, f"/repos/{owner}/{repo}/pulls/{number}")
+        raw = await _request_json(client, f"/repos/{owner}/{repo}/pulls/{number}", github_token=github_token)
         if not isinstance(raw, dict):
             raise ValueError("GitHub returned an invalid pull request response.")  # noqa: TRY004 - malformed upstream data is a value error, not a caller type error
         base = raw.get("base") if isinstance(raw.get("base"), dict) else {}
@@ -65,7 +116,7 @@ async def fetch_pull_request(url: str) -> PullRequestBundle:
         files: list[ChangedFile] = []
         warnings: list[str] = []
         for page in range(1, MAX_FILE_PAGES + 1):
-            result = await request_json(client, f"/repos/{owner}/{repo}/pulls/{number}/files", params={"per_page": FILES_PER_PAGE, "page": page})
+            result = await _request_json(client, f"/repos/{owner}/{repo}/pulls/{number}/files", params={"per_page": FILES_PER_PAGE, "page": page}, github_token=github_token)
             if not isinstance(result, list):
                 raise ValueError("GitHub returned an invalid changed-files response.")  # noqa: TRY004 - malformed upstream data is a value error, not a caller type error
             for item in result:
@@ -137,13 +188,13 @@ async def fetch_current_pull_request_file_change(
     return None
 
 
-async def get_file_content(owner: str, repo: str, filename: str, ref: str) -> str | None:
+async def get_file_content(owner: str, repo: str, filename: str, ref: str, github_token: str | None = None) -> str | None:
     """Read a bounded source file through the fixed GitHub API host."""
     if not ref or not filename or filename.startswith(("/", "\\")) or ".." in filename.replace("\\", "/").split("/"):
         return None
     encoded_path = quote(filename.replace("\\", "/"), safe="/")
     async with async_client() as client:
-        result = await request_json(client, f"/repos/{owner}/{repo}/contents/{encoded_path}", params={"ref": ref})
+        result = await _request_json(client, f"/repos/{owner}/{repo}/contents/{encoded_path}", params={"ref": ref}, github_token=github_token)
     if not isinstance(result, dict) or result.get("encoding") != "base64" or not isinstance(result.get("content"), str):
         return None
     if isinstance(result.get("size"), int) and result["size"] > MAX_SOURCE_BYTES:

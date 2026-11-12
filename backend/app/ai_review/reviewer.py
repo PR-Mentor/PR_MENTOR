@@ -56,7 +56,7 @@ async def generate_candidates(
             error = "AI provider returned invalid JSON."
         except (TypeError, ValidationError) as exc:
             cause = exc
-            error = "AI provider response did not match the findings schema."
+            error = "AI provider returned a finding that did not match the review schema."
         metadata = last_call_metadata() or {}
         attempted = metadata.get("providers_attempted", [])
         provider = metadata.get("provider")

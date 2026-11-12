@@ -16,6 +16,7 @@ import type {
   GeneratedTestCase,
   TestExecutionJob,
 } from '../types/review';
+import { authenticatedFetch, getGitHubProviderToken } from './auth';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/$/, '');
 
@@ -37,7 +38,7 @@ export class ApiRequestError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    response = await authenticatedFetch(`${API_BASE}${path}`, {
       ...init,
       credentials: 'include',
       headers: { ...(init?.body ? { 'Content-Type': 'application/json' } : {}), ...init?.headers },
@@ -105,9 +106,11 @@ export function listBenchmarkRuns(datasetId: string): Promise<BenchmarkRun[]> {
   return request<BenchmarkRun[]>(`/api/benchmarks/${encodeURIComponent(datasetId)}/runs`);
 }
 
-export function analyzePullRequest(url: string, mode: AnalysisMode): Promise<ReviewResponse> {
+export async function analyzePullRequest(url: string, mode: AnalysisMode): Promise<ReviewResponse> {
+  const githubToken = mode === 'live' ? await getGitHubProviderToken() : undefined;
   return request<ReviewResponse>('/api/reviews/analyze', {
     method: 'POST',
+    headers: githubToken ? { 'X-GitHub-Token': githubToken } : undefined,
     body: JSON.stringify({
       url,
       mode,

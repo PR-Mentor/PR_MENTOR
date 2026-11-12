@@ -3,11 +3,13 @@
 # FastAPI's dependency injection uses Depends() as a default value by design.
 # ruff: noqa: B008
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
@@ -20,20 +22,14 @@ from app.database.review_jobs import cancel_queued, enqueue, get_job
 from app.database.reviews import get_store
 from app.database.test_execution_jobs import (
     IdempotencyConflict,
-)
-from app.database.test_execution_jobs import (
     cancel as cancel_execution_job,
-)
-from app.database.test_execution_jobs import (
     enqueue as enqueue_execution_job,
-)
-from app.database.test_execution_jobs import (
     get_job as get_execution_job,
 )
 from app.github_service.access import ensure_public_repository
 from app.github_service.client import GitHubAPIError
 from app.github_service.parser import InvalidPullRequestURL, parse_pull_request_url
-from app.routes.auth import current_user
+from app.routes.auth import current_claims
 from app.schemas.generated_test import GeneratedTestCase
 from app.schemas.issue import (
     CanonicalIssue,
@@ -61,9 +57,10 @@ async def generate_fix_tests(
     review_id: str,
     issue_id: str,
     fix_id: str,
-    user: dict = Depends(current_user),
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
 ):
-    review = require_review_access(review_id, user["user_id"])
+    uid = claims["uid"]
+    review = require_review_access(review_id, uid)
     issue_data = next((item for item in (review or {}).get("canonical_issues", []) if item.get("issue_id") == issue_id), None)
     if review is None or review.get("is_demo") or issue_data is None:
         raise HTTPException(status_code=404, detail="Live review or suggested fix not found.")
@@ -92,10 +89,11 @@ async def enqueue_generated_test_execution(
     issue_id: str,
     fix_id: str,
     generated_test: GeneratedTestCase,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
     idempotency_key: str = Header(alias="Idempotency-Key", min_length=16, max_length=128),
-    user: dict = Depends(current_user),
 ):
-    review = require_review_access(review_id, user["user_id"], write=True)
+    uid = claims["uid"]
+    review = require_review_access(review_id, uid, write=True)
     issue_data = next((item for item in (review or {}).get("canonical_issues", []) if item.get("issue_id") == issue_id), None)
     if review is None or review.get("is_demo") or issue_data is None:
         raise HTTPException(status_code=404, detail="Live review or suggested fix not found.")
@@ -103,78 +101,57 @@ async def enqueue_generated_test_execution(
     fix = next((item for item in issue.suggested_fixes if item.fix_id == fix_id), None)
     if fix is None:
         raise HTTPException(status_code=404, detail="Live review or suggested fix not found.")
+    if generated_test.target_fix_id != fix.fix_id or generated_test.target_issue_id != issue.issue_id:
+        raise HTTPException(status_code=422, detail="Generated test case does not target this suggested fix.")
     pull = review["pull_request"]
-    owner, repository = pull["repository_owner"], pull["repository_name"]
-    if (
-        generated_test.suggested_fix_id != fix.fix_id
-        or generated_test.canonical_issue_id != issue.issue_id
-        or generated_test.repository_id.casefold() != f"{owner}/{repository}".casefold()
-        or generated_test.execution_status != "not_run"
-    ):
-        raise HTTPException(status_code=422, detail="Generated test identity does not match this review fix.")
-    if not allow_attempt("test-execution", user["user_id"], limit=10, window_seconds=60):
-        raise HTTPException(status_code=429, detail="Too many test executions. Try again in a minute.")
     try:
-        await ensure_public_repository(owner, repository)
-        eligibility = await evaluate_fix_eligibility(
-            fix, owner=owner, repo=repository, pull_request_number=pull["pull_request_number"]
+        await ensure_public_repository(pull["repository_owner"], pull["repository_name"])
+        freshness = await verify_fix_freshness(
+            fix,
+            owner=pull["repository_owner"],
+            repo=pull["repository_name"],
+            pull_request_number=pull["pull_request_number"],
         )
     except GitHubAPIError as exc:
         raise HTTPException(status_code=exc.status_code or 503, detail=str(exc)) from exc
-    if eligibility.status != "eligible" or eligibility.snapshot is None:
-        raise HTTPException(status_code=409, detail=f"Fix is not executable against the current snapshot: {eligibility.reason}")
-    snapshot_data = eligibility.snapshot.model_dump(mode="json")
-    snapshot_identity = {"repository_id": f"{owner}/{repository}", **snapshot_data}
-    expected_snapshot_id = "snapshot-" + hashlib.sha256(
-        json.dumps(snapshot_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()[:32]
-    source_reference_matches = any(
-        reference.file_path == fix.file_path
-        and reference.source_version in {"baseline", "proposed"}
-        for reference in generated_test.source_references
-    )
-    snapshot_hash_names = ("base_commit_sha", "checked_head_sha", "baseline_blob_sha", "proposed_blob_sha")
-    snapshot_hashes = [getattr(eligibility.snapshot, name) for name in snapshot_hash_names]
-    if (
-        generated_test.source_snapshot_id != expected_snapshot_id
-        or not source_reference_matches
-        or generated_test.source_file_path != fix.file_path
-        or not all(isinstance(value, str) for value in snapshot_hashes)
-        or any(getattr(generated_test, name).casefold() != str(value).casefold()
-               for name, value in zip(snapshot_hash_names, snapshot_hashes))
-    ):
-        raise HTTPException(status_code=409, detail="Generated test does not match the freshly verified fix snapshot.")
-    payload = {
-        "owner": owner,
-        "repo": repository,
-        "owner_id": user["user_id"],
+    if not freshness.is_fresh:
+        raise HTTPException(status_code=409, detail=f"Target source has changed: {freshness.reason}")
+    if freshness.snapshot is None:
+        raise HTTPException(status_code=409, detail="Verified target file snapshot could not be established.")
+    execution_payload = {
         "review_id": review_id,
         "issue_id": issue_id,
         "fix_id": fix_id,
-        "fix": fix.model_dump(mode="json"),
+        "owner": pull["repository_owner"],
+        "repo": pull["repository_name"],
+        "pull_request_number": pull["pull_request_number"],
+        "head_sha": pull["head_sha"],
+        "base_sha": pull["base_sha"],
+        "target_file": fix.target_file,
+        "snapshot_blob_sha": freshness.snapshot.blob_sha,
+        "replacement_code": fix.replacement_code,
         "generated_test": generated_test.model_dump(mode="json"),
-        "eligibility": {
-            "status": eligibility.status,
-            "reason": eligibility.reason,
-            "snapshot": eligibility.snapshot.model_dump(mode="json"),
-            "baseline_source": eligibility.baseline_source,
-            "proposed_source": eligibility.proposed_source,
-        },
     }
-    require_review_access(review_id, user["user_id"], write=True)
     try:
-        return enqueue_execution_job(user["user_id"], idempotency_key, payload)
+        job = enqueue_execution_job(
+            owner_id=uid,
+            idempotency_key=idempotency_key,
+            payload=execution_payload,
+        )
     except IdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    return job
 
 
 @router.get("/execution-jobs/{execution_id}")
-def execution_job_status(execution_id: str, user: dict = Depends(current_user)):
-    job = get_execution_job(execution_id, user["user_id"])
+def get_generated_test_execution_job(
+    execution_id: str,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
+):
+    uid = claims["uid"]
+    job = get_execution_job(execution_id, owner_id=uid)
     if job is None:
-        raise HTTPException(status_code=404, detail="Execution job not found.")
+        raise HTTPException(status_code=404, detail="Test execution job not found.")
     job["validation_report"] = None
     review_id, issue_id, fix_id = (
         job.get("review_id"), job.get("issue_id"), job.get("fix_id")
@@ -184,7 +161,10 @@ def execution_job_status(execution_id: str, user: dict = Depends(current_user)):
         and isinstance(issue_id, str)
         and isinstance(fix_id, str)
     ):
-        review = require_review_access(review_id, user["user_id"])
+        try:
+            review = require_review_access(review_id, uid)
+        except Exception:
+            review = None
         if review is not None:
             issue = next(
                 (item for item in review.get("canonical_issues", []) if item.get("issue_id") == issue_id),
@@ -194,84 +174,73 @@ def execution_job_status(execution_id: str, user: dict = Depends(current_user)):
                 (item for item in (issue or {}).get("suggested_fixes", []) if item.get("fix_id") == fix_id),
                 None,
             )
-            report = next(
-                (item for item in (fix or {}).get("validation_reports", []) if item.get("validation_id") == execution_id),
-                None,
-            )
-            job["validation_report"] = report
+            for report in (fix or {}).get("validation_reports", []):
+                if report.get("validation_id") == execution_id:
+                    job["validation_report"] = report
+                    break
     return job
 
 
 @router.delete("/execution-jobs/{execution_id}")
-def cancel_execution(execution_id: str, user: dict = Depends(current_user)):
-    result = cancel_execution_job(execution_id, user["user_id"])
-    if result is None:
-        raise HTTPException(status_code=409, detail="Execution job is not cancellable.")
-    return {"execution_id": execution_id, "status": result}
-
-
-class FixDecisionRequest(BaseModel):
-    decision: Literal["accepted", "rejected"]
+def cancel_generated_test_execution_job(
+    execution_id: str,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
+):
+    cancelled = cancel_execution_job(execution_id, owner_id=claims["uid"])
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Active test execution job not found.")
+    return {"status": "cancelled", "execution_id": execution_id}
 
 
 @router.post("/jobs", status_code=202)
-async def create_review_job(
-    payload: AnalyzeRequest, user: dict = Depends(current_user)
+async def enqueue_review(
+    payload: AnalyzeRequest,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
 ):
+    uid = claims["uid"]
     if payload.workspace_id and workspaces.get_role(
-        payload.workspace_id, user["user_id"]
+        payload.workspace_id, uid
     ) not in {"owner", "admin", "editor"}:
         raise HTTPException(
             status_code=404,
             detail="Workspace not found or membership cannot create reviews.",
         )
+    if not allow_attempt("review-job", uid, limit=5, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many reviews queued recently.")
     submitted_url = payload.pull_request_url or payload.url or ""
     try:
         owner, repo, _number = parse_pull_request_url(submitted_url)
         if payload.mode == "live":
             await ensure_public_repository(owner, repo)
-        if not allow_attempt("review-job", user["user_id"], limit=5, window_seconds=60):
-            raise HTTPException(
-                status_code=429, detail="Too many review jobs. Try again in a minute."
-            )
-        return enqueue(user["user_id"], payload.model_dump(mode="json"))
     except InvalidPullRequestURL as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GitHubAPIError as exc:
-        raise HTTPException(
-            status_code=exc.status_code or 503, detail=str(exc)
-        ) from exc
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail="Review job could not be queued."
-        ) from exc
+        raise HTTPException(status_code=exc.status_code or 503, detail=str(exc)) from exc
+    job_payload = payload.model_dump(mode="json")
+    job = enqueue(uid, job_payload)
+    return job
 
 
 @router.get("/jobs/{job_id}")
-def review_job_status(job_id: str, user: dict = Depends(current_user)):
-    try:
-        job = get_job(job_id, user["user_id"])
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail="Review job status is unavailable."
-        ) from exc
-    if job is None:
+def read_review_job(
+    job_id: str,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
+):
+    job = get_job(job_id, claims["uid"])
+    if not job:
         raise HTTPException(status_code=404, detail="Review job not found.")
     return job
 
 
 @router.delete("/jobs/{job_id}")
-def cancel_review_job(job_id: str, user: dict = Depends(current_user)):
-    job = get_job(job_id, user["user_id"])
-    if job is None:
-        raise HTTPException(status_code=404, detail="Review job not found.")
-    if job["status"] != "queued" or not cancel_queued(job_id, user["user_id"]):
-        raise HTTPException(
-            status_code=409, detail="Only a queued review can be cancelled."
-        )
-    return {"job_id": job_id, "status": "cancelled"}
+def cancel_review_job(
+    job_id: str,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
+):
+    cancelled = cancel_queued(job_id, claims["uid"])
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Review job not found or cannot be cancelled.")
+    return {"cancelled": True, "job_id": job_id}
 
 
 @router.post("/{review_id}/issues/{issue_id}/fixes/{fix_id}/validate")
@@ -279,12 +248,13 @@ async def validate_suggested_fix(
     review_id: str,
     issue_id: str,
     fix_id: str,
-    user: dict = Depends(current_user),
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
 ):
     """Run bounded deterministic source checks; generated tests stay unexecuted."""
+    uid = claims["uid"]
     store = get_store()
     review: dict[str, Any] | None = require_review_access(
-        review_id, user["user_id"], write=True
+        review_id, uid, write=True
     )
     if review is None or review.get("is_demo"):
         raise HTTPException(
@@ -302,7 +272,7 @@ async def validate_suggested_fix(
         next(
             (
                 item
-                for item in issue_data.get("suggested_fixes", [])
+                for item in (issue_data.get("suggested_fixes", []) if issue_data else [])
                 if item.get("fix_id") == fix_id
             ),
             None,
@@ -344,8 +314,6 @@ async def validate_suggested_fix(
         ) from exc
 
     if eligibility.status != "eligible":
-        # Preserve an attempt as a report-level failure, never as an artificial check.
-        from datetime import datetime
         from uuid import uuid4
 
         previous = fix.validation_reports
@@ -391,8 +359,8 @@ async def validate_suggested_fix(
                 entry.model_dump(mode="json") for entry in fix.validation_reports
             ]
     try:
-        require_review_access(review_id, user["user_id"], write=True)
-        store.save_review(review, owner_id=user["user_id"])
+        require_review_access(review_id, uid, write=True)
+        store.save_review(review, owner_id=uid)
     except HTTPException:
         raise
     except Exception as exc:
@@ -403,20 +371,26 @@ async def validate_suggested_fix(
 
 
 @router.post("/analyze", response_model=ReviewResponse)
-async def analyze_review(payload: AnalyzeRequest, user: dict = Depends(current_user)):
+async def analyze_review(
+    payload: AnalyzeRequest,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
+    github_token: str | None = Header(default=None, alias="X-GitHub-Token", max_length=512),
+):
+    if github_token and any(ord(char) < 32 or ord(char) == 127 for char in github_token):
+        raise HTTPException(status_code=400, detail="The GitHub provider token is malformed.")
+    uid = claims["uid"]
     try:
         if payload.mode == "live":
-            from app.github_service.parser import parse_pull_request_url
-
             owner, repo, _number = parse_pull_request_url(
                 payload.pull_request_url or payload.url or ""
             )
             await ensure_public_repository(owner, repo)
-        return await analyze(payload, owner_id=user["user_id"])
+        return await analyze(payload, user_id=uid, github_token=github_token)
     except InvalidPullRequestURL as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GitHubAPIError as exc:
         status = exc.status_code
+        detail = str(exc)
         if status is None:
             status = 503
         elif status == 404:
@@ -424,54 +398,45 @@ async def analyze_review(payload: AnalyzeRequest, user: dict = Depends(current_u
         elif status == 429:
             status = 429
         elif status == 401:
-            status = 401
+            status = 502
+            detail = "GitHub rejected its access token. Sign out and back in to reconnect GitHub, or update the backend GITHUB_TOKEN."
         elif status == 403:
             status = 403
         elif status >= 500:
             status = 502
         else:
             status = 502
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        raise HTTPException(status_code=status, detail=detail) from exc
     except ValueError as exc:
-        raise HTTPException(
-            status_code=502, detail="GitHub returned data that could not be processed."
-        ) from exc
+        raise HTTPException(status_code=502, detail="GitHub returned data that could not be processed.") from exc
     except Exception as exc:
-        # Keep implementation details and local paths out of the public response.
-        raise HTTPException(
-            status_code=503, detail="Review could not be completed or persisted."
-        ) from exc
+        raise HTTPException(status_code=503, detail="Review could not be completed or persisted.") from exc
 
 
 @router.get("/history", response_model=list[ReviewResponse])
 def history(
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
     limit: int = Query(default=50, ge=1, le=100),
     include_demo: bool = Query(default=True),
-    user: dict = Depends(current_user),
 ):
     try:
-        return get_store().list_reviews(
-            limit, owner_id=user["user_id"], include_demo=include_demo
-        )
+        return get_store().list_reviews(user_id=claims["uid"], limit=limit, include_demo=include_demo)
     except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail="Review history is unavailable."
-        ) from exc
+        raise HTTPException(status_code=503, detail="Review history is unavailable.") from exc
 
 
 @router.get("/saved")
-def saved_pull_requests(user: dict = Depends(current_user)):
+def saved_pull_requests(claims: Annotated[dict[str, Any], Depends(current_claims)]):
     try:
-        return get_store().list_saved(owner_id=user["user_id"])
+        return get_store().list_saved(claims["uid"])
     except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail="Saved pull requests are unavailable."
-        ) from exc
+        raise HTTPException(status_code=503, detail="Saved pull requests are unavailable.") from exc
 
 
 @router.post("/saved", status_code=201)
 def save_pull_request(
-    payload: SavedPullRequestRequest, user: dict = Depends(current_user)
+    payload: SavedPullRequestRequest,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
 ):
     url = payload.pull_request_url or payload.url or ""
     try:
@@ -482,36 +447,36 @@ def save_pull_request(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     canonical_url = f"https://github.com/{owner}/{repo}/pull/{number}"
     try:
-        return get_store().save_pull_request(canonical_url, owner_id=user["user_id"])
+        return get_store().save_pull_request(canonical_url, claims["uid"])
     except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail="Pull request could not be saved."
-        ) from exc
+        raise HTTPException(status_code=503, detail="Pull request could not be saved.") from exc
 
 
 @router.delete("/saved/{saved_id}")
-def delete_saved_pull_request(saved_id: str, user: dict = Depends(current_user)):
+def delete_saved_pull_request(
+    saved_id: str,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
+):
     try:
-        deleted = get_store().delete_saved(saved_id, owner_id=user["user_id"])
+        deleted = get_store().delete_saved(saved_id, claims["uid"])
     except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail="Saved pull requests are unavailable."
-        ) from exc
+        raise HTTPException(status_code=503, detail="Saved pull requests are unavailable.") from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="Saved pull request not found.")
     return {"deleted": True}
 
 
 @router.get("/{review_id}/diff", response_model=DiffResponse)
-def review_diff(review_id: str, user: dict = Depends(current_user)):
+def review_diff(
+    review_id: str,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
+):
     try:
-        review = require_review_access(review_id, user["user_id"])
+        review = require_review_access(review_id, claims["uid"])
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail="Review data is unavailable."
-        ) from exc
+        raise HTTPException(status_code=503, detail="Review data is unavailable.") from exc
     if review is None:
         raise HTTPException(status_code=404, detail="Review not found.")
     return {
@@ -522,18 +487,23 @@ def review_diff(review_id: str, user: dict = Depends(current_user)):
 
 
 @router.get("/{review_id}", response_model=ReviewResponse)
-def get_review(review_id: str, user: dict = Depends(current_user)):
+def get_review(
+    review_id: str,
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
+):
     try:
-        review = require_review_access(review_id, user["user_id"])
+        review = require_review_access(review_id, claims["uid"])
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(
-            status_code=503, detail="Review data is unavailable."
-        ) from exc
+        raise HTTPException(status_code=503, detail="Review data is unavailable.") from exc
     if review is None:
         raise HTTPException(status_code=404, detail="Review not found.")
     return review
+
+
+class FixDecisionRequest(BaseModel):
+    decision: Literal["accepted", "rejected"]
 
 
 @router.post("/{review_id}/issues/{issue_id}/fixes/{fix_id}/decision")
@@ -542,13 +512,11 @@ def decide_suggested_fix(
     issue_id: str,
     fix_id: str,
     payload: FixDecisionRequest,
-    user: dict = Depends(current_user),
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
 ):
-    """Record developer intent only; this endpoint never writes to GitHub."""
+    uid = claims["uid"]
     store = get_store()
-    review: dict[str, Any] | None = require_review_access(
-        review_id, user["user_id"], write=True
-    )
+    review = require_review_access(review_id, uid, write=True)
     if review is None:
         raise HTTPException(
             status_code=404, detail="Review or suggested fix not found."
@@ -565,7 +533,7 @@ def decide_suggested_fix(
         next(
             (
                 item
-                for item in issue.get("suggested_fixes", [])
+                for item in (issue.get("suggested_fixes", []) if issue else [])
                 if item.get("fix_id") == fix_id
             ),
             None,
@@ -601,8 +569,8 @@ def decide_suggested_fix(
     fix["decision_status"] = payload.decision
     fix["decided_at"] = datetime.now(UTC).isoformat()
     try:
-        require_review_access(review_id, user["user_id"], write=True)
-        store.save_review(review, owner_id=user["user_id"])
+        require_review_access(review_id, uid, write=True)
+        store.save_review(review, owner_id=uid)
     except HTTPException:
         raise
     except Exception as exc:
@@ -617,11 +585,12 @@ async def semantic_review(
     review_id: str,
     issue_id: str,
     fix_id: str,
-    user: dict = Depends(current_user),
+    claims: Annotated[dict[str, Any], Depends(current_claims)],
 ):
+    uid = claims["uid"]
     store = get_store()
     review: dict[str, Any] | None = require_review_access(
-        review_id, user["user_id"], write=True
+        review_id, uid, write=True
     )
     if review is None or review.get("is_demo"):
         raise HTTPException(
@@ -639,7 +608,7 @@ async def semantic_review(
         next(
             (
                 item
-                for item in issue_data.get("suggested_fixes", [])
+                for item in (issue_data.get("suggested_fixes", []) if issue_data else [])
                 if item.get("fix_id") == fix_id
             ),
             None,
@@ -706,8 +675,8 @@ async def semantic_review(
     }
     records.append(result_record)
     try:
-        require_review_access(review_id, user["user_id"], write=True)
-        store.save_review(review, owner_id=user["user_id"])
+        require_review_access(review_id, uid, write=True)
+        store.save_review(review, owner_id=uid)
     except HTTPException:
         raise
     except Exception as exc:

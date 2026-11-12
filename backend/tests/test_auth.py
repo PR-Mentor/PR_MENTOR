@@ -1,7 +1,8 @@
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import cookie_secure
 from app.database import auth as auth_store
 from app.main import app
 
@@ -17,57 +18,137 @@ def test_account_lookup_for_profile_returns_only_public_identity(tmp_path, monke
     assert auth_store.get_user_by_id("missing-user") is None
 
 
-def test_registration_session_me_and_logout(tmp_path, monkeypatch):
+def test_otp_routes_fail_closed_without_delivery_or_storage():
+    client = TestClient(app)
+    sent = client.post("/api/auth/otp/send", json={"identity": "user@example.com", "channel": "email"})
+    assert sent.status_code == 503
+    assert "not configured" in sent.json()["detail"].lower()
+    phone_sent = client.post("/api/auth/otp/send", json={"identity": "+919876543210", "channel": "phone"})
+    assert phone_sent.status_code == 422
+    verified = client.post("/api/auth/otp/verify", json={"challenge_id": "any", "code": "123456"})
+    assert verified.status_code == 503
+    assert "not configured" in verified.json()["detail"].lower()
+
+
+def test_firebase_profile_lifecycle_and_missing_token(tmp_path, monkeypatch):
+    import app.routes.auth as auth_routes
+    from app.database.users import get_user
+    from app.routes.auth import current_claims
+
     monkeypatch.setenv("PR_MENTOR_STORAGE", "sqlite")
     monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / "auth.sqlite3"))
-    monkeypatch.setenv("PR_MENTOR_COOKIE_SECURE", "false")
-    with TestClient(app) as client:
-        assert client.get("/api/auth/me").status_code == 401
-        registered = client.post("/api/auth/register", json={"email": "USER@example.com", "password": "correct horse battery staple"})
-        assert registered.status_code == 201
-        assert registered.json()["email"] == "user@example.com"
-        cookie = registered.cookies.get("prm_session")
-        assert cookie and len(cookie) > 32
-        assert "httponly" in registered.headers["set-cookie"].lower()
-        me = client.get("/api/auth/me").json()
-        assert me == {"user_id": registered.json()["user_id"], "email": "user@example.com"}
-        assert client.post("/api/auth/logout").status_code == 204
-        assert client.get("/api/auth/me").status_code == 401
+    claims = {
+        "uid": "firebase-user-1",
+        "name": "Ada Lovelace",
+        "email": "ada@example.com",
+        "email_verified": True,
+        "picture": "https://example.test/avatar.png",
+        "firebase": {"sign_in_provider": "google.com"},
+    }
+    monkeypatch.setattr(auth_routes, "delete_firebase_identity", lambda _uid: None)
+    app.dependency_overrides[current_claims] = lambda: claims
+    client = TestClient(app)
+    try:
+        created = client.post("/api/auth/firebase/verify")
+        assert created.status_code == 200
+        user = created.json()["user"]
+        assert user["firebase_uid"] == "firebase-user-1"
+        assert user["email"] == "ada@example.com"
+        assert user["providers"] == ["google.com"]
+        assert client.get("/api/auth/me").json()["user"]["display_name"] == "Ada Lovelace"
+
+        updated = client.patch("/api/users/me", json={"display_name": "Ada"})
+        assert updated.status_code == 200
+        assert updated.json()["user"]["display_name"] == "Ada"
+        assert client.post("/api/auth/firebase/verify").json()["user"]["display_name"] == "Ada"
+
+        claims["auth_time"] = int(datetime.now(UTC).timestamp())
+        assert client.delete("/api/users/me").json() == {"deleted": True}
+        assert get_user("firebase-user-1") is None
+    finally:
+        app.dependency_overrides.pop(current_claims, None)
 
 
-def test_login_generic_failure_and_unique_email(tmp_path, monkeypatch):
+def test_private_profile_rejects_missing_bearer_token():
+    response = TestClient(app).get("/api/auth/me")
+    assert response.status_code == 401
+    assert "token" in response.json()["detail"].lower()
+
+
+@pytest.mark.parametrize("token_error", ["invalid", "expired"])
+def test_invalid_or_expired_firebase_token_is_rejected(monkeypatch, token_error):
+    from firebase_admin import auth as firebase_auth
+
+    import app.routes.auth as auth_routes
+
+    monkeypatch.setattr(auth_routes, "_firebase_app", lambda: object())
+    error = (
+        firebase_auth.InvalidIdTokenError("invalid token")
+        if token_error == "invalid"
+        else firebase_auth.ExpiredIdTokenError("expired token", None)
+    )
+
+    def reject_token(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(firebase_auth, "verify_id_token", reject_token)
+    response = TestClient(app).get("/api/auth/me", headers={"Authorization": "Bearer untrusted"})
+    assert response.status_code == 401
+    assert "invalid" in response.json()["detail"].lower()
+
+
+def test_delete_requires_recent_authentication():
+    from app.routes.auth import current_claims
+
+    app.dependency_overrides[current_claims] = lambda: {"uid": "stale-user", "auth_time": 1}
+    try:
+        response = TestClient(app).delete("/api/users/me")
+        assert response.status_code == 403
+        assert "reauthenticate" in response.json()["detail"].lower()
+    finally:
+        app.dependency_overrides.pop(current_claims, None)
+
+
+@pytest.mark.parametrize(
+    ("provider", "claim_fields", "expected_field"),
+    [
+        ("github.com", {"name": "octocat", "email": "octo@example.com", "email_verified": True}, "email"),
+        ("google.com", {"name": "Ada", "email": "ada@example.com", "email_verified": True, "picture": "https://example.test/ada.png"}, "email"),
+    ],
+)
+def test_provider_claims_create_one_profile(tmp_path, monkeypatch, provider, claim_fields, expected_field):
+    from app.routes.auth import current_claims
+
     monkeypatch.setenv("PR_MENTOR_STORAGE", "sqlite")
-    monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / "auth.sqlite3"))
-    monkeypatch.setenv("PR_MENTOR_COOKIE_SECURE", "false")
-    with TestClient(app) as client:
-        account = {"email": "user@example.com", "password": "correct horse battery staple"}
-        assert client.post("/api/auth/register", json=account).status_code == 201
-        assert client.post("/api/auth/register", json=account).status_code == 409
-        assert client.post("/api/auth/login", json={**account, "password": "incorrect password"}).status_code == 401
-        assert client.post("/api/auth/login", json=account).status_code == 200
+    monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / f"{provider}.sqlite3"))
+    claims = {"uid": f"uid-{provider}", "firebase": {"sign_in_provider": provider}, **claim_fields}
+    app.dependency_overrides[current_claims] = lambda: claims
+    try:
+        client = TestClient(app)
+        profile = client.post("/api/auth/firebase/verify").json()["user"]
+        assert profile["firebase_uid"] == claims["uid"]
+        assert profile[expected_field] == claim_fields[expected_field]
+        assert provider in profile["providers"]
+        assert client.post("/api/auth/firebase/verify").json()["user"]["firebase_uid"] == claims["uid"]
+    finally:
+        app.dependency_overrides.pop(current_claims, None)
 
 
-def test_review_data_requires_authentication():
-    with TestClient(app) as client:
-        assert client.get("/api/reviews/history").status_code == 401
-        assert client.get("/api/reviews/saved").status_code == 401
-        assert client.get("/api/learning/progress").status_code == 401
+def test_linked_provider_login_preserves_verified_profile_fields(tmp_path, monkeypatch):
+    from app.routes.auth import current_claims
 
-
-def test_session_cookie_is_secure_by_default(tmp_path, monkeypatch):
     monkeypatch.setenv("PR_MENTOR_STORAGE", "sqlite")
-    monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / "secure-cookie.sqlite3"))
-    monkeypatch.delenv("PR_MENTOR_COOKIE_SECURE", raising=False)
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/auth/register",
-            json={"email": "secure@example.com", "password": "correct horse battery staple"},
-        )
-    assert response.status_code == 201
-    assert "; Secure" in response.headers["set-cookie"]
-
-
-def test_cookie_secure_rejects_unrecognized_configuration(monkeypatch):
-    monkeypatch.setenv("PR_MENTOR_COOKIE_SECURE", "sometimes")
-    with pytest.raises(ValueError, match="must be 'true' or 'false'"):
-        cookie_secure()
+    monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / "linked.sqlite3"))
+    client = TestClient(app)
+    try:
+        first = {"uid": "linked-uid", "email": "ada@example.com", "email_verified": True, "name": "Ada", "firebase": {"sign_in_provider": "google.com"}}
+        app.dependency_overrides[current_claims] = lambda: first
+        client.post("/api/auth/firebase/verify")
+        second = {"uid": "linked-uid", "name": "Ada Lovelace", "firebase": {"sign_in_provider": "github.com"}}
+        app.dependency_overrides[current_claims] = lambda: second
+        profile = client.post("/api/auth/firebase/verify").json()["user"]
+        assert profile["email"] == "ada@example.com"
+        assert profile["email_verified"] is True
+        assert profile["providers"] == ["google.com", "github.com"]
+    finally:
+        app.dependency_overrides.pop(current_claims, None)

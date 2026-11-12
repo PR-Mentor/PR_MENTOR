@@ -45,11 +45,18 @@ from app.verification.ruff_runner import ToolExecutionError, run_ruff
 from app.verification.test_runner import run_tests
 
 
-async def analyze(request: AnalyzeRequest, *, owner_id: str | None = None) -> ReviewResponse:
+async def analyze(
+    request: AnalyzeRequest,
+    user_id: str | None = None,
+    github_token: str | None = None,
+    *,
+    owner_id: str | None = None,
+) -> ReviewResponse:
+    effective_id = user_id or owner_id
     if request.workspace_id:
         from app.database import workspaces
 
-        if owner_id is None or workspaces.get_role(request.workspace_id, owner_id) not in {
+        if effective_id is None or workspaces.get_role(request.workspace_id, effective_id) not in {
             "owner", "admin", "editor"
         }:
             raise ValueError("Workspace membership no longer permits this review job.")
@@ -86,11 +93,15 @@ async def analyze(request: AnalyzeRequest, *, owner_id: str | None = None) -> Re
                 if request.include_suggested_fixes else None
             ),
         })
-        await asyncio.to_thread(_persist, response, owner_id)
+        await asyncio.to_thread(_persist, response, effective_id)
         return response
 
     started = datetime.now(UTC)
-    bundle = await fetch_pull_request(submitted_url)
+    bundle = (
+        await fetch_pull_request(submitted_url, github_token=github_token)
+        if github_token
+        else await fetch_pull_request(submitted_url)
+    )
     warnings = list(bundle.warnings)
     diff_files = [parse_patch(item.model_dump()) for item in bundle.files[:100]]
     if len(bundle.files) > 100:
@@ -114,6 +125,11 @@ async def analyze(request: AnalyzeRequest, *, owner_id: str | None = None) -> Re
                 warnings.append("Static analysis was capped at 20 Python files.")
                 break
             try:
+                if github_token:
+                    content = await get_file_content(owner, repo, safe_name, head_sha, github_token=github_token)
+                else:
+                    content = await get_file_content(owner, repo, safe_name, head_sha)
+            except TypeError:
                 content = await get_file_content(owner, repo, safe_name, head_sha)
             except Exception:  # noqa: BLE001 - Missing source context is isolated to that file.
                 content = None
@@ -340,7 +356,7 @@ async def analyze(request: AnalyzeRequest, *, owner_id: str | None = None) -> Re
         verification_summary=counts, tool_results=tool_results, warnings=warnings,
         created_at=datetime.now(UTC), duration_ms=elapsed, diff_files=diff_files,
     )
-    await asyncio.to_thread(_persist, response, owner_id)
+    await asyncio.to_thread(_persist, response, effective_id)
     return response
 
 
@@ -392,13 +408,14 @@ def _static_finding(tool: str, item: Finding, root: Path) -> ReviewFinding:
     )
 
 
-def _persist(response: ReviewResponse, owner_id: str | None = None) -> None:
-    get_store().save_review(response.model_dump(mode="json"), owner_id=owner_id)
-    if response.workspace_id and owner_id:
+def _persist(response: ReviewResponse, user_id: str | None = None, *, owner_id: str | None = None) -> None:
+    effective_id = user_id or owner_id
+    get_store().save_review(response.model_dump(mode="json"), effective_id)
+    if response.workspace_id and effective_id:
         from app.database import workspaces
 
-        if workspaces.get_role(response.workspace_id, owner_id) in {"owner", "admin", "editor"}:
-            workspaces.link_review(response.workspace_id, response.review_id, owner_id)
+        if workspaces.get_role(response.workspace_id, effective_id) in {"owner", "admin", "editor"}:
+            workspaces.link_review(response.workspace_id, response.review_id, effective_id)
 
 
 def _populate_reconciliation(response: ReviewResponse, observations: list[FindingObservation]) -> None:

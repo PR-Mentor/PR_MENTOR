@@ -1,10 +1,14 @@
 """Narrow HTTP boundary for GitHub's public REST API."""
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import logging
 import math
+import os
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -24,99 +28,190 @@ _inflight_requests: dict[tuple[str, tuple[tuple[str, str], ...]], asyncio.Task[A
 _logger = logging.getLogger(__name__)
 
 
+class GitHubServiceError(RuntimeError):
+    """A GitHub request failed or returned an unusable response."""
+
+    def __init__(self, message: str, *, status_code: int = 502) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class GitHubAPIError(RuntimeError):
-    def __init__(self, message: str, status_code: int | None = None, *, rate_limit: dict[str, str] | None = None, kind: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        *,
+        rate_limit: dict[str, str] | None = None,
+        kind: str | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.rate_limit = rate_limit or {}
         self.kind = kind
 
 
-def headers() -> dict[str, str]:
+class GitHubClient:
+    """Fetch JSON from the fixed api.github.com host.
+
+    A caller may inject an httpx client for tests. ``GITHUB_TOKEN`` is optional
+    and only increases GitHub's rate limit; its value is never included in
+    errors or logs.
+    """
+
+    def __init__(
+        self,
+        *,
+        http_client: httpx.Client | None = None,
+        token: str | None = None,
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        self._http_client = http_client
+        self._token = os.getenv("GITHUB_TOKEN", "") if token is None else token
+        self._timeout_seconds = timeout_seconds
+
+    def get_json(self, path: str, *, params: Mapping[str, int] | None = None) -> Any:
+        if not path.startswith("/") or ".." in path.split("/"):
+            raise ValueError("GitHub API paths must be repository-relative API paths.")
+
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+
+        try:
+            if self._http_client is not None:
+                response = self._http_client.get(
+                    f"https://api.github.com{path}",
+                    params=params,
+                    headers=headers,
+                    timeout=self._timeout_seconds,
+                )
+                response.raise_for_status()
+                return response.json()
+
+            with httpx.Client(timeout=self._timeout_seconds) as client:
+                response = client.get(
+                    f"https://api.github.com{path}", params=params, headers=headers
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.TimeoutException as exc:
+            raise GitHubServiceError("GitHub did not respond before the request timed out.") from exc
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code == 404:
+                message = "The pull request was not found or is not publicly accessible."
+            elif status_code == 403:
+                message = "GitHub denied the request or its API rate limit was reached."
+            else:
+                message = f"GitHub returned HTTP {status_code}."
+            raise GitHubServiceError(message, status_code=status_code) from exc
+        except httpx.RequestError as exc:
+            raise GitHubServiceError("Could not connect to GitHub.") from exc
+        except ValueError as exc:
+            raise GitHubServiceError("GitHub returned invalid JSON.") from exc
+
+
+def headers(token: str | None = None) -> dict[str, str]:
     result = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    token = github_token()
-    if token:
-        result["Authorization"] = f"Bearer {token}"
+    active_token = token or github_token()
+    if active_token:
+        result["Authorization"] = f"Bearer {active_token}"
     return result
+
+
+def async_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(base_url=API_ROOT, timeout=http_timeout(), headers=headers())
 
 
 async def request_json(
     client: httpx.AsyncClient,
     path: str,
-    *,
     params: dict[str, Any] | None = None,
+    *,
     use_cache: bool = True,
 ) -> Any:
-    if not path.startswith("/") or path.startswith("//") or ".." in path.split("/"):
-        raise ValueError("GitHub API paths must be relative to the fixed API host.")
-    if not use_cache:
-        # Freshness checks must not use either a cached response or an
-        # in-flight request that may have started before the current check.
-        return await _request_json_uncached(client, path, params, None)
-    cache_key = (path, tuple(sorted((str(k), str(v)) for k, v in (params or {}).items())))
-    now = time.monotonic()
-    cached = _response_cache.get(cache_key)
-    if cached and cached[0] > now:
-        return copy.deepcopy(cached[1])
-    _response_cache.pop(cache_key, None)
+    cache_key: tuple[str, tuple[tuple[str, str], ...]] | None = None
+    if use_cache:
+        normalized_params = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
+        cache_key = (path, normalized_params)
+        cached = _response_cache.get(cache_key)
+        if cached is not None:
+            expires_at, data = cached
+            if time.monotonic() < expires_at:
+                return copy.deepcopy(data)
+            _response_cache.pop(cache_key, None)
+        task = _inflight_requests.get(cache_key)
+        if task is not None:
+            # Use shield() so a cancellation of this coroutine does not cancel
+            # the shared inflight task that other waiters depend on.
+            return copy.deepcopy(await asyncio.shield(task))
 
-    task = _inflight_requests.get(cache_key)
-    if task is None:
-        task = asyncio.create_task(_request_json_uncached(client, path, params, cache_key))
+    task = asyncio.create_task(_execute_request(client, path, params, cache_key=cache_key))
+    if cache_key is not None:
         _inflight_requests[cache_key] = task
-        task.add_done_callback(lambda completed, key=cache_key: _cleanup_inflight(key, completed))
-    # An individual request cancellation must not cancel work shared by other
-    # callers. The HTTP client's timeout bounds the shared request lifetime.
+        task.add_done_callback(lambda done: _cleanup_inflight(cache_key, done))
+    # Shield the shared task from cancellation so other waiters are not disrupted.
+    # If this caller is cancelled, wait for the task to finish before propagating.
     try:
-        return copy.deepcopy(await asyncio.shield(task))
+        return await asyncio.shield(task)
     except asyncio.CancelledError:
-        # Keep the caller's client context alive until the shared operation
-        # finishes; otherwise its context manager could close a client still
-        # being used by other waiters. The configured HTTP timeout bounds this.
-        try:
-            await asyncio.shield(task)
-        except (asyncio.CancelledError, GitHubAPIError, httpx.HTTPError, ValueError, TypeError, RuntimeError) as exc:
-            _logger.debug("Shared GitHub request finished after cancellation (%s).", type(exc).__name__)
+        await task
         raise
 
 
-async def _request_json_uncached(
+async def _execute_request(
     client: httpx.AsyncClient,
     path: str,
     params: dict[str, Any] | None,
-    cache_key: tuple[str, tuple[tuple[str, str], ...]] | None,
+    *,
+    cache_key: tuple[str, tuple[tuple[str, str], ...]] | None = None,
 ) -> Any:
+    # Resolve relative paths — tests may inject a client without a base_url.
+    url = path if path.startswith("http") else f"{API_ROOT}{path}"
     for attempt in range(MAX_RETRIES + 1):
         try:
-            response = await client.get(f"{API_ROOT}{path}", params=params, headers=headers())
+            response = await client.get(url, params=params)
         except httpx.TimeoutException as exc:
-            raise GitHubAPIError("GitHub did not respond in time.") from exc
+            raise GitHubAPIError("GitHub API request timed out.", 504) from exc
         except httpx.RequestError as exc:
-            raise GitHubAPIError("GitHub is temporarily unavailable.") from exc
-        if response.status_code >= 400:
+            raise GitHubAPIError("GitHub API could not be reached.", 503) from exc
+
+        if response.status_code == 404:
+            raise GitHubAPIError("The requested GitHub repository or pull request was not found.", 404)
+        if response.status_code == 401:
+            raise GitHubAPIError("GitHub rejected the configured API credential.", 401)
+        if response.status_code in {403, 429}:
             details = _rate_limit_headers(response)
             message = _error_message(response)
             kind = _rate_limit_kind(response, details, message)
-            if kind:
-                retry_at = _retry_at(details)
-                if attempt < MAX_RETRIES:
-                    delay = _retry_delay(attempt, details, kind)
-                    # Do not wait beyond the bounded retry budget. Return the
-                    # provider's retry estimate so callers can retry later.
-                    if delay is not None:
-                        await asyncio.sleep(delay)
-                        continue
-                friendly = "GitHub primary rate limit reached." if kind == "primary" else "GitHub secondary rate limit reached."
-                if retry_at:
-                    friendly += f" Try again after {retry_at}."
-                elif details.get("retry-after"):
+            if kind is not None and attempt < MAX_RETRIES:
+                delay = _retry_delay(attempt, details, kind)
+                if delay is not None:
+                    _logger.warning("GitHub rate limit encountered (%s); backing off for %.2fs", kind, delay)
+                    await asyncio.sleep(delay)
+                    continue
+            if kind is not None:
+                if kind == "primary":
+                    friendly = "GitHub primary rate limit exceeded."
+                else:
+                    friendly = "GitHub API rate limit exceeded."
+                if details.get("retry-after"):
                     retry_after = _retry_after_seconds(details["retry-after"])
                     if retry_after is not None:
                         friendly += f" Retry after {retry_after:g} seconds."
                     else:
                         retry_at = _retry_after_date(details["retry-after"])
                         if retry_at:
-                            friendly += f" Try again after {retry_at}."
+                            friendly += f" Retry after {retry_at}."
+                elif kind == "primary":
+                    # Use x-ratelimit-reset for primary rate limit reset time
+                    retry_at = _retry_at(details)
+                    if retry_at:
+                        friendly += f" Try again after {retry_at}."
                 raise GitHubAPIError(friendly, 429, rate_limit=details, kind=kind)
             raise GitHubAPIError(message, response.status_code, rate_limit=details)
         try:
@@ -134,8 +229,6 @@ async def _request_json_uncached(
 def _cleanup_inflight(key: tuple[str, tuple[tuple[str, str], ...]], task: asyncio.Task[Any]) -> None:
     if _inflight_requests.get(key) is task:
         _inflight_requests.pop(key, None)
-    # Retrieve exceptions even if every waiter was cancelled, avoiding an
-    # unobserved-task warning. Awaiting callers still receive the exception.
     if not task.cancelled():
         task.exception()
 
@@ -149,7 +242,6 @@ def _error_message(response: httpx.Response) -> str:
     try:
         body = response.json()
         if isinstance(body, dict) and isinstance(body.get("message"), str):
-            # Never reflect credentials, even if an upstream error body does.
             message = body["message"]
             token = github_token()
             return message.replace(token, "[redacted]") if token else message
@@ -211,7 +303,3 @@ def _retry_after_date(value: str) -> datetime | None:
         return parsed.astimezone(UTC)
     except (TypeError, ValueError, OverflowError):
         return None
-
-
-def async_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(timeout=http_timeout(), follow_redirects=False)

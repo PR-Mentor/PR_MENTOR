@@ -7,6 +7,9 @@ from fastapi.testclient import TestClient
 from app.data.sample_reviews import sample_review
 from app.database.reviews import get_store
 from app.main import app
+import hashlib
+from app.database import auth as auth_store
+from app.routes.auth import current_claims
 from app.schemas.finding import ReviewFinding
 from app.schemas.github import ChangedFile, PullRequestBundle, PullRequestMetadata
 

@@ -7,7 +7,7 @@ from app.config import cors_origins
 from app.database.mongo_connection import close_mongo_client
 from app.database.reviews import get_store
 from app.routes.analytics import router as analytics_router
-from app.routes.auth import router as auth_router
+from app.routes.auth import legacy_router as legacy_auth_router, router as auth_router
 from app.routes.benchmarks import router as benchmarks_router
 from app.routes.learning import router as learning_router
 from app.routes.review import router as review_router
@@ -33,18 +33,18 @@ app.add_middleware(
 )
 
 
-@app.middleware("http")
-async def enforce_browser_origin(request, call_next):
-    """Reject cross-origin cookie-authenticated state changes, including same-site subdomains."""
-    origin = request.headers.get("origin")
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and origin is not None and origin not in cors_origins():
-        from fastapi.responses import JSONResponse
+@app.get("/", tags=["default"])
+def root():
+    return {
+        "service": "PR Mentor API",
+        "status": "ok",
+        "docs": "/docs",
+        "health": "/health",
+        "readiness": "/api/health/ready",
+    }
 
-        return JSONResponse(status_code=403, content={"detail": "Request origin is not allowed."})
-    return await call_next(request)
 
-
-@app.get("/health")
+@app.get("/health", tags=["default"])
 def health():
     return {"status": "ok", "service": "pr-mentor"}
 
@@ -66,6 +66,7 @@ def readiness():
 app.include_router(review_router)
 app.include_router(learning_router)
 app.include_router(auth_router)
+app.include_router(legacy_auth_router)
 app.include_router(analytics_router)
 app.include_router(workspaces_router)
 app.include_router(benchmarks_router)
