@@ -1,11 +1,11 @@
 """Stable educational data; never describes or analyzes the submitted PR."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from hashlib import sha256
 
+from app.schemas.finding import ReviewFinding
 from app.schemas.github import PullRequestMetadata
 from app.schemas.review import ReviewResponse
-from app.schemas.finding import ReviewFinding
 
 
 def sample_review(owner: str, repo: str, number: int) -> ReviewResponse:
@@ -20,5 +20,5 @@ def sample_review(owner: str, repo: str, number: int) -> ReviewResponse:
         summary="Illustrative demo only. No submitted repository code or external analyzer was inspected.", findings=items,
         verification_summary={"verified": 0, "needs_review": len(items), "unsupported": 0},
         tool_results=[{"tool": "demo_dataset", "status": "sample", "executed": False, "reason": "Educational sample data only."}],
-        warnings=["Demo data only. Findings do not describe the submitted pull request."], created_at=datetime.now(timezone.utc), duration_ms=0, diff_files=[],
+        warnings=["Demo data only. Findings do not describe the submitted pull request."], created_at=datetime.now(UTC), duration_ms=0, diff_files=[],
     )

@@ -2,25 +2,32 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Activity, ArrowRight, Bookmark, BookOpen, CheckCircle2, ChevronRight, CircleAlert,
-  ChevronDown, Code2, ExternalLink, FileCode2,
-  GitPullRequest, GraduationCap, History, LoaderCircle, LogOut, Menu, Search,
-  Moon, ShieldCheck, Sparkles, Sun, X,
+  Activity, ArrowRight, BarChart3, Bookmark, BookOpen, CheckCircle2, ChevronRight, ChevronDown, CircleAlert,
+  Code2, ExternalLink, FileCode2,
+  GitPullRequest, GraduationCap, History, LoaderCircle, LogOut, Menu, Moon, Search,
+  ShieldCheck, Sparkles, Sun, UserRound, Users, X,
 } from 'lucide-react';
 import {
-  analyzePullRequest, deleteSavedPullRequest, getLearningExercises, getLearningHistory,
+  analyzePullRequest, deleteSavedPullRequest, getLearningExercises, getLearningHistory, getLearningInsights,
   getLearningProgress, getReview, getReviewDiff, getReviewHistory, getSavedPullRequests,
-  savePullRequest, submitExercise,
+  getCurrentUser, getPersonalAnalytics, getReviewJob, enqueueReview, login, logout, register, savePullRequest, submitExercise,
+  setSuggestedFixDecision,
 } from './services/api';
+import type { CurrentUser } from './services/api';
+import { getReviewRouteView, loadReviewRoute, resolvePageRoute } from './services/review-route.js';
+import ReviewWorkspacePage from './pages/ReviewWorkspacePage';
+import WorkspacesPage from './pages/WorkspacesPage';
+import BenchmarksPage from './pages/BenchmarksPage';
+import DeveloperProfilePage from './pages/DeveloperProfilePage';
 import type {
   AnalysisMode, DiffFile, LearningExercise, LearningHistory, LearningProgress,
-  LearningResult, ReviewFinding, ReviewResponse, SavedPullRequest, Severity,
+  LearningInsights, LearningResult, PersonalAnalytics, ReviewFinding, ReviewResponse, SavedPullRequest, Severity, SuggestedFix,
 } from './types/review';
 import { useAuth } from './auth/AuthContext';
 import LoginPage from './pages/LoginPage';
 import LandingPage from './components/LandingPage';
 
-type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning';
+type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces' | 'benchmarks';
 type Theme = 'light' | 'dark';
 
 function setDocumentTheme(theme: Theme) {
@@ -34,12 +41,11 @@ const nav: Array<{ id: Page; label: string; icon: typeof Search }> = [
   { id: 'history', label: 'Recent reviews', icon: History },
   { id: 'saved', label: 'Saved pull requests', icon: Bookmark },
   { id: 'learning', label: 'Learning lab', icon: GraduationCap },
+  { id: 'analytics', label: 'Insights & analytics', icon: BarChart3 },
+  { id: 'profile', label: 'Developer profile', icon: UserRound },
+  { id: 'workspaces', label: 'Workspaces', icon: Users },
+  { id: 'benchmarks', label: 'Benchmarks', icon: BarChart3 },
 ];
-
-function pageFromPath(path: string): Page {
-  const value = path.replace(/^\//, '');
-  return ['review', 'history', 'saved', 'diff', 'learning'].includes(value) ? value as Page : 'discover';
-}
 
 function formatDate(value?: string) {
   if (!value) return 'Date unavailable';
@@ -65,7 +71,8 @@ function Workspace() {
   const auth = useAuth();
   const navigateRouter = useNavigate();
   const location = useLocation();
-  const page = pageFromPath(location.pathname);
+  const route = useMemo(() => resolvePageRoute(location.pathname), [location.pathname]);
+  const page = route.page as Page;
   const [mobileNav, setMobileNav] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
@@ -79,7 +86,9 @@ function Workspace() {
   const [mode, setMode] = useState<AnalysisMode>('demo');
   const [review, setReview] = useState<ReviewResponse | null>(null);
   const [reviewError, setReviewError] = useState('');
+  const [reviewNotFound, setReviewNotFound] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewJob, setReviewJob] = useState<{ job_id: string; status: string; message?: string } | null>(null);
   const [history, setHistory] = useState<ReviewResponse[]>([]);
   const [historyState, setHistoryState] = useState<'idle' | 'loading' | 'error' | 'ready'>('idle');
   const [historyError, setHistoryError] = useState('');
@@ -101,9 +110,30 @@ function Workspace() {
   const [answerResult, setAnswerResult] = useState<LearningResult | null>(null);
   const [answerError, setAnswerError] = useState('');
   const [answerBusy, setAnswerBusy] = useState(false);
+  const [user, setUser] = useState<CurrentUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [analytics, setAnalytics] = useState<PersonalAnalytics | null>(null);
+  const [insights, setInsights] = useState<LearningInsights | null>(null);
+  const [analyticsState, setAnalyticsState] = useState<'idle' | 'loading' | 'error' | 'ready'>('idle');
+  const [analyticsError, setAnalyticsError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    getCurrentUser().then((value) => { if (active) setUser(value); })
+      .catch(() => { if (active) setUser(null); })
+      .finally(() => { if (active) setAuthLoading(false); });
+    return () => { active = false; };
+  }, []);
 
   const go = useCallback((next: Page) => {
     navigateRouter(next === 'discover' ? '/' : `/${next}`);
+    setMobileNav(false);
+    if (mobileViewport) mobileMenuRef.current?.focus();
+    window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  }, [mobileViewport, navigateRouter]);
+
+  const openReviewRoute = useCallback((reviewId: string) => {
+    navigateRouter(`/reviews/${encodeURIComponent(reviewId)}`);
     setMobileNav(false);
     if (mobileViewport) mobileMenuRef.current?.focus();
     window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
@@ -116,6 +146,53 @@ function Workspace() {
     viewport.addEventListener('change', updateViewport);
     return () => viewport.removeEventListener('change', updateViewport);
   }, []);
+
+  useEffect(() => {
+    const reviewId = route.reviewId;
+    if (reviewId === null || review?.review_id === reviewId) return;
+    let active = true;
+    void loadReviewRoute(reviewId, getReview, (state) => {
+      if (!active) return;
+      if (state.status === 'loading') {
+        setReview(null);
+        setReviewError('');
+        setReviewNotFound(false);
+        setReviewBusy(true);
+      } else if (state.status === 'success') {
+        setReview(state.review);
+        setUrl(state.review.pull_request.pull_request_url);
+        setMode(state.review.analysis_mode);
+        setReviewError('');
+        setReviewNotFound(false);
+        setReviewBusy(false);
+      } else {
+        setReview(null);
+        setReviewError(state.message);
+        setReviewNotFound(state.status === 'not_found');
+        setReviewBusy(false);
+      }
+    });
+    return () => { active = false; };
+  }, [route.reviewId]);
+
+  useEffect(() => {
+    if (!reviewJob || !['queued', 'running'].includes(reviewJob.status)) return;
+    let active = true;
+    const timer = window.setInterval(() => {
+      void getReviewJob(reviewJob.job_id).then(async (job) => {
+        if (!active) return;
+        if (job.status === 'completed' && job.review_id) {
+          const result = await getReview(job.review_id);
+          if (active) { setReview(result); openReviewRoute(result.review_id); }
+          return;
+        }
+        setReviewJob({ job_id: job.job_id, status: job.status, message: job.error_code ?? undefined });
+      }).catch((error: unknown) => {
+        if (active) setReviewJob((current) => current ? { ...current, message: error instanceof Error ? error.message : 'Unable to read job status.' } : null);
+      });
+    }, 2000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [reviewJob?.job_id, reviewJob?.status, openReviewRoute]);
 
   useEffect(() => {
     if (!profileMenuOpen) return;
@@ -155,6 +232,7 @@ function Workspace() {
   const runAnalysis = async (event: FormEvent) => {
     event.preventDefault();
     setReviewError('');
+    setReviewNotFound(false);
     if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\/?(?:[?#].*)?$/i.test(url.trim())) {
       setReviewError('Enter a public GitHub pull request URL, such as https://github.com/owner/repo/pull/42.');
       return;
@@ -164,7 +242,7 @@ function Workspace() {
     try {
       const result = await analyzePullRequest(url.trim(), mode);
       setReview(result);
-      go('review');
+      openReviewRoute(result.review_id);
     } catch (error) {
       setReviewError(error instanceof Error ? error.message : 'The review could not be loaded.');
     } finally {
@@ -172,23 +250,25 @@ function Workspace() {
     }
   };
 
-  const openReview = async (reviewId: string) => {
+  const queueAnalysis = async () => {
     setReviewError('');
+    if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+\/?(?:[?#].*)?$/i.test(url.trim())) {
+      setReviewError('Enter a public GitHub pull request URL before queueing a review.');
+      return;
+    }
     setReviewBusy(true);
+    setReviewJob(null);
     try {
-      const result = await getReview(reviewId);
-      setReview(result);
-      setUrl(result.pull_request.pull_request_url);
-      setMode(result.analysis_mode);
-      go('review');
+      const job = await enqueueReview(url.trim(), mode);
+      setReviewJob(job);
     } catch (error) {
-      setReview(null);
-      setReviewError(error instanceof Error ? error.message : 'This review is unavailable.');
-      go('review');
+      setReviewError(error instanceof Error ? error.message : 'The review could not be queued.');
     } finally {
       setReviewBusy(false);
     }
   };
+
+  const openReview = (reviewId: string) => openReviewRoute(reviewId);
 
   const refreshSaved = useCallback(async () => {
     setSavedState('loading'); setSavedError('');
@@ -219,7 +299,22 @@ function Workspace() {
         })
         .catch((error: unknown) => { setLearningError(error instanceof Error ? error.message : 'Learning exercises are unavailable.'); setLearningState('error'); });
     }
+    if (page === 'analytics') {
+      setAnalyticsState('loading'); setAnalyticsError('');
+      Promise.all([getPersonalAnalytics(), getLearningInsights()])
+        .then(([metrics, learning]) => { setAnalytics(metrics); setInsights(learning); setAnalyticsState('ready'); })
+        .catch((error: unknown) => { setAnalyticsError(error instanceof Error ? error.message : 'Analytics are unavailable.'); setAnalyticsState('error'); });
+    }
   }, [page, refreshSaved, review?.review_id]);
+
+  useEffect(() => {
+    if (page !== 'review' || route.reviewId === null) return;
+    let active = true;
+    setHistoryState('loading'); setHistoryError('');
+    getReviewHistory().then((items) => { if (active) { setHistory(items); setHistoryState('ready'); } })
+      .catch((error: unknown) => { if (active) { setHistoryError(error instanceof Error ? error.message : 'Review history is unavailable.'); setHistoryState('error'); } });
+    return () => { active = false; };
+  }, [page, route.reviewId]);
 
   const saveCurrent = async () => {
     if (!review?.pull_request.pull_request_url) return;
@@ -228,6 +323,18 @@ function Workspace() {
       await savePullRequest(review.pull_request.pull_request_url);
       setSaveMessage('Pull request saved to your account. Review history is saved automatically.');
     } catch (error) { setSaveMessage(error instanceof Error ? error.message : 'Could not save this pull request.'); }
+  };
+
+  const decideFix = async (issueId: string, fixId: string, decision: 'accepted' | 'rejected') => {
+    if (!review) return;
+    const updated = await setSuggestedFixDecision(review.review_id, issueId, fixId, decision) as SuggestedFix;
+    setReview((current) => current ? {
+      ...current,
+      canonical_issues: current.canonical_issues?.map((issue) => issue.issue_id !== issueId ? issue : {
+        ...issue,
+        suggested_fixes: issue.suggested_fixes?.map((fix) => fix.fix_id === fixId ? updated : fix),
+      }),
+    } : current);
   };
 
   const removeSaved = async (item: SavedPullRequest) => {
@@ -251,12 +358,17 @@ function Workspace() {
   };
 
   const activeExerciseData = exercises.find((item) => item.id === activeExercise);
-  const activeTitle = useMemo(() => ({ discover: 'Discover', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab' }[page]), [page]);
+  const activeTitle = useMemo(() => ({ discover: 'Discover', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab', analytics: 'Insights & analytics', profile: 'Developer profile', workspaces: 'Workspaces', benchmarks: 'Benchmarks' }[page]), [page]);
+  const reviewRouteView = getReviewRouteView(route.reviewId, review, reviewBusy, reviewError, reviewNotFound);
+
   const toggleTheme = () => {
     const nextTheme = theme === 'dark' ? 'light' : 'dark';
     setTheme(nextTheme);
     setDocumentTheme(nextTheme);
   };
+
+  if (authLoading) return <div className="auth-loading" role="status">Loading your PR Mentor workspace…</div>;
+  if (!user) return <AuthScreen onAuthenticated={setUser}/>;
 
   return (
     <div className="app-shell">
@@ -300,11 +412,17 @@ function Workspace() {
         <main className="main-content">
           {page === 'discover' && <LandingPage url={url} setUrl={(value) => { setUrl(value); setReviewError(''); }} mode={mode} setMode={setMode} busy={reviewBusy} error={reviewError} onSubmit={runAnalysis}/>}
 
-          {page === 'review' && <ReviewPage review={review} busy={reviewBusy} error={reviewError} onRetry={() => go('discover')} onSave={saveCurrent} saveMessage={saveMessage} onDiff={() => go('diff')}/>}
+          {page === 'review' && route.reviewId !== null && reviewRouteView.review
+            ? <ReviewWorkspacePage accountId={user?.user_id ?? ''} review={reviewRouteView.review} history={history} historyState={historyState} historyError={historyError} diffFiles={reviewRouteView.review.diff_files ?? []} diffWarnings={diffWarnings} onBackToHistory={() => go('history')} onSave={() => void saveCurrent()} saveMessage={saveMessage} onOpenDiff={() => go('diff')} onOpenReview={openReview} onFixDecision={decideFix}/>
+            : page === 'review' && <ReviewPage review={reviewRouteView.review} busy={reviewRouteView.busy} error={reviewRouteView.error} notFound={reviewRouteView.notFound} onRetry={() => go(reviewRouteView.notFound ? 'history' : 'discover')} onSave={saveCurrent} saveMessage={saveMessage} onDiff={() => go('diff')}/>}
           {page === 'history' && <HistoryPage state={historyState} error={historyError} items={history} onOpen={openReview} onDiscover={() => go('discover')}/>}
           {page === 'saved' && <SavedPage state={savedState} error={savedError} items={saved} onRemove={removeSaved} onSelect={selectSaved} onRefresh={() => void refreshSaved()} onDiscover={() => go('discover')}/>}
-          {page === 'diff' && <DiffPage review={review} state={diffState} error={diffError} files={diff} warnings={diffWarnings} onBack={() => go('review')} onDiscover={() => go('discover')}/>}
+          {page === 'diff' && <DiffPage review={review} state={diffState} error={diffError} files={diff} warnings={diffWarnings} onBack={() => review?.review_id ? openReviewRoute(review.review_id) : go('review')} onDiscover={() => go('discover')}/>}
           {page === 'learning' && <LearningPage state={learningState} error={learningError} exercises={exercises} active={activeExerciseData} setActive={(id) => { setActiveExercise(id); setAnswer(''); setAnswerResult(null); setAnswerError(''); }} answer={answer} setAnswer={setAnswer} result={answerResult} answerError={answerError} busy={answerBusy} progress={progress} history={learningHistory} onSubmit={submitAnswer}/>}
+          {page === 'analytics' && <AnalyticsPage state={analyticsState} error={analyticsError} analytics={analytics} insights={insights} onRetry={() => go('analytics')}/>}
+          {page === 'profile' && <DeveloperProfilePage user={user} onOpenReview={openReviewRoute} onOpenLearning={() => go('learning')} onOpenHistory={() => go('history')}/>}
+          {page === 'workspaces' && <WorkspacesPage onOpenReview={openReviewRoute}/>}
+          {page === 'benchmarks' && <BenchmarksPage/>}
           <footer className="footer"><span>PR Mentor <i>·</i> Review with care.</span><span>API data is shown as returned; unavailable services are labeled.</span></footer>
         </main>
       </div>
@@ -312,9 +430,34 @@ function Workspace() {
   );
 }
 
-function ReviewPage({ review, busy, error, onRetry, onSave, saveMessage, onDiff }: { review: ReviewResponse | null; busy: boolean; error: string; onRetry: () => void; onSave: () => void; saveMessage: string; onDiff: () => void }) {
+function AuthScreen({ onAuthenticated }: { onAuthenticated: (user: CurrentUser) => void }) {
+  const [creating, setCreating] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setError('');
+    try { onAuthenticated(await (creating ? register(email, password) : login(email, password))); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Authentication failed.'); }
+    finally { setBusy(false); }
+  };
+  return <main className="auth-shell"><form className="auth-card" onSubmit={submit}>
+    <div className="brand-mark"><Code2 size={17}/><i/></div><p className="eyebrow">PR MENTOR WORKSPACE</p>
+    <h1>{creating ? 'Create your account' : 'Welcome back'}</h1>
+    <p>Your review history and learning progress are private to your account.</p>
+    <label>Email<input type="email" autoComplete="email" required maxLength={320} value={email} onChange={(event) => setEmail(event.target.value)}/></label>
+    <label>Password<input type="password" autoComplete={creating ? 'new-password' : 'current-password'} required minLength={12} maxLength={256} value={password} onChange={(event) => setPassword(event.target.value)}/></label>
+    {error && <div className="alert error-alert" role="alert">{error}</div>}
+    <button className="primary-button" type="submit" disabled={busy}>{busy ? 'Please wait…' : creating ? 'Create account' : 'Sign in'}</button>
+    <button className="auth-switch" type="button" onClick={() => { setCreating((value) => !value); setError(''); }}>{creating ? 'Already have an account? Sign in' : 'New to PR Mentor? Create an account'}</button>
+    <small>Use a unique password. Sessions expire after 14 days.</small>
+  </form></main>;
+}
+
+function ReviewPage({ review, busy, error, notFound, onRetry, onSave, saveMessage, onDiff }: { review: ReviewResponse | null; busy: boolean; error: string; notFound: boolean; onRetry: () => void; onSave: () => void; saveMessage: string; onDiff: () => void }) {
   if (busy) return <LoadingState title="Loading review" detail="Waiting for the PR Mentor API."/>;
-  if (error && !review) return <ErrorState title="Review unavailable" message={error} action="Back to analysis" onAction={onRetry}/>;
+  if (error && !review) return <ErrorState title={notFound ? 'Review not found' : 'Review unavailable'} message={error} action={notFound ? 'Back to reviews' : 'Back to analysis'} onAction={onRetry}/>;
   if (!review) return <EmptyState icon={<GitPullRequest size={22}/>} title="No review loaded" detail="Analyze a pull request in demo or live mode to open a review workspace." action="Analyze a PR" onAction={onRetry}/>;
   const pr = review.pull_request;
   const isDemo = review.is_demo || review.analysis_mode === 'demo';
@@ -326,7 +469,7 @@ function ReviewPage({ review, busy, error, onRetry, onSave, saveMessage, onDiff 
     {!isDemo && <div className="alert live-alert"><ShieldCheck size={17}/><span>Live PR metadata and available checks. Submitted code was not executed; analyzer and AI availability is listed below.</span></div>}
     {review.warnings.length > 0 && <div className="warning-list" aria-label="Review warnings">{review.warnings.map((warning, index) => <div key={`${index}-${warning}`}><CircleAlert size={15}/>{warning}</div>)}</div>}
     <div className="review-summary"><div><span>FINDINGS</span><strong>{review.findings.length}</strong></div><div><span>VERIFIED</span><strong>{review.verification_summary.verified ?? 0}</strong></div><div><span>NEEDS REVIEW</span><strong>{review.verification_summary.needs_review ?? 0}</strong></div><div><span>UNSUPPORTED</span><strong>{review.verification_summary.unsupported ?? 0}</strong></div></div>
-    <div className="results-heading"><div><span className="section-index">02</span><div><h2>Findings & evidence</h2><p>{review.findings.length ? 'Each item retains its source and verification status.' : 'No findings were returned for this review.'}</p></div></div><span>{review.findings.length} TOTAL</span></div>
+    <div className="results-heading"><div><span className="section-index">02</span><div><h2>Findings &amp; evidence</h2><p>{review.findings.length ? 'Each item retains its source and verification status.' : 'No findings were returned for this review.'}</p></div></div><span>{review.findings.length} TOTAL</span></div>
     {review.findings.length ? <div className="finding-list">{review.findings.map((finding) => <Finding key={finding.id} finding={finding}/>)}</div> : <div className="empty-inline"><CheckCircle2 size={18}/><span>No findings were returned. Check the tool results and warnings before treating this as a clean bill of health.</span></div>}
     <section className="tool-results"><div className="results-heading compact"><div><span className="section-index">03</span><div><h2>Analysis tools</h2><p>Backend-reported status; this is not a test-run summary.</p></div></div></div>{review.tool_results.length ? <div className="tool-table">{review.tool_results.map((tool, index) => <div className="tool-row" key={`${tool.tool}-${index}`}><span className="tool-name">{tool.tool}</span><span className={`tool-status status-${tool.status.replace(/[^a-z]/gi, '-').toLowerCase()}`}>{pretty(tool.status)}</span><span>{tool.reason ?? tool.message ?? (tool.findings ? `${tool.findings.length} diagnostics` : tool.executed === false ? 'Submitted code not executed' : 'Status returned by API')}</span></div>)}</div> : <div className="empty-inline">No tool status was returned.</div>}</section>
     <div className="review-meta"><span>Created {formatDate(review.created_at)}</span><span>{review.duration_ms} ms reported</span><span>Review ID <code>{review.review_id}</code></span></div>
@@ -344,7 +487,7 @@ function Finding({ finding }: { finding: ReviewFinding }) {
 function SeverityBadge({ severity }: { severity: Severity }) { return <span className={`severity-badge severity-${severity}`}><i/>{pretty(severity)}</span>; }
 
 function HistoryPage({ state, error, items, onOpen, onDiscover }: { state: string; error: string; items: ReviewResponse[]; onOpen: (id: string) => void; onDiscover: () => void }) {
-  return <section className="content-page"><PageHeading eyebrow="WORKSPACE / REVIEWS" title="Recent reviews" intro="Reviews stored by the configured backend."/>{state === 'loading' && <LoadingState title="Loading history" detail="Fetching recent reviews from the API."/>}{state === 'error' && <ErrorState title="History unavailable" message={error} action="Try analysis" onAction={onDiscover}/ >}{state === 'ready' && (items.length ? <div className="record-list">{items.map((item) => <button className="record-row" key={item.review_id} type="button" onClick={() => onOpen(item.review_id)}><span className="record-icon"><GitPullRequest size={17}/></span><span className="record-main"><strong>{item.pull_request.title}</strong><small>{item.pull_request.repository_owner}/{item.pull_request.repository_name} · #{item.pull_request.pull_request_number}</small></span><span className={`mode-badge ${item.is_demo ? 'demo' : 'live'}`}>{item.is_demo ? 'Demo' : 'Live'}</span><span className="record-time">{formatDate(item.created_at)}</span><ArrowRight size={15}/></button>)}</div> : <EmptyState icon={<History size={22}/>} title="No saved reviews" detail="The backend has not stored a review yet." action="Analyze a PR" onAction={onDiscover}/> )}</section>;
+  return <section className="content-page"><PageHeading eyebrow="WORKSPACE / REVIEWS" title="Recent reviews" intro="Reviews stored by the configured backend."/>{state === 'loading' && <LoadingState title="Loading history" detail="Fetching recent reviews from the API."/>}{state === 'error' && <ErrorState title="History unavailable" message={error} action="Try analysis" onAction={onDiscover}/>}{state === 'ready' && (items.length ? <div className="record-list">{items.map((item) => <button className="record-row" key={item.review_id} type="button" onClick={() => onOpen(item.review_id)}><span className="record-icon"><GitPullRequest size={17}/></span><span className="record-main"><strong>{item.pull_request.title}</strong><small>{item.pull_request.repository_owner}/{item.pull_request.repository_name} · #{item.pull_request.pull_request_number}</small></span><span className={`mode-badge ${item.is_demo ? 'demo' : 'live'}`}>{item.is_demo ? 'Demo' : 'Live'}</span><span className="record-time">{formatDate(item.created_at)}</span><ArrowRight size={15}/></button>)}</div> : <EmptyState icon={<History size={22}/>} title="No saved reviews" detail="The backend has not stored a review yet." action="Analyze a PR" onAction={onDiscover}/> )}</section>;
 }
 
 function SavedPage({ state, error, items, onRemove, onSelect, onRefresh, onDiscover }: { state: string; error: string; items: SavedPullRequest[]; onRemove: (item: SavedPullRequest) => void; onSelect: (item: SavedPullRequest) => void; onRefresh: () => void; onDiscover: () => void }) {
@@ -357,6 +500,24 @@ function DiffPage({ review, state, error, files, warnings, onBack, onDiscover }:
 
 function DiffFileView({ file }: { file: DiffFile }) {
   return <details className="diff-file" open><summary><span><FileCode2 size={15}/><code>{file.path}</code>{file.previous_path && <small>from {file.previous_path}</small>}</span><span className="diff-counts"><b>+{file.added}</b> <i>−{file.removed}</i> <em>{pretty(file.status)}</em></span></summary>{file.truncated && <div className="file-truncated"><CircleAlert size={14}/> GitHub did not provide a patch for this file.</div>}{file.hunks.map((hunk, index) => <section className="diff-hunk" key={`${hunk.header}-${index}`}><div className="hunk-header">{hunk.header}</div>{hunk.lines.map((line, lineIndex) => <div className={`diff-line ${line.kind}`} key={`${line.line}-${line.kind}-${lineIndex}`}><span>{line.line}</span><code>{line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' '}&nbsp;{line.text}</code></div>)}</section>)}</details>;
+}
+
+function AnalyticsPage({ state, error, analytics, insights, onRetry }: { state: string; error: string; analytics: PersonalAnalytics | null; insights: LearningInsights | null; onRetry: () => void }) {
+  if (state === 'loading') return <section className="content-page"><PageHeading eyebrow="WORKSPACE / ANALYTICS" title="Insights &amp; analytics" intro="Only your stored review and learning evidence is included."/><LoadingState title="Building your dashboard" detail="Summarizing recent account-owned records."/></section>;
+  if (state === 'error' || !analytics || !insights) return <section className="content-page"><PageHeading eyebrow="WORKSPACE / ANALYTICS" title="Insights &amp; analytics" intro="Only your stored review and learning evidence is included."/><ErrorState title="Analytics unavailable" message={error || 'No analytics response was returned.'} action="Try again" onAction={onRetry}/></section>;
+  const ranked = (items: Record<string, number>) => Object.entries(items).sort((a, b) => b[1] - a[1]);
+  return <section className="content-page analytics-page"><PageHeading eyebrow="WORKSPACE / ANALYTICS" title="Insights &amp; analytics" intro="Patterns and measures from your account's stored activity. These are descriptive, not developer rankings."/>
+    <div className="analytics-cards"><AnalyticsMetric label="LIVE REVIEW RECORDS" value={String(analytics.total_reviews)} detail={`${analytics.reviews_analyzed} non-demo reviews in the recent window`}/><AnalyticsMetric label="SUGGESTED FIXES" value={String(analytics.suggested_fix_count)} detail="Stored proposals in analyzed reviews"/><AnalyticsMetric label="AVG REVIEW TIME" value={analytics.average_review_duration_ms === null ? '—' : `${(analytics.average_review_duration_ms / 1000).toFixed(1)}s`} detail="Recent-window backend duration"/><AnalyticsMetric label="FIX ACCEPTANCE" value={String(analytics.fix_decisions.accepted ?? 0)} detail={`${analytics.fix_decisions.rejected ?? 0} rejected by you`}/></div>
+    <div className="analytics-grid"><section className="analytics-panel"><h2>Finding patterns</h2><p>Based on {analytics.reviews_analyzed} of at most {analytics.analysis_window_limit} recent reviews.</p>{ranked(analytics.findings_by_category).length ? ranked(analytics.findings_by_category).map(([name, count]) => <div className="analytics-row" key={name}><span>{pretty(name)}</span><strong>{count}</strong></div>) : <p>No stored findings in this window.</p>}</section>
+      <section className="analytics-panel"><h2>Validation history</h2><p>Reports recorded on suggested fixes.</p>{ranked(analytics.validation_reports_by_status).length ? ranked(analytics.validation_reports_by_status).map(([name, count]) => <div className="analytics-row" key={name}><span>{pretty(name)}</span><strong>{count}</strong></div>) : <p>No validation reports are stored yet.</p>}</section>
+      <section className="analytics-panel"><h2>Learning topics</h2><p>{insights.basis}</p>{insights.repeated_patterns.length ? insights.repeated_patterns.map((item) => <div className="analytics-row" key={item.category}><span>{pretty(item.category)}</span><strong>{item.observation_count} findings</strong></div>) : <p>No repeated category pattern found in this window.</p>}<p>Fix decisions: {ranked(insights.fix_decisions).map(([name, count]) => `${pretty(name)} ${count}`).join(' · ') || 'none recorded'}</p><p>Validation outcomes: {ranked(insights.validation_reports_by_status).map(([name, count]) => `${pretty(name)} ${count}`).join(' · ') || 'none recorded'}</p></section>
+      <section className="analytics-panel"><h2>Metrics not yet available</h2><ul>{analytics.unavailable_metrics.map((item) => <li key={item}>{pretty(item)}</li>)}</ul></section>
+    </div>
+  </section>;
+}
+
+function AnalyticsMetric({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <article className="analytics-panel"><small>{label}</small><strong className="analytics-value">{value}</strong><span>{detail}</span></article>;
 }
 
 function LearningPage({ state, error, exercises, active, setActive, answer, setAnswer, result, answerError, busy, progress, history, onSubmit }: { state: string; error: string; exercises: LearningExercise[]; active?: LearningExercise; setActive: (id: string) => void; answer: string; setAnswer: (value: string) => void; result: LearningResult | null; answerError: string; busy: boolean; progress: LearningProgress | null; history: LearningHistory | null; onSubmit: (event: FormEvent) => void }) {

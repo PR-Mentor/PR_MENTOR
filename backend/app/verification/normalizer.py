@@ -6,14 +6,18 @@ mapping only: every result remains tool_flagged until separately reproduced.
 """
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Literal, cast
 
 from app.schemas.finding import Finding
 
+Severity = Literal["info", "low", "medium", "high", "critical"]
 
-def _severity(value: Any) -> str:
+
+def _severity(value: Any) -> Severity:
     normalized = value.lower() if isinstance(value, str) else ""
-    return normalized if normalized in {"info", "low", "medium", "high", "critical"} else "medium"
+    if normalized in {"info", "low", "medium", "high", "critical"}:
+        return cast(Severity, normalized)
+    return "medium"
 
 
 def _records(results: Any) -> Iterable[dict[str, Any]]:

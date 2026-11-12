@@ -58,5 +58,15 @@ def github_token() -> str | None:
     return os.getenv("GITHUB_TOKEN") or None
 
 
-def llm_configuration() -> tuple[str | None, str | None, str]:
-    return os.getenv("LLM_API_KEY") or None, os.getenv("LLM_MODEL") or None, os.getenv("LLM_API_BASE_URL", "https://api.openai.com/v1/chat/completions")
+def cookie_secure() -> bool:
+    value = os.getenv("PR_MENTOR_COOKIE_SECURE", "true").strip().lower()
+    if value not in {"true", "false"}:
+        raise ValueError("PR_MENTOR_COOKIE_SECURE must be 'true' or 'false'.")
+    return value == "true"
+
+
+def llm_configuration(task: str | None = None) -> tuple[str | None, str | None, str]:
+    """Resolve task-specific model selection with the legacy model as fallback."""
+    model_key = f"LLM_MODEL_{task.upper().replace('-', '_')}" if task else "LLM_MODEL"
+    model = os.getenv(model_key) or os.getenv("LLM_MODEL") or None
+    return os.getenv("LLM_API_KEY") or None, model, os.getenv("LLM_API_BASE_URL", "https://api.openai.com/v1/chat/completions")

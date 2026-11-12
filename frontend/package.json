@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test src/services/review-route.test.js src/pages/ReviewWorkspacePage.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",

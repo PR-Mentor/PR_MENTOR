@@ -1,0 +1,11 @@
+[Unit]
+Description=Run PR Mentor sandbox orphan cleanup once per minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=pr-mentor-test-execution-reaper.service
+
+[Install]
+WantedBy=timers.target

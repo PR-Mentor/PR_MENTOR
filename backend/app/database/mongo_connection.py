@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from threading import RLock
-from urllib.parse import parse_qs, urlsplit
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from pymongo import MongoClient
 from pymongo.errors import ConfigurationError, PyMongoError

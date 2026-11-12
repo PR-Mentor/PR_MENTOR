@@ -1,23 +1,34 @@
-"""Firebase ID-token verification and authenticated user profile endpoints."""
+"""Authentication, session verification, and user profile endpoints."""
 
 from __future__ import annotations
 
-import json
-import os
 import base64
 import binascii
-from datetime import UTC, datetime
+import hashlib
+import hmac
+import json
+import os
+import secrets
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.config import cookie_secure
+from app.database import auth as auth_store
 from app.database.users import delete_user, get_user, update_user, upsert_user
 
 router = APIRouter(prefix="/api", tags=["authentication"])
+COOKIE_NAME = "prm_session"
+SESSION_DAYS = 14
 
+
+# ---------------------------------------------------------------------------
+# Firebase & Supabase Token Verification (Authoritative Main Foundation)
+# ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
 def _firebase_app():
@@ -112,24 +123,68 @@ def verify_supabase_token(authorization: str | None) -> dict[str, Any]:
     }
 
 
-def current_claims(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="A bearer token is required.", headers={"WWW-Authenticate": "Bearer"})
-    token = authorization[7:].strip()
-    try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            raise ValueError("Malformed JWT")
-        payload = parts[1] + "=" * (-len(parts[1]) % 4)
-        decoded = json.loads(base64.urlsafe_b64decode(payload))
-        if not isinstance(decoded, dict):
-            raise ValueError("JWT payload must be an object")
-        issuer = decoded.get("iss", "")
-    except (ValueError, TypeError, UnicodeDecodeError, binascii.Error):
-        raise HTTPException(status_code=401, detail="The bearer token is invalid.", headers={"WWW-Authenticate": "Bearer"}) from None
-    if isinstance(issuer, str) and issuer.startswith("https://securetoken.google.com/"):
-        return verify_firebase_token(authorization)
-    return verify_supabase_token(authorization)
+def current_claims(
+    authorization: str | None = Header(default=None),
+    prm_session: str | None = Cookie(default=None),
+) -> dict[str, Any]:
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+        try:
+            parts = token.split(".")
+            if len(parts) != 3:
+                raise ValueError("Malformed JWT")
+            payload = parts[1] + "=" * (-len(parts[1]) % 4)
+            decoded = json.loads(base64.urlsafe_b64decode(payload))
+            if not isinstance(decoded, dict):
+                raise ValueError("JWT payload must be an object")
+            issuer = decoded.get("iss", "")
+        except (ValueError, TypeError, UnicodeDecodeError, binascii.Error):
+            raise HTTPException(status_code=401, detail="The bearer token is invalid.", headers={"WWW-Authenticate": "Bearer"}) from None
+        if isinstance(issuer, str) and issuer.startswith("https://securetoken.google.com/"):
+            return verify_firebase_token(authorization)
+        return verify_supabase_token(authorization)
+
+    # Cookie session fallback
+    if prm_session and len(prm_session) <= 128:
+        session = auth_store.get_session(_token_hash(prm_session))
+        if session:
+            try:
+                expires = session["expires_at"]
+                if isinstance(expires, str):
+                    expires = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=UTC)
+                if expires > datetime.now(UTC):
+                    user_record = auth_store.get_user_by_id(session["user_id"])
+                    if user_record:
+                        return {
+                            "uid": user_record["user_id"],
+                            "email": user_record["email"],
+                            "name": user_record.get("email", "").split("@")[0],
+                            "email_verified": True,
+                            "auth_provider": "local",
+                            "firebase": {"sign_in_provider": "password"},
+                        }
+            except Exception:
+                pass
+
+    raise HTTPException(
+        status_code=401,
+        detail="A bearer token is required.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def current_user(claims: Annotated[dict[str, Any], Depends(current_claims)]) -> dict[str, Any]:
+    uid = claims["uid"]
+    email = claims.get("email") or ""
+    return {
+        "user_id": uid,
+        "firebase_uid": uid,
+        "email": email,
+        "display_name": claims.get("name") or claims.get("preferred_username") or email or uid,
+        "claims": claims,
+    }
 
 
 def safe_user(user: dict[str, Any]) -> dict[str, Any]:
@@ -142,6 +197,78 @@ def delete_firebase_identity(uid: str) -> None:
 
     auth.delete_user(uid, app=_firebase_app())
 
+
+# ---------------------------------------------------------------------------
+# First-Party Password / Cookie Auth Helpers (Phase 5 Compatibility)
+# ---------------------------------------------------------------------------
+
+class Credentials(BaseModel):
+    email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    password: str = Field(min_length=12, max_length=256)
+
+
+def _password_hash(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
+    return (
+        "scrypt$"
+        + base64.urlsafe_b64encode(salt).decode()
+        + "$"
+        + base64.urlsafe_b64encode(digest).decode()
+    )
+
+
+def _password_matches(password: str, encoded: str) -> bool:
+    try:
+        algorithm, salt_text, digest_text = encoded.split("$", 2)
+        if algorithm != "scrypt":
+            return False
+        salt = base64.urlsafe_b64decode(salt_text)
+        expected = base64.urlsafe_b64decode(digest_text)
+        actual = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError):
+        return False
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _new_session(response: Response, user: dict) -> dict:
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(UTC) + timedelta(days=SESSION_DAYS)
+    auth_store.save_session(_token_hash(token), user["user_id"], expires)
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        max_age=SESSION_DAYS * 86400,
+        httponly=True,
+        secure=cookie_secure(),
+        samesite="strict",
+        path="/",
+    )
+    return {"user_id": user["user_id"], "email": user["email"]}
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _limit_sensitive_attempts(request: Request, identity: str) -> None:
+    ip = _client_ip(request)
+    if not auth_store.allow_attempt("auth-ip", ip, limit=20, window_seconds=900):
+        raise HTTPException(status_code=429, detail="Too many attempts from this network. Try again later.")
+    if not auth_store.allow_attempt("auth-account", identity.casefold().strip(), limit=5, window_seconds=900):
+        raise HTTPException(status_code=429, detail="Too many attempts for this account. Try again later.")
+
+
+# ---------------------------------------------------------------------------
+# API Endpoints
+# ---------------------------------------------------------------------------
 
 @router.post("/auth/firebase/verify")
 def firebase_verify(claims: Annotated[dict[str, Any], Depends(current_claims)]):
@@ -164,7 +291,13 @@ def me(claims: Annotated[dict[str, Any], Depends(current_claims)]):
         user = upsert_user(claims)
     if not user.get("is_active", True):
         raise HTTPException(status_code=403, detail="This account is inactive.")
-    return {"user": safe_user(user)}
+    cleaned = safe_user(user)
+    uid = cleaned.get("firebase_uid") or claims["uid"]
+    return {
+        "user": cleaned,
+        "user_id": uid,
+        "email": cleaned.get("email"),
+    }
 
 
 class ProfileUpdate(BaseModel):
@@ -203,13 +336,43 @@ def delete_me(claims: Annotated[dict[str, Any], Depends(current_claims)]):
 
 
 @router.post("/auth/logout")
-def logout(claims: Annotated[dict[str, Any], Depends(current_claims)]):
-    """Frontend signs out locally; this endpoint confirms identity without revoking other devices."""
+def logout(claims: Annotated[dict[str, Any], Depends(current_claims)], response: Response):
+    """Frontend signs out locally; also clears cookie session if set."""
+    response.delete_cookie(COOKIE_NAME, path="/")
     return {"signed_out": True, "firebase_uid": claims["uid"]}
 
 
+@router.post("/auth/register", status_code=201)
+def register(request: Request, payload: Credentials, response: Response):
+    _limit_sensitive_attempts(request, payload.email)
+    email = str(payload.email).strip().casefold()
+    user_id = f"local:{secrets.token_hex(8)}"
+    user = {"user_id": user_id, "email": email}
+    if not auth_store.create_user(user["user_id"], email, _password_hash(payload.password)):
+        raise HTTPException(status_code=409, detail="An account with that email already exists.")
+    upsert_user({
+        "uid": user_id,
+        "email": email,
+        "email_verified": True,
+        "name": email.split("@")[0],
+        "auth_provider": "local",
+        "firebase": {"sign_in_provider": "password"},
+    })
+    return _new_session(response, user)
+
+
+@router.post("/auth/login")
+def login(request: Request, payload: Credentials, response: Response):
+    _limit_sensitive_attempts(request, payload.email)
+    email = str(payload.email).strip().casefold()
+    user = auth_store.get_user_by_email(email)
+    if not user or not _password_matches(payload.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email or password is incorrect.")
+    return _new_session(response, user)
+
+
 # Retain the old contract as a fail-closed response for clients that have not
-# migrated. Authentication challenges are handled by Firebase on the client.
+# migrated. Authentication challenges are handled by Supabase on the client.
 legacy_router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 
