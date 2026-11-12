@@ -18,6 +18,9 @@ import type {
 } from '../types/review';
 import { authenticatedFetch, getGitHubProviderToken } from './auth';
 
+ codex/phone-otp-login
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'https://pr-mentor.onrender.com').replace(/\/$/, '');
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000').replace(/\/$/, '');
 
 export interface CurrentUser { user_id: string; email: string }
@@ -34,6 +37,7 @@ export class ApiRequestError extends Error {
     this.name = 'ApiRequestError';
   }
 }
+ main
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
