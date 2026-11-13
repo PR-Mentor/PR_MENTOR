@@ -105,3 +105,71 @@
   .auth-heading h2 { font-size: 25px; }
   .auth-panel-foot { font-size: 8px; }
 }
+
+/* The login stylesheet loads after the shared workspace theme, so keep its
+   overrides here to preserve the same cream, lavender and brutalist system. */
+.auth-page { background: #fdfbf7; }
+.auth-frame { border: 3px solid #111; border-radius: 0; background: #fdfbf7; box-shadow: 7px 7px 0 #111; }
+.auth-story { border-right: 3px solid #111; color: #111; background: #c4b5fd; }
+.story-kicker, .auth-step { color: #21152f; font-family: var(--font-code); }
+.story-content h1 { color: #111; font-family: var(--font-display); font-size: clamp(2.8rem, 4.2vw, 4.25rem); line-height: 1.05; letter-spacing: -.055em; font-weight: 700; }
+.story-content > p, .story-features, .story-foot { color: #21152f; }
+.story-features svg, .story-foot svg { color: #111; }
+.code-art { border: 3px solid #111; border-radius: 0; background: #090d1a; box-shadow: 5px 5px 0 #111; }
+.auth-panel { background: #fdfbf7; }
+.auth-card { padding: clamp(22px, 3vw, 40px); border: 3px solid #111; background: #fff; box-shadow: 6px 6px 0 #111; }
+.auth-heading { margin-bottom: 26px; }
+.auth-heading h2 { color: #111; font-family: var(--font-display); font-size: clamp(1.8rem, 2.6vw, 2.5rem); line-height: 1.08; letter-spacing: -.045em; font-weight: 700; }
+.auth-heading p, .phone-auth-heading p, .phone-form .email-auth-hint { color: #45413c; }
+.auth-heading .auth-step { color: #21152f; font-family: var(--font-code); letter-spacing: .1em; }
+.auth-provider { min-height: 52px; border: 3px solid #111; border-radius: 0; color: #111; background: #fff; box-shadow: 4px 4px 0 #111; font: 750 12px var(--font-ui); text-transform: uppercase; letter-spacing: .04em; }
+.github-provider, .github-provider:hover:not(:disabled) { border-color: #111; color: #111; background: #c4b5fd; }
+.auth-provider:hover:not(:disabled), .phone-primary:hover:not(:disabled) { transform: translate(2px, 2px); box-shadow: 2px 2px 0 #111; }
+.auth-divider { color: #111; font-family: var(--font-code); font-weight: 700; }
+.auth-divider span { height: 3px; background: #111; }
+.phone-auth-heading h3 { color: #111; font-family: var(--font-display); font-weight: 700; }
+.phone-auth-heading h3 svg { color: #111; }
+.email-auth-modes { padding: 0; border: 3px solid #111; border-radius: 0; background: #fff; }
+.email-auth-modes button { min-height: 42px; border-radius: 0; color: #111; }
+.email-auth-modes button.active { color: #fff; background: #111; box-shadow: none; }
+.phone-form label { color: #111; }
+.phone-form input { height: 50px; border: 3px solid #111; border-radius: 0; background: #fdfbf7; color: #111; font-family: var(--font-code); }
+.phone-form input:focus { outline: 0; border-color: #111; background: #fff3bf; box-shadow: 3px 3px 0 #c4b5fd; }
+.phone-primary { min-height: 50px; border: 3px solid #111; border-radius: 0; color: #111; background: #fcd34d; box-shadow: 4px 4px 0 #111; font-family: var(--font-display); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.auth-terms, .auth-panel-foot { color: #625d56; }
+.auth-terms a { color: #6d45c2; }
+.auth-error, .auth-note { border: 3px solid #111; border-radius: 0; box-shadow: 3px 3px 0 #111; }
+
+:root[data-theme="dark"] .auth-page,
+:root[data-theme="dark"] .auth-panel { background: #0a0a0a; }
+:root[data-theme="dark"] .auth-frame { border-color: #fff; background: #0a0a0a; box-shadow: 7px 7px 0 #fff; }
+:root[data-theme="dark"] .auth-story { border-color: #fff; }
+:root[data-theme="dark"] .auth-card { border-color: #fff; background: #1a1a1a; box-shadow: 6px 6px 0 #fff; }
+:root[data-theme="dark"] .auth-heading h2,
+:root[data-theme="dark"] .phone-auth-heading h3,
+:root[data-theme="dark"] .phone-form label { color: #fff; }
+:root[data-theme="dark"] .auth-heading p,
+:root[data-theme="dark"] .phone-auth-heading p,
+:root[data-theme="dark"] .phone-form .email-auth-hint,
+:root[data-theme="dark"] .auth-terms,
+:root[data-theme="dark"] .auth-panel-foot { color: #dedede; }
+:root[data-theme="dark"] .auth-provider { border-color: #fff; color: #fff; background: #1a1a1a; box-shadow: 4px 4px 0 #fff; }
+:root[data-theme="dark"] .github-provider,
+:root[data-theme="dark"] .github-provider:hover:not(:disabled) { color: #111; background: #c4b5fd; }
+:root[data-theme="dark"] .auth-provider:hover:not(:disabled),
+:root[data-theme="dark"] .phone-primary:hover:not(:disabled) { box-shadow: 2px 2px 0 #fff; }
+:root[data-theme="dark"] .auth-divider { color: #fff; }
+:root[data-theme="dark"] .auth-divider span { background: #fff; }
+:root[data-theme="dark"] .phone-auth-heading h3 svg { color: #c4b5fd; }
+:root[data-theme="dark"] .email-auth-modes { border-color: #fff; background: #1a1a1a; }
+:root[data-theme="dark"] .email-auth-modes button { color: #fff; }
+:root[data-theme="dark"] .email-auth-modes button.active { color: #111; background: #fcd34d; }
+:root[data-theme="dark"] .phone-form input { border-color: #fff; background: #1a1a1a; color: #fff; }
+:root[data-theme="dark"] .phone-form input:focus { background: #34302a; box-shadow: 3px 3px 0 #c4b5fd; }
+:root[data-theme="dark"] .phone-primary { border-color: #fff; color: #111; box-shadow: 4px 4px 0 #fff; }
+
+@media (max-width: 760px) {
+  .auth-frame { border: 0; box-shadow: none; }
+  .auth-card { padding: 23px; }
+  .story-content h1 { font-size: clamp(2.5rem, 10vw, 3.7rem); }
+}
