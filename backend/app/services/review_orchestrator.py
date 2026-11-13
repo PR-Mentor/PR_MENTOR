@@ -129,8 +129,6 @@ async def analyze(
                     content = await get_file_content(owner, repo, safe_name, head_sha, github_token=github_token)
                 else:
                     content = await get_file_content(owner, repo, safe_name, head_sha)
-            except TypeError:
-                content = await get_file_content(owner, repo, safe_name, head_sha)
             except Exception:  # noqa: BLE001 - Missing source context is isolated to that file.
                 content = None
             if content is None:

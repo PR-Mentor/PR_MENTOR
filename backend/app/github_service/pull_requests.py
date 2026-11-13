@@ -79,17 +79,20 @@ class GitHubFileSnapshotError(ValueError):
     """GitHub returned a source object that cannot serve as a verified file snapshot."""
 
 
-async def _request_json(client: httpx.AsyncClient, path: str, *, params=None, github_token: str | None = None):
-    kwargs = {"params": params} if params is not None else {}
-    if github_token:
-        kwargs["github_token"] = github_token
-    return await request_json(client, path, **kwargs)
+async def _request_json(
+    client: httpx.AsyncClient,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    github_token: str | None = None,
+) -> Any:
+    return await request_json(client, path, params=params)
 
 
 async def fetch_pull_request(url: str, github_token: str | None = None) -> PullRequestBundle:
     owner, repo, number = parse_pull_request_url(url)
-    async with async_client() as client:
-        raw = await _request_json(client, f"/repos/{owner}/{repo}/pulls/{number}", github_token=github_token)
+    async with async_client(token=github_token) as client:
+        raw = await request_json(client, f"/repos/{owner}/{repo}/pulls/{number}")
         if not isinstance(raw, dict):
             raise ValueError("GitHub returned an invalid pull request response.")  # noqa: TRY004 - malformed upstream data is a value error, not a caller type error
         base = raw.get("base") if isinstance(raw.get("base"), dict) else {}
@@ -116,7 +119,11 @@ async def fetch_pull_request(url: str, github_token: str | None = None) -> PullR
         files: list[ChangedFile] = []
         warnings: list[str] = []
         for page in range(1, MAX_FILE_PAGES + 1):
-            result = await _request_json(client, f"/repos/{owner}/{repo}/pulls/{number}/files", params={"per_page": FILES_PER_PAGE, "page": page}, github_token=github_token)
+            result = await request_json(
+                client,
+                f"/repos/{owner}/{repo}/pulls/{number}/files",
+                params={"per_page": FILES_PER_PAGE, "page": page},
+            )
             if not isinstance(result, list):
                 raise ValueError("GitHub returned an invalid changed-files response.")  # noqa: TRY004 - malformed upstream data is a value error, not a caller type error
             for item in result:
@@ -193,8 +200,12 @@ async def get_file_content(owner: str, repo: str, filename: str, ref: str, githu
     if not ref or not filename or filename.startswith(("/", "\\")) or ".." in filename.replace("\\", "/").split("/"):
         return None
     encoded_path = quote(filename.replace("\\", "/"), safe="/")
-    async with async_client() as client:
-        result = await _request_json(client, f"/repos/{owner}/{repo}/contents/{encoded_path}", params={"ref": ref}, github_token=github_token)
+    async with async_client(token=github_token) as client:
+        result = await request_json(
+            client,
+            f"/repos/{owner}/{repo}/contents/{encoded_path}",
+            params={"ref": ref},
+        )
     if not isinstance(result, dict) or result.get("encoding") != "base64" or not isinstance(result.get("content"), str):
         return None
     if isinstance(result.get("size"), int) and result["size"] > MAX_SOURCE_BYTES:
