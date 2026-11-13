@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
 
@@ -17,6 +18,59 @@ from app.ai_review.client import (
 from app.ai_review.prompts import SYSTEM_PROMPT, build_user_prompt
 from app.ai_review.providers import provider_registry
 from app.schemas.finding import ReviewFinding
+
+
+def _finding_supported_by_diff(finding: ReviewFinding, files: list[dict[str, Any]]) -> bool:
+    """Keep AI candidates only when their path, location, and evidence map to added PR code."""
+    raw_path = finding.file_path.replace("\\", "/")
+    path = PurePosixPath(raw_path)
+    if path.is_absolute() or not path.parts or ".." in path.parts or ":" in path.parts[0]:
+        return False
+    normalized_path = path.as_posix()
+
+    added_lines: dict[int, str] = {}
+    for changed_file in files:
+        candidate_path = changed_file.get("path")
+        if not isinstance(candidate_path, str):
+            continue
+        normalized_changed_path = PurePosixPath(candidate_path.replace("\\", "/"))
+        if normalized_changed_path.as_posix() != normalized_path:
+            continue
+        for hunk in changed_file.get("hunks", []):
+            if not isinstance(hunk, dict):
+                continue
+            for line in hunk.get("lines", []):
+                if (
+                    isinstance(line, dict)
+                    and line.get("kind") == "added"
+                    and isinstance(line.get("line"), int)
+                    and isinstance(line.get("text"), str)
+                ):
+                    added_lines[line["line"]] = line["text"]
+        break
+    if not added_lines or not finding.evidence:
+        return False
+
+    start, end = finding.line_start, finding.line_end
+    if start is not None or end is not None:
+        start = start if start is not None else end
+        end = end if end is not None else start
+        if start is None or end is None or start < 1 or end < start:
+            return False
+        relevant_lines = [
+            text for number, text in added_lines.items() if start <= number <= end
+        ]
+        if not relevant_lines:
+            return False
+    else:
+        relevant_lines = list(added_lines.values())
+
+    source_text = "\n".join(" ".join(line.split()).casefold() for line in relevant_lines)
+    return any(
+        len(normalized := " ".join(evidence.split()).casefold()) >= 8
+        and normalized in source_text
+        for evidence in finding.evidence
+    )
 
 
 async def generate_candidates(
@@ -44,7 +98,9 @@ async def generate_candidates(
                     continue
                 candidate = dict(item)
                 candidate.update({"id": str(candidate.get("id") or uuid4().hex), "source": "ai_candidate", "verification_status": "needs_review"})
-                findings.append(ReviewFinding.model_validate(candidate))
+                finding = ReviewFinding.model_validate(candidate)
+                if _finding_supported_by_diff(finding, files):
+                    findings.append(finding)
             annotate_last_call(
                 prompt_version="code_review_v1",
                 system_prompt_sha256=system_prompt_sha256,
