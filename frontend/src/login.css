@@ -106,7 +106,6 @@
   .auth-panel-foot { font-size: 8px; }
 }
 
- codex/phone-otp-login
 /* The login stylesheet loads after the shared workspace theme, so keep its
    overrides here to preserve the same cream, lavender and brutalist system. */
 .auth-page { background: #fdfbf7; }
@@ -294,5 +293,4 @@
   .story-features { gap: 12px; margin-block: 23px 25px; }
   .auth-panel { padding-block: 26px 20px; }
   .auth-panel-foot { margin-top: 26px; }
- main
 }
