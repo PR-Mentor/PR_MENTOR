@@ -80,6 +80,7 @@ function Workspace() {
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
   const profileMenuRef = useRef<HTMLDivElement>(null);
   const profileTriggerRef = useRef<HTMLButtonElement>(null);
+  const profileMenuProfileRef = useRef<HTMLButtonElement>(null);
   const profileSignOutRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const [url, setUrl] = useState('');
@@ -196,7 +197,7 @@ function Workspace() {
 
   useEffect(() => {
     if (!profileMenuOpen) return;
-    profileSignOutRef.current?.focus();
+    profileMenuProfileRef.current?.focus();
     const closeOnOutsideClick = (event: PointerEvent) => {
       if (event.target instanceof Node && !profileMenuRef.current?.contains(event.target)) {
         setProfileMenuOpen(false);
@@ -395,7 +396,8 @@ function Workspace() {
               <span><strong>{auth.user?.display_name ?? 'Your profile'}</strong><small>{auth.user?.email ?? ''}</small></span>
             </div>
             <div className="profile-dropdown-divider" role="presentation"/>
-            <button ref={profileSignOutRef} className="profile-option" type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); void auth.logout(); }}><LogOut size={16}/>Sign out</button>
+            <button ref={profileMenuProfileRef} className="profile-option profile-option-profile" type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); go('profile'); }}><UserRound size={16}/>Developer profile</button>
+            <button ref={profileSignOutRef} className="profile-option profile-option-signout" type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); void auth.logout(); }}><LogOut size={16}/>Sign out</button>
           </div>}
         </div>
       </header>
