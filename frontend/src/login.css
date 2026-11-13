@@ -106,6 +106,7 @@
   .auth-panel-foot { font-size: 8px; }
 }
 
+ codex/phone-otp-login
 /* The login stylesheet loads after the shared workspace theme, so keep its
    overrides here to preserve the same cream, lavender and brutalist system. */
 .auth-page { background: #fdfbf7; }
@@ -172,4 +173,126 @@
   .auth-frame { border: 0; box-shadow: none; }
   .auth-card { padding: 23px; }
   .story-content h1 { font-size: clamp(2.5rem, 10vw, 3.7rem); }
+
+/* Keep the sign-in surface readable even when the workspace was last used in
+   dark mode, and let the two panels scale smoothly between laptop sizes. */
+.auth-page {
+  min-height: 100vh;
+  min-height: 100svh;
+  padding: clamp(14px, 2.4vw, 36px);
+  color-scheme: light;
+}
+.auth-frame {
+  width: min(1500px, 100%);
+  min-height: min(900px, calc(100svh - 2 * clamp(14px, 2.4vw, 36px)));
+  grid-template-columns: minmax(0, 1.02fr) minmax(0, .98fr);
+  border-radius: 16px;
+}
+.auth-story {
+  padding: clamp(32px, 4.4vw, 72px) clamp(28px, 5vw, 76px) 28px;
+}
+.story-content { width: min(560px, 100%); }
+.story-content h1 { font-size: clamp(46px, 5vw, 76px); }
+.auth-panel {
+  padding: clamp(28px, 4vw, 64px) clamp(24px, 4vw, 68px) 28px;
+  color: #211c29;
+  color-scheme: light;
+}
+.auth-card {
+  width: min(490px, 100%);
+  padding: clamp(22px, 2.7vw, 36px);
+  border: 1px solid #ebe6f0;
+  border-radius: 16px;
+  color: #211c29;
+  background: #fff;
+  box-shadow: 0 20px 58px #2d1d4012;
+}
+.auth-heading h2 { color: #211c29; font-size: clamp(27px, 2.3vw, 34px); }
+.auth-heading p,
+.phone-auth-heading p,
+.phone-form .email-auth-hint { color: #625b6b; }
+.phone-auth-heading h3,
+.phone-form label { color: #30283a; }
+.phone-form input { min-width: 0; }
+.github-provider {
+  min-height: 58px;
+  border: 1px solid #3f2868;
+  border-radius: 9px;
+  color: #fff;
+  background: linear-gradient(115deg, #35214f 0%, #513184 58%, #61409b 100%);
+  box-shadow: 0 8px 22px #4d2e802e;
+  font-size: 15px;
+  font-weight: 750;
+  transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+.github-provider:hover:not(:disabled) {
+  border-color: #6945a3;
+  background: linear-gradient(115deg, #432965 0%, #62409a 58%, #7451ad 100%);
+  box-shadow: 0 11px 26px #4d2e8038;
+  transform: translateY(-2px);
+}
+.github-provider:active:not(:disabled) { transform: translateY(0); box-shadow: 0 4px 12px #4d2e8028; }
+.github-provider:focus-visible { outline: 3px solid #bda7e6; outline-offset: 3px; }
+.github-provider:disabled { opacity: .78; cursor: not-allowed; }
+.auth-panel-foot { color: #625b6b; }
+
+@media (max-width: 1024px) {
+  .auth-frame { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .auth-story { padding-inline: clamp(28px, 4vw, 48px); }
+  .story-content h1 { font-size: clamp(44px, 4.8vw, 56px); }
+  .story-content > p { font-size: 14px; line-height: 1.8; }
+  .auth-panel { padding-inline: clamp(22px, 3vw, 36px); }
+  .auth-card { padding: clamp(22px, 2.5vw, 30px); }
+}
+@media (max-width: 900px) {
+  .auth-page { display: block; padding: 0; background: #fff; }
+  .auth-frame {
+    width: 100%;
+    min-height: 100vh;
+    min-height: 100svh;
+    display: block;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .auth-story { display: none; }
+  .auth-panel {
+    min-height: 100vh;
+    min-height: 100svh;
+    justify-content: center;
+    padding: max(22px, env(safe-area-inset-top)) 20px max(22px, env(safe-area-inset-bottom));
+  }
+  .auth-card {
+    width: min(100%, 520px);
+    margin: auto;
+    padding: clamp(22px, 6vw, 34px);
+    border-radius: 14px;
+    box-shadow: 0 12px 36px #2d1d4010;
+  }
+  .auth-card > .auth-mobile-brand { display: flex; margin-bottom: 25px; color: #211c29; }
+  .auth-heading { margin-bottom: 24px; }
+  .auth-heading h2 { margin-top: 14px; }
+  .auth-panel-foot { margin-top: 24px; }
+}
+@media (max-width: 420px) {
+  .auth-panel { padding-inline: 14px; }
+  .auth-card { padding: 21px 18px; }
+  .auth-heading h2 { font-size: clamp(24px, 7vw, 28px); }
+  .auth-provider { min-height: 54px; font-size: 13px; }
+  .github-provider { min-height: 56px; font-size: 14px; }
+  .phone-form input { height: 52px; }
+  .phone-primary { min-height: 54px; }
+  .auth-terms { margin-top: 23px; font-size: 10px; }
+}
+@media (max-height: 760px) and (min-width: 901px) {
+  .auth-page { align-items: start; }
+  .auth-frame { margin-block: auto; min-height: 760px; }
+  .auth-story { padding-block: 26px 22px; }
+  .story-content { padding-block: 12px; }
+  .story-content h1 { margin-block: 23px 14px; font-size: clamp(44px, 4.3vw, 62px); }
+  .story-features { gap: 12px; margin-block: 23px 25px; }
+  .auth-panel { padding-block: 26px 20px; }
+  .auth-panel-foot { margin-top: 26px; }
+ main
 }
