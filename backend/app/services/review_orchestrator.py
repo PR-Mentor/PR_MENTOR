@@ -45,6 +45,10 @@ from app.verification.ruff_runner import ToolExecutionError, run_ruff
 from app.verification.test_runner import run_tests
 
 
+MAX_SOURCE_FETCH_ATTEMPTS = 20
+SOURCE_FETCH_CONCURRENCY = 5
+
+
 async def analyze(
     request: AnalyzeRequest,
     user_id: str | None = None,
@@ -114,6 +118,7 @@ async def analyze(
     ) is None:
         warnings.append("Source analysis was skipped because the pull request head snapshot identity was unavailable or invalid.")
     else:
+        source_candidates: list[str] = []
         for item in bundle.files:
             safe_name = _safe_python_path(item.filename)
             if item.status == "removed" or safe_name is None:
@@ -121,16 +126,35 @@ async def analyze(
             if item.size is not None and item.size > MAX_SOURCE_BYTES:
                 warnings.append(f"Source analysis skipped oversized file: {safe_name}")
                 continue
-            if len(source_files) >= 20:
-                warnings.append("Static analysis was capped at 20 Python files.")
+            if len(source_candidates) >= MAX_SOURCE_FETCH_ATTEMPTS:
+                warnings.append(
+                    f"Source retrieval was capped at {MAX_SOURCE_FETCH_ATTEMPTS} Python files."
+                )
                 break
-            try:
-                if github_token:
-                    content = await get_file_content(owner, repo, safe_name, head_sha, github_token=github_token)
-                else:
-                    content = await get_file_content(owner, repo, safe_name, head_sha)
-            except Exception:  # noqa: BLE001 - Missing source context is isolated to that file.
-                content = None
+            source_candidates.append(safe_name)
+
+        semaphore = asyncio.Semaphore(SOURCE_FETCH_CONCURRENCY)
+
+        async def fetch_source(safe_name: str) -> tuple[str, str | None]:
+            async with semaphore:
+                try:
+                    if github_token:
+                        content = await get_file_content(
+                            owner, repo, safe_name, head_sha, github_token=github_token
+                        )
+                    else:
+                        content = await get_file_content(owner, repo, safe_name, head_sha)
+                except Exception:  # noqa: BLE001 - Missing source context is isolated to that file.
+                    content = None
+                return safe_name, content
+
+        # Gather preserves candidate order while the semaphore bounds in-flight
+        # GitHub requests. A failed fetch no longer triggers serial retries over
+        # every remaining changed file.
+        fetched_sources = await asyncio.gather(
+            *(fetch_source(name) for name in source_candidates)
+        )
+        for safe_name, content in fetched_sources:
             if content is None:
                 warnings.append(f"Source content was unavailable for static analysis: {safe_name}")
                 continue
