@@ -180,10 +180,14 @@ async def analyze(
                 diff_files,
                 [item.model_dump(mode="json") for item in normalized_static],
             )
+            ai_findings, ai_rejections = _ground_ai_findings(ai_findings, diff_files)
             provider_metadata = last_call_metadata() or {}
             tool_results.append({
                 "tool": "ai_review", "status": "completed", "executed": True,
                 "findings": [item.model_dump(mode="json") for item in ai_findings],
+                "returned_finding_count": len(ai_findings) + sum(ai_rejections.values()),
+                "rejected_finding_count": sum(ai_rejections.values()),
+                "rejected_finding_reasons": ai_rejections,
                 "provider_name": provider_metadata.get("provider"),
                 "model_name": provider_metadata.get("model"),
                 "fallback_used": provider_metadata.get("fallback_used", False),
@@ -202,6 +206,10 @@ async def analyze(
                 "system_prompt_sha256": provider_metadata.get("system_prompt_sha256"),
                 "user_prompt_sha256": provider_metadata.get("user_prompt_sha256"),
             })
+            if ai_rejections:
+                warnings.append(
+                    "AI findings that could not be grounded in changed PR code were omitted."
+                )
         except AIReviewUnavailable as exc:
             provider_metadata = last_call_metadata() or {}
             tool_results.append({
@@ -364,6 +372,97 @@ def _safe_python_path(filename: str) -> str | None:
     if path.is_absolute() or ".." in path.parts or not path.parts or "\x00" in normalized or ":" in path.parts[0] or path.suffix.lower() != ".py":
         return None
     return path.as_posix()
+
+
+def _ground_ai_findings(
+    findings: list[ReviewFinding],
+    diff_files: list[dict[str, Any]],
+) -> tuple[list[ReviewFinding], dict[str, int]]:
+    """Keep AI findings only when their path, location, and code evidence map to the PR diff."""
+    added_lines_by_path: dict[str, dict[int, str]] = {}
+    changed_lines_by_path: dict[str, set[int]] = {}
+    for diff_file in diff_files:
+        raw_path = diff_file.get("path")
+        if not isinstance(raw_path, str):
+            continue
+        path = _normalize_review_path(raw_path)
+        if path is None:
+            continue
+        added_lines: dict[int, str] = {}
+        changed_lines: set[int] = set()
+        for hunk in diff_file.get("hunks", []):
+            if not isinstance(hunk, dict):
+                continue
+            for line in hunk.get("lines", []):
+                if not isinstance(line, dict):
+                    continue
+                number = line.get("line")
+                if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+                    continue
+                kind = line.get("kind")
+                if kind in {"added", "context"}:
+                    changed_lines.add(number)
+                if kind == "added" and isinstance(line.get("text"), str):
+                    added_lines[number] = line["text"]
+        added_lines_by_path[path] = added_lines
+        changed_lines_by_path[path] = changed_lines
+
+    accepted: list[ReviewFinding] = []
+    rejected: Counter[str] = Counter()
+    for finding in findings:
+        path = _normalize_review_path(finding.file_path)
+        if path is None or path not in added_lines_by_path:
+            rejected["path_not_in_diff"] += 1
+            continue
+
+        added_lines = added_lines_by_path[path]
+        changed_lines = changed_lines_by_path[path]
+        if finding.line_start is None and finding.line_end is None:
+            candidate_lines = list(added_lines.values())
+        else:
+            start = finding.line_start if finding.line_start is not None else finding.line_end
+            end = finding.line_end if finding.line_end is not None else finding.line_start
+            if (
+                not isinstance(start, int) or isinstance(start, bool)
+                or not isinstance(end, int) or isinstance(end, bool)
+                or start < 1 or end < start
+                or start not in changed_lines or end not in changed_lines
+            ):
+                rejected["line_not_in_diff"] += 1
+                continue
+            candidate_lines = [text for number, text in added_lines.items() if start <= number <= end]
+
+        evidence_matches = any(
+            _code_evidence_matches(evidence, candidate_lines)
+            for evidence in finding.evidence
+            if isinstance(evidence, str)
+        )
+        if not evidence_matches:
+            rejected["code_evidence_not_in_changed_lines"] += 1
+            continue
+        accepted.append(finding)
+
+    return accepted, dict(rejected)
+
+
+def _normalize_review_path(value: str) -> str | None:
+    normalized = value.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    if (
+        not normalized.strip() or path.is_absolute() or "\x00" in normalized
+        or any(part in {"", ".", ".."} for part in normalized.split("/"))
+        or ":" in path.parts[0] or path.as_posix() != normalized
+    ):
+        return None
+    return path.as_posix()
+
+
+def _code_evidence_matches(evidence: str, changed_lines: list[str]) -> bool:
+    """Match a short literal code excerpt after ignoring whitespace and quote wrappers."""
+    excerpt = "".join(evidence.strip().strip("`\"'").split())
+    if len(excerpt) < 4:
+        return False
+    return any(excerpt in "".join(line.split()) for line in changed_lines)
 
 
 def _write_sources(root: Path, files: list[tuple[str, str]]) -> list[str]:
