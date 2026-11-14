@@ -39,13 +39,42 @@ only when it refers to an added line in that diff.
 
 ## Provider configuration
 
-The default provider uses an OpenAI-compatible Chat Completions endpoint. Set
-these environment variables in the process running the backend:
+The default OpenAI-compatible provider uses these environment variables in the
+backend process:
 
-- `AI_API_KEY` — required; keep the value secret.
-- `AI_MODEL` — required; the model name for your provider.
-- `AI_BASE_URL` — optional; defaults to `https://api.openai.com/v1`.
-- `AI_TIMEOUT_SECONDS` — optional; defaults to `30`.
+- `LLM_API_KEY` and `LLM_MODEL` — required for the default provider.
+- `LLM_API_BASE_URL` — optional; defaults to the OpenAI-compatible Chat
+  Completions endpoint.
+- `PR_MENTOR_HTTP_TIMEOUT` — optional HTTP timeout, defaulting to 15 seconds.
+
+To specialize models by task, set `LLM_PROVIDER_<TASK>` to a named provider
+and `LLM_MODEL_<TASK>_<PROVIDER>` to its model. For example:
+
+```dotenv
+LLM_PROVIDER_CODE_REVIEW=reviewer
+LLM_MODEL_CODE_REVIEW_REVIEWER=review-model
+LLM_PROVIDER_FIX_GENERATION=coder
+LLM_MODEL_FIX_GENERATION_CODER=code-model
+LLM_PROVIDER_ISSUE_EXPLANATION=teacher
+LLM_MODEL_ISSUE_EXPLANATION_TEACHER=explanation-model
+LLM_REVIEWER_API_KEY=...
+LLM_REVIEWER_API_BASE_URL=https://provider.example/v1/chat/completions
+LLM_CODER_API_KEY=...
+LLM_CODER_API_BASE_URL=https://provider.example/v1/chat/completions
+LLM_TEACHER_API_KEY=...
+LLM_TEACHER_API_BASE_URL=https://provider.example/v1/chat/completions
+```
+
+The task suffixes are `CODE_REVIEW`, `FIX_GENERATION`, `TEST_GENERATION`,
+`ISSUE_EXPLANATION`, and `SEMANTIC_REVIEW`. Each named provider uses
+`LLM_<PROVIDER>_API_KEY` and optionally
+`LLM_<PROVIDER>_API_BASE_URL`; its shared model is
+`LLM_<PROVIDER>_MODEL`. Task-specific fallbacks can be listed in priority order
+with `LLM_FALLBACK_PROVIDERS_<TASK>` (comma-separated provider names). Global
+`LLM_PROVIDER`, `LLM_FALLBACK_PROVIDERS`, and `LLM_MODEL` values remain the
+fallback configuration. Provider endpoints must use HTTPS, except localhost
+development endpoints. Keep API keys in deployment secrets, not committed
+environment files.
 
 The module reads environment variables directly. It does not load a `.env`
 file automatically.
