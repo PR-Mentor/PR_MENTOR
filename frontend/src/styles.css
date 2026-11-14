@@ -438,6 +438,13 @@ a { color: inherit; }
 .workspace-tool > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10px; }
 .workspace-tool-status { color: var(--muted); text-align: right; }
 .workspace-tool p { margin: 7px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.workspace-tool-diagnostics { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 10px; }
+.workspace-tool-diagnostics > strong { color: var(--purple); font-weight: 650; }
+.workspace-tool-diagnostics ol { display: grid; gap: 9px; margin: 8px 0 0; padding-left: 18px; }
+.workspace-tool-diagnostics li { padding-left: 2px; line-height: 1.45; overflow-wrap: anywhere; }
+.workspace-tool-diagnostics li > strong { display: block; color: var(--ink); }
+.workspace-tool-diagnostics li > p { margin: 4px 0; }
+.workspace-tool-diagnostics li > small { color: var(--muted); }
 .workspace-validation-note { gap: 7px; color: var(--muted); font-size: 10px; }
 .workspace-file-list { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
 .workspace-file-list > div { gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 10px; }
