@@ -69,6 +69,25 @@ def _review_predictions(review: dict[str, Any]) -> tuple[set[str], list[dict[str
     return predictions, [issue for issue in issues if isinstance(issue, dict)]
 
 
+def _severity_comparison(labels: set[str], predicted: set[str]) -> tuple[int, int]:
+    """Compare severity only when category and file identify an issue in both sets."""
+    def by_identity(signatures: set[str]) -> dict[tuple[str, str], set[str]]:
+        result: dict[tuple[str, str], set[str]] = {}
+        for signature in signatures:
+            parts = signature.split("|", 2)
+            if len(parts) != 3:
+                continue
+            category, severity, path = (part.strip().casefold() for part in parts)
+            result.setdefault((category, path), set()).add(severity)
+        return result
+
+    expected = by_identity(labels)
+    actual = by_identity(predicted)
+    shared = expected.keys() & actual.keys()
+    correct = sum(bool(expected[key] & actual[key]) for key in shared)
+    return len(shared), correct
+
+
 @router.post("", status_code=201)
 def create_dataset(payload: DatasetCreate, user: dict = Depends(current_user)):
     name = payload.name.strip()
@@ -108,6 +127,7 @@ def create_run(dataset_id: str, user: dict = Depends(current_user)):
     case_results: list[dict[str, Any]] = []
     true_positive = false_positive = false_negative = labeled_cases = skipped_unlabelled = unavailable_predictions = 0
     accepted = rejected = outcome_correct = outcome_labeled = 0
+    severity_comparison_count = severity_correct_count = 0
     durations: list[int] = []
     model_latencies: list[int] = []
     total_model_tokens = 0
@@ -126,6 +146,9 @@ def create_run(dataset_id: str, user: dict = Depends(current_user)):
             continue
         labels = set(case.get("ground_truth_signatures", []))
         predicted, issues = _review_predictions(review)
+        severity_comparisons, severity_correct = _severity_comparison(labels, predicted)
+        severity_comparison_count += severity_comparisons
+        severity_correct_count += severity_correct
         true_positive += len(labels & predicted)
         false_positive += len(predicted - labels)
         false_negative += len(labels - predicted)
@@ -157,6 +180,8 @@ def create_run(dataset_id: str, user: dict = Depends(current_user)):
         case_results.append({
             "case_id": case["case_id"], "status": "measured", "review_id": review_id,
             "ground_truth_signatures": sorted(labels), "predicted_signatures": sorted(predicted),
+            "severity_comparison_count": severity_comparisons,
+            "severity_correct_count": severity_correct,
             "ground_truth_outcome": case.get("ground_truth_outcome"), "predicted_outcome": outcome,
             "fix_decisions": dict(decisions), "model_provider": review.get("model_provider"),
             "model_name": review.get("model_name"), "duration_ms": review.get("duration_ms"),
@@ -176,6 +201,8 @@ def create_run(dataset_id: str, user: dict = Depends(current_user)):
         "metrics": {"true_positive": true_positive, "false_positive": false_positive, "false_negative": false_negative,
                     "precision": true_positive / precision_denominator if precision_denominator else None,
                     "recall": true_positive / recall_denominator if recall_denominator else None,
+                    "matched_issue_severity_accuracy": severity_correct_count / severity_comparison_count if severity_comparison_count else None,
+                    "severity_comparison_count": severity_comparison_count,
                     "fixes_accepted": accepted, "fixes_rejected": rejected,
                     "review_outcome_correct": outcome_correct,
                     "review_outcome_labeled_count": outcome_labeled,
@@ -188,7 +215,7 @@ def create_run(dataset_id: str, user: dict = Depends(current_user)):
                     "cost": None},
         "model_configurations": [model_configs[key] for key in sorted(model_configs)],
         "case_results": case_results,
-        "limitations": ["Benchmarks replay saved outputs; they do not rerun models.", "Precision and recall use exact category|severity|file_path signatures supplied by human labelers.", "Token totals include only actual provider usage returned with linked reviews; provider cost is unavailable."],
+        "limitations": ["Benchmarks replay saved outputs; they do not rerun models.", "Precision and recall use exact category|severity|file_path signatures supplied by human labelers.", "Matched-issue severity accuracy compares severity only where a predicted issue and human label share category and file path; unmatched findings are excluded.", "Token totals include only actual provider usage returned with linked reviews; provider cost is unavailable."],
     }
     benchmarks.save_run(owner_id, dataset_id, run)
     return run
