@@ -262,6 +262,7 @@ async def analyze(
                 reconciliation.issues,
                 source_files=source_files,
                 diff_files=diff_files,
+                explanation_level=_user_explanation_level(effective_id),
             )
             for issue in reconciliation.issues:
                 explanation = explanation_result.explanations.get(issue.issue_id)
@@ -528,6 +529,21 @@ def _populate_reconciliation(response: ReviewResponse, observations: list[Findin
 
 def _observation_source_counts(observations: list[FindingObservation]) -> dict[str, int]:
     return dict(Counter(item.original_finding.source for item in observations))
+
+
+def _user_explanation_level(user_id: str | None) -> str:
+    """Read the user's saved explanation preference, defaulting safely to beginner."""
+    if not user_id:
+        return "beginner"
+    try:
+        from app.database.users import get_user
+
+        user = get_user(user_id)
+    except Exception:  # noqa: BLE001 - Personalization must not block a review.
+        return "beginner"
+    preferences = user.get("preferences") if isinstance(user, dict) else None
+    level = preferences.get("explanation_level") if isinstance(preferences, dict) else None
+    return level if level in {"beginner", "intermediate", "advanced"} else "beginner"
 
 
 async def _run_fix_freshness(
