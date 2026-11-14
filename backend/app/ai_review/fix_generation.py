@@ -7,6 +7,7 @@ write source files, apply patches, or contact GitHub with write operations.
 from __future__ import annotations
 
 import asyncio
+import ast
 import hashlib
 import json
 import re
@@ -443,10 +444,21 @@ def _validate_and_build_fix(
     ):
         return None
     expected = payload["expected_original_code"]
-    if not isinstance(expected, str):
+    proposed = payload["proposed_code"]
+    if not isinstance(expected, str) or not isinstance(proposed, str):
         return None
     retrieved = "\n".join(context.lines[start - 1:end])
-    if expected != retrieved or payload["proposed_code"] == expected:
+    if expected != retrieved or proposed == expected:
+        return None
+
+    reconstructed_lines = (
+        context.lines[:start - 1]
+        + proposed.splitlines()
+        + context.lines[end:]
+    )
+    try:
+        ast.parse("\n".join(reconstructed_lines), filename=issue.file_path)
+    except (SyntaxError, ValueError, TypeError):
         return None
 
     proposal_data = {
@@ -459,7 +471,7 @@ def _validate_and_build_fix(
         "base_commit_sha": head_sha,
         "file_blob_sha": context.blob_sha,
         "expected_original_code": retrieved,
-        "proposed_code": payload["proposed_code"],
+        "proposed_code": proposed,
         "change_summary": payload["change_summary"],
         "rationale": payload["rationale"],
         "limitations": payload["limitations"],

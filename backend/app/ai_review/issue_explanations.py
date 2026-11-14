@@ -57,6 +57,7 @@ async def generate_issue_explanations(
     *,
     source_files: list[tuple[str, str]] | None = None,
     diff_files: list[dict[str, Any]] | None = None,
+    explanation_level: str = "beginner",
 ) -> ExplanationGenerationResult:
     """Explain each canonical issue once, sharing bounded LLM calls by batch."""
     result = ExplanationGenerationResult()
@@ -69,12 +70,14 @@ async def generate_issue_explanations(
     if ambiguous_ids:
         result.failure_reasons.append("Canonical issue IDs were ambiguous; no explanation was attached to those issues.")
 
+    if explanation_level not in {"beginner", "intermediate", "advanced"}:
+        explanation_level = "beginner"
     source_by_path = {(path.replace("\\", "/")): content for path, content in (source_files or [])}
     contexts: list[dict[str, Any]] = []
     for issue in issues:
         if issue.issue_id in ambiguous_ids:
             continue
-        context = _issue_context(issue, source_by_path, diff_files or [])
+        context = _issue_context(issue, source_by_path, diff_files or [], explanation_level)
         try:
             # Validate each compacted issue in isolation before batching. This
             # guarantees one oversized item cannot poison all later batches.
@@ -148,6 +151,7 @@ def _issue_context(
     issue: CanonicalIssue,
     source_by_path: dict[str, str],
     diff_files: list[dict[str, Any]],
+    explanation_level: str,
 ) -> dict[str, Any]:
     code_context, code_context_source = _code_context(issue, source_by_path, diff_files)
     observations = []
@@ -186,6 +190,7 @@ def _issue_context(
         "file_path": _bounded(issue.file_path, 300),
         "line_start": issue.line_start,
         "line_end": issue.line_end,
+        "explanation_level": explanation_level,
         "observations": observations,
         "omitted_observation_count": max(0, len(all_observations) - MAX_OBSERVATIONS_PER_ISSUE),
         "code_context": code_context,
