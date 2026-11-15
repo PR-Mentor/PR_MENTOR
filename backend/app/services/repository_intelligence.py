@@ -61,6 +61,67 @@ def _module_name(path: str) -> str:
     return name.replace("/", ".")
 
 
+def _prioritized_python_paths(
+    python_paths: list[str],
+    changed_paths: list[str],
+    preloaded_sources: dict[str, str] | None,
+) -> list[str]:
+    """Order changed modules and their in-repository imports before other files."""
+    available = set(python_paths)
+    module_paths: dict[str, list[str]] = defaultdict(list)
+    for path in python_paths:
+        module_paths[_module_name(path)].append(path)
+
+    prioritized: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str) -> None:
+        if path in available and path not in seen:
+            prioritized.append(path)
+            seen.add(path)
+
+    sources = {
+        path.replace("\\", "/"): source
+        for path, source in (preloaded_sources or {}).items()
+    }
+    for path in changed_paths:
+        normalized_path = path.replace("\\", "/")
+        add(normalized_path)
+        source = sources.get(normalized_path)
+        if source is None:
+            continue
+        imports = _parse_module(normalized_path, source)["imports"]
+        package = normalized_path.removesuffix(".py").split("/")[:-1]
+        if normalized_path.endswith("/__init__.py"):
+            package = normalized_path.removesuffix("/__init__.py").split("/")
+
+        for imported in imports:
+            candidate = imported
+            if candidate.startswith("."):
+                level = len(candidate) - len(candidate.lstrip("."))
+                remainder = candidate[level:]
+                base = package[: max(0, len(package) - level + 1)]
+                candidate_parts = [*base]
+                if remainder:
+                    candidate_parts.extend(remainder.split("."))
+                candidate = ".".join(candidate_parts)
+            candidate = candidate.strip(".")
+            matches = module_paths.get(candidate, [])
+            if not matches and candidate:
+                # Imports commonly omit a repository's top-level source folder
+                # (for example, ``app.service`` for ``backend/app/service.py``).
+                matches = [
+                    module_path
+                    for module_name, paths in module_paths.items()
+                    if module_name.endswith("." + candidate)
+                    for module_path in paths
+                ]
+            if len(matches) == 1:
+                add(matches[0])
+
+    return prioritized
+
+
 def _parse_module(path: str, source: str) -> dict[str, Any]:
     try:
         tree = ast.parse(source, filename=path)
@@ -287,7 +348,12 @@ async def analyze_repository(
             and size <= MAX_SOURCE_BYTES
         ):
             python_paths.append(path)
-    priority = {path: index for index, path in enumerate(priority_paths or [])}
+    prioritized_paths = _prioritized_python_paths(
+        python_paths,
+        priority_paths or [],
+        preloaded_sources,
+    )
+    priority = {path: index for index, path in enumerate(prioritized_paths)}
     python_paths.sort(key=lambda path: (path not in priority, priority.get(path, 0), path))
     python_paths = python_paths[: max(1, min(max_python_modules, MAX_PYTHON_MODULES))]
     semaphore = asyncio.Semaphore(8)

@@ -402,7 +402,7 @@ TRUSTED_LEARNING_RESOURCE_HOSTS = frozenset({
 class IssueCodeExample(BaseModel):
     """Optional before/after example, bounded for safe API/UI handling."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     before: str = Field(min_length=1, max_length=MAX_CODE_EXAMPLE_CHARS)
     after: str = Field(min_length=1, max_length=MAX_CODE_EXAMPLE_CHARS)
@@ -419,7 +419,7 @@ class IssueCodeExample(BaseModel):
 class LearningResource(BaseModel):
     """A documentation reference restricted to explicitly trusted hosts."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     title: str = Field(min_length=1, max_length=120)
     url: str = Field(min_length=1, max_length=MAX_RESOURCE_URL_CHARS)
@@ -460,7 +460,7 @@ class LearningResource(BaseModel):
 class IssueExplanation(BaseModel):
     """Structured educational explanation attached to one canonical issue."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     summary: str = Field(min_length=1, max_length=MAX_EXPLANATION_TEXT)
     why_it_matters: str = Field(min_length=1, max_length=MAX_EXPLANATION_TEXT)

@@ -19,7 +19,15 @@ from app.ai_review.prompts import (
     MAX_EXPLANATION_REQUEST_CHARS,
     build_issue_explanation_prompt,
 )
-from app.schemas.issue import CanonicalIssue, IssueExplanation
+from app.schemas.issue import (
+    MAX_CAVEATS,
+    MAX_CAVEAT_CHARS,
+    MAX_LEARNING_RESOURCES,
+    CanonicalIssue,
+    IssueCodeExample,
+    IssueExplanation,
+    LearningResource,
+)
 
 MAX_ISSUES_PER_BATCH = 3
 MAX_OBSERVATIONS_PER_ISSUE = 6
@@ -49,6 +57,7 @@ async def generate_issue_explanations(
     *,
     source_files: list[tuple[str, str]] | None = None,
     diff_files: list[dict[str, Any]] | None = None,
+    explanation_level: str = "beginner",
 ) -> ExplanationGenerationResult:
     """Explain each canonical issue once, sharing bounded LLM calls by batch."""
     result = ExplanationGenerationResult()
@@ -61,12 +70,14 @@ async def generate_issue_explanations(
     if ambiguous_ids:
         result.failure_reasons.append("Canonical issue IDs were ambiguous; no explanation was attached to those issues.")
 
+    if explanation_level not in {"beginner", "intermediate", "advanced"}:
+        explanation_level = "beginner"
     source_by_path = {(path.replace("\\", "/")): content for path, content in (source_files or [])}
     contexts: list[dict[str, Any]] = []
     for issue in issues:
         if issue.issue_id in ambiguous_ids:
             continue
-        context = _issue_context(issue, source_by_path, diff_files or [])
+        context = _issue_context(issue, source_by_path, diff_files or [], explanation_level)
         try:
             # Validate each compacted issue in isolation before batching. This
             # guarantees one oversized item cannot poison all later batches.
@@ -140,6 +151,7 @@ def _issue_context(
     issue: CanonicalIssue,
     source_by_path: dict[str, str],
     diff_files: list[dict[str, Any]],
+    explanation_level: str,
 ) -> dict[str, Any]:
     code_context, code_context_source = _code_context(issue, source_by_path, diff_files)
     observations = []
@@ -178,6 +190,7 @@ def _issue_context(
         "file_path": _bounded(issue.file_path, 300),
         "line_start": issue.line_start,
         "line_end": issue.line_end,
+        "explanation_level": explanation_level,
         "observations": observations,
         "omitted_observation_count": max(0, len(all_observations) - MAX_OBSERVATIONS_PER_ISSUE),
         "code_context": code_context,
@@ -251,18 +264,93 @@ def _bounded(value: str | None, limit: int) -> str | None:
     return value[:limit]
 
 
+def _sanitize_explanation_payload(
+    raw_explanation: dict[str, Any], has_code_context: bool
+) -> dict[str, Any]:
+    """Sanitize optional fields (code_example, learning_resources, caveats).
+
+    Optional content that fails validation or lacks source grounding is dropped
+    or stripped rather than failing an otherwise valid canonical explanation.
+    """
+    sanitized = dict(raw_explanation)
+
+    # 1. Code example:
+    # If the issue lacked code context in the prompt, ungrounded code examples are dropped.
+    if not has_code_context:
+        sanitized["code_example"] = None
+    elif "code_example" in sanitized and sanitized["code_example"] is not None:
+        if isinstance(sanitized["code_example"], dict):
+            try:
+                IssueCodeExample.model_validate(sanitized["code_example"])
+            except (ValidationError, TypeError, ValueError):
+                sanitized["code_example"] = None
+        else:
+            sanitized["code_example"] = None
+
+    # 2. Learning resources:
+    # Validate each resource individually; unwhitelisted or malformed URLs are dropped.
+    if "learning_resources" in sanitized and sanitized["learning_resources"] is not None:
+        if isinstance(sanitized["learning_resources"], list):
+            valid_resources: list[dict[str, Any]] = []
+            for item in sanitized["learning_resources"]:
+                if isinstance(item, dict):
+                    try:
+                        valid_item = LearningResource.model_validate(item)
+                        valid_resources.append(valid_item.model_dump(mode="python"))
+                    except (ValidationError, TypeError, ValueError):
+                        continue
+            sanitized["learning_resources"] = valid_resources[:MAX_LEARNING_RESOURCES]
+        else:
+            sanitized["learning_resources"] = []
+
+    # 3. Caveats:
+    if "caveats" in sanitized and sanitized["caveats"] is not None:
+        if isinstance(sanitized["caveats"], list):
+            valid_caveats = [
+                str(c)
+                for c in sanitized["caveats"]
+                if isinstance(c, str) and c.strip() and "\x00" not in c and len(c) <= MAX_CAVEAT_CHARS
+            ]
+            sanitized["caveats"] = valid_caveats[:MAX_CAVEATS]
+        else:
+            sanitized["caveats"] = []
+
+    return sanitized
+
+
 def _validate_batch_response(
     raw: str,
     expected_ids: set[str],
     code_context_ids: set[str],
 ) -> tuple[dict[str, IssueExplanation], int]:
+    cleaned_raw = raw.strip()
+    if cleaned_raw.startswith("```"):
+        lines = cleaned_raw.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned_raw = "\n".join(lines).strip()
     try:
-        body = json.loads(raw)
+        body = json.loads(cleaned_raw)
     except json.JSONDecodeError as exc:
         raise AIReviewUnavailable("AI provider returned invalid explanation JSON.") from exc
-    if not isinstance(body, dict) or set(body) != {"explanations"} or not isinstance(body["explanations"], list):
+
+    entries: list[Any] | None = None
+    if isinstance(body, dict):
+        if isinstance(body.get("explanations"), list):
+            entries = body["explanations"]
+        elif isinstance(body.get("explanation"), dict):
+            # Single-issue explanation response without an 'explanations' wrapper
+            if isinstance(body.get("issue_id"), str):
+                entries = [{"issue_id": body["issue_id"], "explanation": body["explanation"]}]
+            elif len(expected_ids) == 1:
+                entries = [{"issue_id": next(iter(expected_ids)), "explanation": body["explanation"]}]
+    elif isinstance(body, list):
+        entries = body
+
+    if entries is None:
         raise AIReviewUnavailable("AI provider explanation response must contain an explanations array.")
-    entries = body["explanations"]
     if len(entries) > MAX_RESPONSE_ENTRIES:
         raise AIReviewUnavailable("AI provider returned too many explanations.")
 
@@ -271,19 +359,22 @@ def _validate_batch_response(
     explanations: dict[str, IssueExplanation] = {}
     rejected = 0
     for entry in entries:
-        if not isinstance(entry, dict) or set(entry) != {"issue_id", "explanation"}:
+        if not isinstance(entry, dict) or "issue_id" not in entry or "explanation" not in entry:
             rejected += 1
             continue
         issue_id = entry["issue_id"]
         if not isinstance(issue_id, str) or issue_id not in expected_ids or issue_id in duplicates:
             rejected += 1
             continue
-        try:
-            explanation = IssueExplanation.model_validate(entry["explanation"])
-        except (ValidationError, TypeError, ValueError):
+        raw_expl = entry["explanation"]
+        if not isinstance(raw_expl, dict):
             rejected += 1
             continue
-        if explanation.code_example is not None and issue_id not in code_context_ids:
+        try:
+            has_context = issue_id in code_context_ids
+            sanitized = _sanitize_explanation_payload(raw_expl, has_context)
+            explanation = IssueExplanation.model_validate(sanitized)
+        except (ValidationError, TypeError, ValueError):
             rejected += 1
             continue
         explanations[issue_id] = explanation

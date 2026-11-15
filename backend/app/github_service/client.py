@@ -123,8 +123,8 @@ def headers(token: str | None = None) -> dict[str, str]:
     return result
 
 
-def async_client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=API_ROOT, timeout=http_timeout(), headers=headers())
+def async_client(token: str | None = None) -> httpx.AsyncClient:
+    return httpx.AsyncClient(base_url=API_ROOT, timeout=http_timeout(), headers=headers(token))
 
 
 async def request_json(
@@ -244,7 +244,18 @@ def _error_message(response: httpx.Response) -> str:
         if isinstance(body, dict) and isinstance(body.get("message"), str):
             message = body["message"]
             token = github_token()
-            return message.replace(token, "[redacted]") if token else message
+            if token and token in message:
+                message = message.replace(token, "[redacted]")
+            auth_header = (
+                response.request.headers.get("authorization")
+                if hasattr(response, "request") and response.request
+                else None
+            )
+            if auth_header and auth_header.startswith("Bearer "):
+                req_token = auth_header[7:].strip()
+                if req_token and req_token in message:
+                    message = message.replace(req_token, "[redacted]")
+            return message
     except (ValueError, TypeError):
         pass
     return "GitHub rejected the request."

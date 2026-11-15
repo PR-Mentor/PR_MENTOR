@@ -179,7 +179,7 @@ def test_matching_diff_hunk_supplies_context_when_full_source_is_unavailable(mon
     assert "4: +subprocess.run(command, shell=True)" in context["code_context"]
 
 
-def test_missing_code_context_rejects_unfounded_code_example(monkeypatch):
+def test_missing_code_context_drops_unfounded_code_example_while_preserving_explanation(monkeypatch):
     issue = _issue(line=400)
 
     async def complete(_system, _prompt):
@@ -191,8 +191,147 @@ def test_missing_code_context_rejects_unfounded_code_example(monkeypatch):
     _stub_validated_completion(monkeypatch, complete)
     result = asyncio.run(service.generate_issue_explanations([issue]))
 
-    assert result.explanations == {}
-    assert result.rejected_explanation_count == 1
+    assert issue.issue_id in result.explanations
+    assert result.explanations[issue.issue_id].code_example is None
+    assert result.rejected_explanation_count == 0
+
+
+def test_invalid_learning_resource_is_dropped_while_preserving_explanation(monkeypatch):
+    issue = _issue()
+
+    async def complete(_system, _prompt):
+        return json.dumps({"explanations": [{
+            "issue_id": issue.issue_id,
+            "explanation": _explanation(learning_resources=[
+                {"title": "Untrusted", "url": "https://evil.example/malicious"},
+                {"title": "Valid Docs", "url": "https://docs.python.org/3/library/subprocess.html"},
+            ]),
+        }]})
+
+    _stub_validated_completion(monkeypatch, complete)
+    result = asyncio.run(service.generate_issue_explanations([issue]))
+
+    assert issue.issue_id in result.explanations
+    resources = result.explanations[issue.issue_id].learning_resources
+    assert len(resources) == 1
+    assert resources[0].title == "Valid Docs"
+    assert resources[0].url == "https://docs.python.org/3/library/subprocess.html"
+    assert result.rejected_explanation_count == 0
+
+
+def test_invalid_optional_code_example_is_dropped_while_preserving_explanation(monkeypatch):
+    issue = _issue(line=4)
+    diff_files = [{
+        "path": "src/runner.py",
+        "hunks": [{"lines": [{"kind": "context", "line": 4, "text": "subprocess.run(cmd)"}]}],
+    }]
+
+    async def complete(_system, _prompt):
+        return json.dumps({"explanations": [{
+            "issue_id": issue.issue_id,
+            "explanation": _explanation(code_example={"before": "only before side"}),  # Missing 'after'
+        }]})
+
+    _stub_validated_completion(monkeypatch, complete)
+    result = asyncio.run(service.generate_issue_explanations([issue], diff_files=diff_files))
+
+    assert issue.issue_id in result.explanations
+    assert result.explanations[issue.issue_id].code_example is None
+    assert result.rejected_explanation_count == 0
+
+
+def test_harmless_extra_fields_at_all_levels_are_tolerated(monkeypatch):
+    issue = _issue()
+
+    async def complete(_system, _prompt):
+        return json.dumps({
+            "status": "success",
+            "model_version": "gpt-4o",
+            "notes": "Generated with high confidence.",
+            "explanations": [{
+                "issue_id": issue.issue_id,
+                "category": "security",
+                "file_path": "src/runner.py",
+                "explanation": _explanation(
+                    title="Shell Injection vulnerability",
+                    confidence="high",
+                    tags=["security", "cwe-78"],
+                ),
+            }],
+        })
+
+    _stub_validated_completion(monkeypatch, complete)
+    result = asyncio.run(service.generate_issue_explanations([issue]))
+
+    assert issue.issue_id in result.explanations
+    assert result.explanations[issue.issue_id].summary == "Untrusted data may be interpreted as shell syntax."
+    assert result.rejected_explanation_count == 0
+
+
+def test_single_issue_response_unwrapped_formats(monkeypatch):
+    issue = _issue()
+
+    # Format A: {"issue_id": "...", "explanation": {...}}
+    async def complete_with_id(_system, _prompt):
+        return json.dumps({
+            "issue_id": issue.issue_id,
+            "explanation": _explanation(summary="Unwrapped single issue with ID."),
+        })
+
+    _stub_validated_completion(monkeypatch, complete_with_id)
+    result_a = asyncio.run(service.generate_issue_explanations([issue]))
+    assert issue.issue_id in result_a.explanations
+    assert result_a.explanations[issue.issue_id].summary == "Unwrapped single issue with ID."
+
+    # Format B: {"explanation": {...}} with implicit single expected ID
+    async def complete_implicit(_system, _prompt):
+        return json.dumps({
+            "explanation": _explanation(summary="Unwrapped single issue implicit ID."),
+        })
+
+    _stub_validated_completion(monkeypatch, complete_implicit)
+    result_b = asyncio.run(service.generate_issue_explanations([issue]))
+    assert issue.issue_id in result_b.explanations
+    assert result_b.explanations[issue.issue_id].summary == "Unwrapped single issue implicit ID."
+
+
+def test_markdown_code_fence_wrapper_is_tolerated(monkeypatch):
+    issue = _issue()
+
+    async def complete(_system, _prompt):
+        inner = json.dumps({"explanations": [{"issue_id": issue.issue_id, "explanation": _explanation()}]})
+        return f"```json\n{inner}\n```"
+
+    _stub_validated_completion(monkeypatch, complete)
+    result = asyncio.run(service.generate_issue_explanations([issue]))
+
+    assert issue.issue_id in result.explanations
+    assert result.rejected_explanation_count == 0
+
+
+def test_one_invalid_explanation_preserves_valid_explanations_in_same_batch(monkeypatch):
+    issue_a = _issue("issue-a")
+    issue_b = _issue("issue-b")
+    issue_c = _issue("issue-c")
+
+    async def complete(_system, _prompt):
+        return json.dumps({"explanations": [
+            {"issue_id": "issue-a", "explanation": _explanation(summary="Valid summary A.")},
+            {"issue_id": "issue-b", "explanation": {"summary": "missing other required fields"}},
+            {"issue_id": "issue-unknown", "explanation": _explanation(summary="Unknown issue.")},
+            {"issue_id": "issue-c", "explanation": _explanation(summary="Valid summary C.")},
+        ]})
+
+    _stub_validated_completion(monkeypatch, complete)
+    result = asyncio.run(service.generate_issue_explanations([issue_a, issue_b, issue_c]))
+
+    # Valid explanations for known issues are preserved
+    assert set(result.explanations) == {"issue-a", "issue-c"}
+    assert result.explanations["issue-a"].summary == "Valid summary A."
+    assert result.explanations["issue-c"].summary == "Valid summary C."
+    # issue-b had missing required fields (rejected=1), issue-unknown was unknown (rejected=1)
+    assert result.rejected_explanation_count == 2
+    assert result.failed_batch_count == 0
 
 
 def test_partial_response_keeps_valid_explanations_and_omits_missing_ones(monkeypatch):
@@ -230,7 +369,7 @@ def test_unknown_duplicate_and_malformed_issue_entries_are_rejected(monkeypatch)
     json.dumps({"other": []}),
     json.dumps({"explanations": "wrong type"}),
     json.dumps({"explanations": [{"issue_id": "issue-1", "explanation": {"summary": "missing fields"}}]}),
-    json.dumps({"explanations": [{"issue_id": "issue-1", "explanation": _explanation(learning_resources=[{"title": "Bad", "url": "https://evil.example/"}])}]}),
+    json.dumps({"explanations": [{"issue_id": "issue-1", "explanation": "not a dict"}]}),
     json.dumps({"explanations": [{"issue_id": "issue-1", "explanation": _explanation(summary="x" * 2_001)}]}),
 ])
 def test_malformed_or_invalid_batch_is_rejected_without_raising(monkeypatch, payload):
@@ -310,3 +449,107 @@ def test_prompt_requires_explicit_uncertainty_and_rejects_unfounded_claims():
     assert "Distinguish confirmed evidence, reasonable interpretation, and unknowns." in CANONICAL_ISSUE_EXPLANATION_GUIDANCE
     assert "If evidence is insufficient, say what is uncertain in caveats." in CANONICAL_ISSUE_EXPLANATION_GUIDANCE
     assert "Do not state a root cause" in CANONICAL_ISSUE_EXPLANATION_GUIDANCE
+
+
+def test_realistic_frontier_provider_response_with_markdown_and_mixed_resources(monkeypatch):
+    issue = _issue(line=4)
+    source = "line 1\nline 2\nline 3\nsubprocess.run(command, shell=True)\nline 5\n"
+
+    # Realistic payload returned by frontier models (markdown fenced, usage stats, extra keys, mixed URLs)
+    realistic_payload = """```json
+{
+  "id": "chatcmpl-9A8B7C",
+  "object": "chat.completion",
+  "created": 1731512400,
+  "model": "gpt-4o",
+  "notes": "Reviewed security implications of shell=True.",
+  "explanations": [
+    {
+      "issue_id": "issue-1",
+      "title": "OS Command Injection Risk",
+      "category": "security",
+      "severity": "high",
+      "explanation": {
+        "summary": "Passing untrusted input with shell=True allows arbitrary shell execution.",
+        "why_it_matters": "An attacker who controls user_input can run arbitrary commands with host privileges.",
+        "root_cause": "The subprocess.run call enables the shell parser on untrusted command strings.",
+        "correction": "Pass arguments as a sequence without shell=True, and validate arguments strictly.",
+        "concept": "Separating arguments from shell syntax prevents injection attacks.",
+        "severity_level": "high",
+        "learning_resources": [
+          {"title": "Python subprocess security", "url": "https://docs.python.org/3/library/subprocess.html", "description": "Security considerations for subprocess."},
+          {"title": "Random Blog Post", "url": "https://random-blog.example/shell-injection"},
+          {"title": "StackOverflow Thread", "url": "https://stackoverflow.com/questions/12345?ref=tracker"}
+        ],
+        "caveats": [
+          "The surrounding input validation could not be determined from the available diff.",
+          "   "
+        ],
+        "code_example": {
+          "before": "subprocess.run(cmd, shell=True)",
+          "after": "subprocess.run(['prog', arg], check=True)",
+          "language": "python"
+        }
+      }
+    }
+  ]
+}
+```"""
+
+    async def complete(_system, _prompt):
+        return realistic_payload
+
+    _stub_validated_completion(monkeypatch, complete)
+    result = asyncio.run(service.generate_issue_explanations([issue], source_files=[("src/runner.py", source)]))
+
+    assert issue.issue_id in result.explanations
+    explanation = result.explanations[issue.issue_id]
+    assert explanation.summary.startswith("Passing untrusted input")
+    assert explanation.code_example is not None
+    assert explanation.code_example.after == "subprocess.run(['prog', arg], check=True)"
+    # Only the approved python docs URL was preserved; untrusted / query-string URLs were safely dropped
+    assert len(explanation.learning_resources) == 1
+    assert explanation.learning_resources[0].url == "https://docs.python.org/3/library/subprocess.html"
+    # Blank caveat was safely stripped
+    assert len(explanation.caveats) == 1
+    assert result.rejected_explanation_count == 0
+    assert result.failed_batch_count == 0
+
+
+def test_realistic_frontier_provider_response_without_source_context_drops_code_example(monkeypatch):
+    issue = _issue(line=999)  # Line not in source context
+
+    realistic_payload = """```json
+{
+  "explanations": [
+    {
+      "issue_id": "issue-1",
+      "explanation": {
+        "summary": "Shell injection is possible when executing commands with shell=True.",
+        "why_it_matters": "Arbitrary command execution.",
+        "root_cause": "Shell expansion is active.",
+        "correction": "Use argument list.",
+        "concept": "Command separation.",
+        "learning_resources": [],
+        "caveats": [],
+        "code_example": {
+          "before": "subprocess.run(cmd, shell=True)",
+          "after": "subprocess.run(['sh', cmd])"
+        }
+      }
+    }
+  ]
+}
+```"""
+
+    async def complete(_system, _prompt):
+        return realistic_payload
+
+    _stub_validated_completion(monkeypatch, complete)
+    result = asyncio.run(service.generate_issue_explanations([issue]))
+
+    # Valid explanation preserved, ungrounded code example safely stripped to None
+    assert issue.issue_id in result.explanations
+    explanation = result.explanations[issue.issue_id]
+    assert explanation.code_example is None
+    assert result.rejected_explanation_count == 0

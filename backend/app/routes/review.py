@@ -8,11 +8,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
+import sqlite3
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
+from pymongo.errors import PyMongoError
+
+from app.database.mongo_connection import StorageUnavailable
 
 from app.ai_review.generated_tests import generate_tests_for_fix
 from app.ai_review.semantic_review import review_fix_semantics
@@ -50,6 +55,7 @@ from app.services.review_orchestrator import analyze
 from app.verification.source_analysis import validate_static_fix
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
+_logger = logging.getLogger(__name__)
 
 
 @router.post("/{review_id}/issues/{issue_id}/fixes/{fix_id}/generate-tests")
@@ -374,7 +380,7 @@ async def validate_suggested_fix(
 async def analyze_review(
     payload: AnalyzeRequest,
     claims: Annotated[dict[str, Any], Depends(current_claims)],
-    github_token: str | None = Header(default=None, alias="X-GitHub-Token", max_length=512),
+    github_token: Annotated[str | None, Header(alias="X-GitHub-Token", max_length=512)] = None,
 ):
     if github_token and any(ord(char) < 32 or ord(char) == 127 for char in github_token):
         raise HTTPException(status_code=400, detail="The GitHub provider token is malformed.")
@@ -409,8 +415,14 @@ async def analyze_review(
         raise HTTPException(status_code=status, detail=detail) from exc
     except ValueError as exc:
         raise HTTPException(status_code=502, detail="GitHub returned data that could not be processed.") from exc
-    except Exception as exc:
+    except (StorageUnavailable, PyMongoError, sqlite3.Error) as exc:
+        _logger.error("Review persistence failure: %s", exc, exc_info=True)
         raise HTTPException(status_code=503, detail="Review could not be completed or persisted.") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.exception("Unexpected review processing error: %s", exc)
+        raise HTTPException(status_code=500, detail="Internal review processing failure.") from exc
 
 
 @router.get("/history", response_model=list[ReviewResponse])

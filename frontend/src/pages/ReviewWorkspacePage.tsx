@@ -442,9 +442,34 @@ function hasLegacyExplanation(finding: ReviewFinding) {
 }
 
 function ToolGroup({ title, tools, empty }: { title: string; tools: ToolResult[]; empty: string }) {
-  return <section className="workspace-tool-group"><h3>{title}</h3>{tools.length ? tools.map((tool, index) => <article className="workspace-tool" key={`${tool.tool}-${index}`}><div><strong>{pretty(tool.tool)}</strong><span className={`workspace-tool-status status-${tool.status.replace(/[^a-z]/gi, '-').toLowerCase()}`}>{tool.executed === false ? 'Not executed' : pretty(tool.status)}</span></div><p>{tool.reason || tool.message || (tool.findings ? `${tool.findings.length} diagnostics reported` : tool.executed === false ? 'The backend reports that this stage did not execute.' : 'Status returned by the backend.')}</p></article>) : <p className="workspace-muted">{empty}</p>}</section>;
+  return <section className="workspace-tool-group"><h3>{title}</h3>{tools.length ? tools.map((tool, index) => {
+    const diagnostics = Array.isArray(tool.findings) ? tool.findings : [];
+    return <article className="workspace-tool" key={`${tool.tool}-${index}`}>
+      <div><strong>{pretty(tool.tool)}</strong><span className={`workspace-tool-status status-${tool.status.replace(/[^a-z]/gi, '-').toLowerCase()}`}>{tool.executed === false ? 'Not executed' : pretty(tool.status)}</span></div>
+      <p>{tool.reason || tool.message || (tool.findings ? `${diagnostics.length} diagnostics reported` : tool.executed === false ? 'The backend reports that this stage did not execute.' : 'Status returned by the backend.')}</p>
+      {tool.tool === 'ai_review' && diagnostics.length > 0 && <div className="workspace-tool-diagnostics" aria-label="AI review findings">
+        <strong>AI findings</strong>
+        <ol>{diagnostics.map((diagnostic, diagnosticIndex) => {
+          const finding = diagnostic as Record<string, unknown>;
+          const title = toolText(finding.title) || toolText(finding.description) || `AI finding ${diagnosticIndex + 1}`;
+          const description = toolText(finding.description);
+          const filePath = toolText(finding.file_path);
+          const line = typeof finding.line_start === 'number' ? formatLine(finding.line_start, typeof finding.line_end === 'number' ? finding.line_end : null) : '';
+          const severity = toolText(finding.severity);
+          return <li key={`${filePath}-${line}-${diagnosticIndex}`}>
+            <strong>{title}</strong>
+            {description && description !== title && <p>{description}</p>}
+            {(severity || filePath || line) && <small>{[severity && pretty(severity), filePath, line].filter(Boolean).join(' · ')}</small>}
+          </li>;
+        })}</ol>
+      </div>}
+    </article>;
+  }) : <p className="workspace-muted">{empty}</p>}</section>;
 }
 
+function toolText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
 function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
   return <article className="workspace-metric"><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;
 }
