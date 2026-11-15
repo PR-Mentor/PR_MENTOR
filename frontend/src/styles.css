@@ -436,7 +436,6 @@ a { color: inherit; }
 .workspace-explanation-card > p strong { display: block; color: var(--ink); }
 .workspace-validation-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .workspace-tool { padding: 10px 0; border-top: 1px solid var(--line); }
-codex/phone-otp-login
 .workspace-tool > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; }
 .workspace-tool-status { color: var(--muted); text-align: right; font-size: 12px; }
 .workspace-tool p { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
@@ -453,7 +452,6 @@ codex/phone-otp-login
 .workspace-tool-diagnostics li > p { margin: 4px 0; }
 .workspace-tool-diagnostics li > small { color: var(--muted); }
 .workspace-validation-note { gap: 7px; color: var(--muted); font-size: 10px; }
- main
 .workspace-file-list { border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
 .workspace-file-list > div { gap: 12px; padding: 11px 12px; border-bottom: 1px solid var(--line); font-size: 12px; line-height: 1.5; }
 .workspace-file-list > div:last-child { border-bottom: 0; }
