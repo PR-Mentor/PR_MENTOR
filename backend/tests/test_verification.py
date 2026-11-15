@@ -83,9 +83,9 @@ def test_test_runner_never_executes_supplied_target_or_command():
     with patch("subprocess.run") as run:
         result = run_tests(target="untrusted/path", command="malicious command")
     run.assert_not_called()
-    assert result["status"] == "unavailable"
+    assert result["status"] == "pending"
     assert result["executed"] is False
-    assert "isolated" in result["message"]
+    assert "GitHub Actions" in result["message"]
 
 @pytest.mark.parametrize("module,func,stdout", [
     ("app.verification.ruff_runner", run_ruff, "{}"),

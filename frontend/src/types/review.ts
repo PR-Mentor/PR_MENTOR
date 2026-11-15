@@ -311,6 +311,7 @@ export interface ToolResult {
   files_received?: number;
   analyzable_patch_files?: number;
   findings?: Array<Record<string, unknown>>;
+  html_url?: string | null;
   issue_count?: number;
   explained_issue_count?: number;
   batch_count?: number;

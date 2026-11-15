@@ -75,6 +75,13 @@ function render(data, extra = {}) {
   }));
 }
 
+test('hides the obsolete sandbox-only PR test warning on saved reviews', () => {
+  const html = render(review({ warnings: [
+    'PR tests are unavailable until an isolated container or sandbox runner is configured.',
+  ] }));
+  assert.equal(html.includes('PR tests are unavailable until an isolated container'), false);
+});
+
 test('renders overview counts, canonical issue, provenance, evidence, explanation, validation and diff', () => {
   const html = render(review());
   for (const content of ['Review overview', 'UNIQUE ISSUES', '>1<', 'OBSERVATIONS', 'Findings',

@@ -1,14 +1,14 @@
-"""Safe placeholder for test execution until an isolated runner is configured."""
+"""PR-suite status is reported by GitHub Actions, never executed by the API."""
 
 from typing import Any
 
 
 def run_tests(*, target: str | None = None, command: str | None = None) -> dict[str, Any]:
-    """Report that tests are unavailable; never execute supplied code or commands."""
+    """Return a neutral placeholder while the review is persisted and Actions is queried."""
     del target, command  # Inputs are intentionally not executed or interpreted.
     return {
-        "status": "unavailable",
+        "status": "pending",
         "executed": False,
-        "message": "PR tests are unavailable until an isolated container or sandbox runner is configured.",
+        "message": "PR test results are retrieved from GitHub Actions for this pull request.",
         "findings": [],
     }
