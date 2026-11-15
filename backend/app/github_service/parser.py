@@ -14,6 +14,7 @@ _PR_PATH = re.compile(
     r"^/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)"
     r"(?:/(?:files|commits|checks|conversation))?/?$"
 )
+_FULL_SHA = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 
 
 class InvalidPullRequestURL(ValueError):
@@ -106,19 +107,41 @@ def parse_pull_request_metadata(
     if body is not None and not isinstance(body, str):
         raise GitHubServiceError("GitHub returned malformed pull request body data.")
 
+    base_repository = _mapping(base.get("repo"), "base repository")
+    base_owner = _mapping(base_repository.get("owner"), "base repository owner")
+    if (
+        _text(base_owner.get("login"), "base repository owner").casefold() != coordinates.owner.casefold()
+        or _text(base_repository.get("name"), "base repository name").casefold() != coordinates.repo.casefold()
+    ):
+        raise GitHubServiceError("GitHub returned a pull request for a different base repository.")
+    base_sha = _text(base.get("sha"), "base commit")
+    head_sha = _text(head.get("sha"), "head commit")
+    if not _FULL_SHA.fullmatch(base_sha) or not _FULL_SHA.fullmatch(head_sha):
+        raise GitHubServiceError("GitHub returned an invalid pull request commit SHA.")
+    html_url = _text(pull_request.get("html_url"), "pull request URL")
+    expected_url = f"https://github.com/{coordinates.owner}/{coordinates.repo}/pull/{coordinates.number}"
+    if html_url.rstrip("/").casefold() != expected_url.casefold():
+        raise GitHubServiceError("GitHub returned a noncanonical pull request URL.")
+    title = _text(pull_request.get("title"), "pull request title")
+    author = _text(user.get("login"), "pull request author")
+    base_ref = _text(base.get("ref"), "base branch name")
+    head_ref = _text(head.get("ref"), "head branch name")
+    if any(len(value) > 500 for value in (title, author, base_ref, head_ref)) or (body and len(body) > 100_000):
+        raise GitHubServiceError("GitHub pull request metadata exceeded a safety limit.")
+
     return {
         "owner": coordinates.owner,
         "repo": coordinates.repo,
         "number": number,
-        "title": _text(pull_request.get("title"), "pull request title"),
+        "title": title,
         "body": body,
         "state": _text(pull_request.get("state"), "pull request state"),
-        "html_url": _text(pull_request.get("html_url"), "pull request URL"),
-        "author": _text(user.get("login"), "pull request author"),
-        "base_ref": _text(base.get("ref"), "base branch name"),
-        "base_sha": _text(base.get("sha"), "base commit"),
-        "head_ref": _text(head.get("ref"), "head branch name"),
-        "head_sha": _text(head.get("sha"), "head commit"),
+        "html_url": html_url,
+        "author": author,
+        "base_ref": base_ref,
+        "base_sha": base_sha,
+        "head_ref": head_ref,
+        "head_sha": head_sha,
         "changed_files": _integer(pull_request.get("changed_files"), "changed file count"),
     }
 

@@ -63,6 +63,14 @@ def test_sha_and_workflow_identity_are_required(monkeypatch):
     assert asyncio.run(actions_status.get_pr_test_status("acme", "project", 1, sha))["status"] == "not_configured"
 
 
+@pytest.mark.parametrize("bad_sha", [None, 1, [], "short"])
+def test_invalid_sha_fails_closed_without_raising(bad_sha):
+    result = asyncio.run(actions_status.get_pr_test_status("acme", "project", 1, bad_sha))
+    assert result["status"] == "unavailable"
+    assert result["executed"] is False
+    assert result["head_sha"] is None
+
+
 def test_invalid_external_link_is_not_returned(monkeypatch):
     sha = "c" * 40
     async def fake_json(*_args, **_kwargs):
