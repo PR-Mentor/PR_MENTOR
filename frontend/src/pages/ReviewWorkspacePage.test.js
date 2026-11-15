@@ -75,11 +75,16 @@ function render(data, extra = {}) {
   }));
 }
 
-test('hides the obsolete sandbox-only PR test warning on saved reviews', () => {
+test('hides PR suite details from the review workspace', () => {
   const html = render(review({ warnings: [
     'PR tests are unavailable until an isolated container or sandbox runner is configured.',
+    'No PR Tests workflow run was found for this commit.',
   ] }));
-  assert.equal(html.includes('PR tests are unavailable until an isolated container'), false);
+  assert.equal(html.includes('PR tests'), false);
+  assert.equal(html.includes('No PR Tests workflow run'), false);
+  assert.equal(html.includes('No test runner configured.'), false);
+  assert.ok(html.includes('Static analysis'));
+  assert.ok(html.includes('AI review'));
 });
 
 test('renders overview counts, canonical issue, provenance, evidence, explanation, validation and diff', () => {
@@ -88,7 +93,7 @@ test('renders overview counts, canonical issue, provenance, evidence, explanatio
     'Untrusted input reaches shell execution.', 'AI candidate', 'AI reviewer', 'SEC-1',
     'Original evidence and context', 'subprocess.run(command, shell=True)', 'AI explanations',
     'AI-generated guidance', 'Untrusted input can reach shell execution.', 'Root cause', 'Concept',
-    'Python subprocess documentation', 'Limitations and uncertainty', 'PR tests', 'Not executed',
+    'Python subprocess documentation', 'Limitations and uncertainty',
     'src/run.py', 'Open full diff', 'Review history']) {
     assert.ok(html.includes(content), `expected rendered workspace to include: ${content}`);
   }
