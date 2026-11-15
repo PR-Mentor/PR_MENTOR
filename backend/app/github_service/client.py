@@ -23,6 +23,7 @@ BACKOFF_BASE_SECONDS = 0.25
 BACKOFF_MAX_SECONDS = 2.0
 CACHE_TTL_SECONDS = 60.0
 CACHE_MAX_ENTRIES = 256
+MAX_GITHUB_RESPONSE_BYTES = 5_000_000
 _response_cache: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[float, Any]] = {}
 _inflight_requests: dict[tuple[str, tuple[tuple[str, str], ...]], asyncio.Task[Any]] = {}
 _logger = logging.getLogger(__name__)
@@ -134,6 +135,17 @@ async def request_json(
     *,
     use_cache: bool = True,
 ) -> Any:
+    if (
+        not isinstance(path, str)
+        or not path.startswith("/repos/")
+        or path.startswith("//")
+        or "\\" in path
+        or "\x00" in path
+        or any(segment in {".", ".."} for segment in path.split("/"))
+        or "?" in path
+        or "#" in path
+    ):
+        raise ValueError("GitHub API requests must use a fixed relative repository path.")
     cache_key: tuple[str, tuple[tuple[str, str], ...]] | None = None
     if use_cache:
         normalized_params = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
@@ -214,6 +226,15 @@ async def _execute_request(
                         friendly += f" Try again after {retry_at}."
                 raise GitHubAPIError(friendly, 429, rate_limit=details, kind=kind)
             raise GitHubAPIError(message, response.status_code, rate_limit=details)
+        content_length = response.headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > MAX_GITHUB_RESPONSE_BYTES:
+                    raise GitHubAPIError("GitHub API response exceeded the configured size limit.", 502)
+            except ValueError as exc:
+                raise GitHubAPIError("GitHub returned an invalid response size.", 502) from exc
+        if len(response.content) > MAX_GITHUB_RESPONSE_BYTES:
+            raise GitHubAPIError("GitHub API response exceeded the configured size limit.", 502)
         try:
             result = response.json()
         except (ValueError, TypeError) as exc:

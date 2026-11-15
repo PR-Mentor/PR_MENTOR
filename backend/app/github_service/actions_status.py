@@ -53,4 +53,5 @@ async def get_pr_test_status(owner: str, repo: str, number: int, head_sha: str) 
 
 
 def _unavailable(sha: str, summary: str) -> dict[str, Any]:
-    return {"status": "unavailable", "executed": False, "head_sha": sha.lower(), "workflow": WORKFLOW_NAME, "conclusion": None, "summary": summary, "html_url": None, "updated_at": None}
+    safe_sha = sha.lower() if isinstance(sha, str) and SHA_RE.fullmatch(sha) else None
+    return {"status": "unavailable", "executed": False, "head_sha": safe_sha, "workflow": WORKFLOW_NAME, "conclusion": None, "summary": summary, "html_url": None, "updated_at": None}

@@ -2,7 +2,7 @@ import httpx
 import pytest
 from app.github_service.client import GitHubClient, GitHubServiceError
 from app.github_service.files import fetch_pull_request_files
-from app.github_service.parser import parse_pull_request_url
+from app.github_service.parser import PullRequestCoordinates, parse_pull_request_metadata, parse_pull_request_url
 from app.github_service.pull_requests import ingest_pull_request
 
 
@@ -14,8 +14,8 @@ def sample_pr_response():
         "state": "open",
         "html_url": "https://github.com/acme/widget/pull/12",
         "user": {"login": "contributor"},
-        "base": {"ref": "main", "sha": "base-sha"},
-        "head": {"ref": "fix/parser", "sha": "head-sha"},
+        "base": {"ref": "main", "sha": "b" * 40, "repo": {"name": "widget", "owner": {"login": "acme"}}},
+        "head": {"ref": "fix/parser", "sha": "a" * 40},
         "changed_files": 1,
     }
 
@@ -83,9 +83,9 @@ def test_ingest_pull_request_builds_agreed_payload():
         "html_url": "https://github.com/acme/widget/pull/12",
         "author": "contributor",
         "base_ref": "main",
-        "base_sha": "base-sha",
+        "base_sha": "b" * 40,
         "head_ref": "fix/parser",
-        "head_sha": "head-sha",
+        "head_sha": "a" * 40,
         "changed_files": 1,
     }
     assert payload["files"] == [
@@ -96,6 +96,23 @@ def test_ingest_pull_request_builds_agreed_payload():
         }
     ]
     assert payload["files_truncated"] is False
+
+
+@pytest.mark.parametrize(("path", "value"), [
+    (("base", "repo", "owner", "login"), "other-owner"),
+    (("base", "repo", "name"), "other-repo"),
+    (("head", "sha"), "not-a-full-sha"),
+    (("html_url",), "https://attacker.example/acme/widget/pull/12"),
+])
+def test_pull_request_metadata_must_match_canonical_identity(path, value):
+    response = sample_pr_response()
+    target = response
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    with pytest.raises(GitHubServiceError):
+        parse_pull_request_metadata(response, PullRequestCoordinates("acme", "widget", 12))
 
 
 def test_ingest_marks_file_list_truncated_at_page_limit():
@@ -615,3 +632,38 @@ def test_rate_limit_retries_stop_at_exact_limit(monkeypatch):
     asyncio.run(run())
     assert len(requests) == github_client.MAX_RETRIES + 1
     assert delays == [github_client.BACKOFF_BASE_SECONDS, github_client.BACKOFF_BASE_SECONDS * 2]
+
+
+@pytest.mark.parametrize("path", [
+    "https://attacker.example/collect",
+    "//attacker.example/collect",
+    "/repos/acme/widget/../secrets",
+    "/repos/acme/widget/pulls/1?redirect=https://attacker.example",
+])
+def test_github_api_rejects_untrusted_request_paths(path):
+    async def run():
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(ValueError, match="fixed relative repository path"):
+                await request_json(client, path)
+
+    asyncio.run(run())
+
+
+def test_github_api_rejects_oversized_response():
+    github_client._response_cache.clear()
+    github_client._inflight_requests.clear()
+
+    def handler(request):
+        return httpx.Response(
+            200,
+            content=b"{}",
+            headers={"Content-Length": str(github_client.MAX_GITHUB_RESPONSE_BYTES + 1)},
+            request=request,
+        )
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(GitHubAPIError, match="size limit"):
+                await request_json(client, "/repos/size-limit/pulls/1", use_cache=False)
+
+    asyncio.run(run())
