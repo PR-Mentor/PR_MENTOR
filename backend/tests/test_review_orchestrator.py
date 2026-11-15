@@ -22,11 +22,15 @@ def _bundle():
         head_branch="fix/parser",
         head_sha="head-sha",
         state="open",
-        changed_files=0,
-        additions=0,
+        changed_files=1,
+        additions=1,
         deletions=0,
     )
-    return PullRequestBundle(metadata=metadata, files=[])
+    from app.schemas.github import ChangedFile
+    return PullRequestBundle(metadata=metadata, files=[ChangedFile(
+        filename="src/parser.py", status="modified", additions=1, deletions=0,
+        changes=1, patch="@@ -1 +1 @@\n-old\n+if value is None: raise ValueError", size=64,
+    )])
 
 
 def test_live_orchestrator_includes_ai_candidates(monkeypatch):
@@ -41,7 +45,7 @@ def test_live_orchestrator_includes_ai_candidates(monkeypatch):
         confidence=0.8,
         source="ai_candidate",
         verification_status="needs_review",
-        evidence=["The diff adds a conditional."],
+        evidence=["if value is None: raise ValueError"],
         why_it_matters="One input case may not be handled.",
         suggested_fix="Handle the alternate input explicitly.",
         learning_explanation="Check both sides of the condition.",

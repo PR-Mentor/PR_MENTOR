@@ -45,7 +45,7 @@ def _candidate(**overrides):
         "severity": "medium",
         "category": "bug",
         "confidence": 0.62,
-        "evidence": ["The diff adds a conditional."],
+        "evidence": ["if value is None: raise ValueError"],
         "why_it_matters": "The alternate case may be skipped.",
         "suggested_fix": "Add a case-specific test.",
         "learning_explanation": "Review both paths.",
@@ -60,8 +60,11 @@ def test_reviewer_validates_candidates_and_marks_them_unverified(monkeypatch):
         return json.dumps({"findings": [_candidate()]})
 
     monkeypatch.setattr(reviewer, "complete_json", complete_json)
+    files = [{"path": "src/example.py", "hunks": [{"lines": [
+        {"kind": "added", "line": 3, "text": "if value is None: raise ValueError"},
+    ]}]}]
     findings = asyncio.run(
-        reviewer.generate_candidates({"title": "Example"}, [], [])
+        reviewer.generate_candidates({"title": "Example"}, files, [])
     )
 
     assert len(findings) == 1
