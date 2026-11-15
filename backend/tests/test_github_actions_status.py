@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from app.github_service import actions_status
+ codex/phone-otp-login
 from app.verification.test_runner import run_tests
 
 
@@ -14,6 +15,8 @@ def test_review_placeholder_defers_to_github_actions_without_sandbox_warning():
     assert result["executed"] is False
     assert "GitHub Actions" in result["message"]
     assert "sandbox" not in result["message"].lower()
+
+ main
 
 
 def _run(sha: str, **overrides):
