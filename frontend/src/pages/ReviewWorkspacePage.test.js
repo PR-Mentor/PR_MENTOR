@@ -75,6 +75,7 @@ function render(data, extra = {}) {
   }));
 }
 
+ codex/phone-otp-login
 test('hides PR suite details from the review workspace', () => {
   const html = render(review({ warnings: [
     'PR tests are unavailable until an isolated container or sandbox runner is configured.',
@@ -85,6 +86,13 @@ test('hides PR suite details from the review workspace', () => {
   assert.equal(html.includes('No test runner configured.'), false);
   assert.ok(html.includes('Static analysis'));
   assert.ok(html.includes('AI review'));
+
+test('hides the obsolete sandbox-only PR test warning on saved reviews', () => {
+  const html = render(review({ warnings: [
+    'PR tests are unavailable until an isolated container or sandbox runner is configured.',
+  ] }));
+  assert.equal(html.includes('PR tests are unavailable until an isolated container'), false);
+ main
 });
 
 test('renders overview counts, canonical issue, provenance, evidence, explanation, validation and diff', () => {
