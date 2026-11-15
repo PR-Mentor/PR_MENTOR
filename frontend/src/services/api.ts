@@ -225,3 +225,8 @@ export function getTestExecutionJob(executionId: string): Promise<TestExecutionJ
 export function cancelTestExecution(executionId: string): Promise<{ status: string }> {
   return request(`/api/reviews/execution-jobs/${encodeURIComponent(executionId)}`, { method: 'DELETE' });
 }
+
+export interface PRTestStatus { status: string; executed: boolean; head_sha: string; workflow: string; conclusion: string | null; summary: string; html_url: string | null; updated_at: string | null }
+export function getPRTestStatus(reviewId: string): Promise<PRTestStatus> {
+  return request(`/api/reviews/${encodeURIComponent(reviewId)}/pr-tests`);
+}
