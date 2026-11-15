@@ -332,7 +332,7 @@ def test_live_review_reconciles_static_and_ai_and_persists_observations(client, 
 
     head_sha = "8" * 40
     metadata = PullRequestMetadata(repository_owner="owner", repository_name="repo", repository_url="https://github.com/owner/repo", pull_request_number=8, pull_request_url="https://github.com/owner/repo/pull/8", title="Fix query", description=None, author="dev", base_branch="main", head_branch="fix", head_sha=head_sha, state="open", changed_files=1, additions=1, deletions=0)
-    bundle = PullRequestBundle(metadata=metadata, files=[ChangedFile(filename="src/query.py", status="modified", additions=1, deletions=0, changes=1, patch="@@ -1 +1 @@\n-old\n+new", size=12)])
+    bundle = PullRequestBundle(metadata=metadata, files=[ChangedFile(filename="src/query.py", status="modified", additions=1, deletions=0, changes=1, patch="@@ -1 +1 @@\n-old\n+import os", size=12)])
 
     async def fetch(_url):
         return bundle
