@@ -72,13 +72,8 @@ export default function ReviewWorkspacePage({
     </header>
 
     {review.is_demo && <div className="workspace-notice demo-notice"><Sparkles size={16}/><span>Illustrative demo data only. These issues do not describe the submitted pull request.</span></div>}
- codex/phone-otp-login
     {visibleWarnings.length > 0 && <div className="workspace-warnings" aria-label="Review warnings">
       {visibleWarnings.map((warning, index) => <div key={`${index}-${warning}`}><CircleAlert size={14}/>{warning}</div>)}
-
-    {review.warnings?.filter((warning) => !warning.toLowerCase().includes('pr tests are unavailable until an isolated container or sandbox runner is configured')).length > 0 && <div className="workspace-warnings" aria-label="Review warnings">
-      {review.warnings.filter((warning) => !warning.toLowerCase().includes('pr tests are unavailable until an isolated container or sandbox runner is configured')).map((warning, index) => <div key={`${index}-${warning}`}><CircleAlert size={14}/>{warning}</div>)}
- main
     </div>}
 
     <nav className="workspace-nav" aria-label="Review sections">
@@ -124,10 +119,6 @@ export default function ReviewWorkspacePage({
       <div className="workspace-validation-grid">
         <ToolGroup title="Static analysis" tools={tools.filter((tool) => ['ruff', 'bandit'].includes(tool.tool))} empty="No Ruff or Bandit status was returned."/>
         <ToolGroup title="AI review" tools={tools.filter((tool) => tool.tool === 'ai_review')} empty="No AI review status was returned."/>
- codex/phone-otp-login
-
-        <ToolGroup title="PR tests" tools={prTests ? [{ tool: 'tests', status: prTests.status, executed: prTests.executed, message: prTests.summary, html_url: prTests.html_url }] : tools.filter((tool) => tool.tool === 'tests')} empty="PR test status is retrieved from GitHub Actions for this pull request."/>
- main
       </div>
       <p className="workspace-validation-note"><ShieldCheck size={14}/> Tool status is shown as reported by the enabled review tools.</p>
     </section>
