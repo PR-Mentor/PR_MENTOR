@@ -2,7 +2,9 @@ import {
   Activity, ArrowRight, CircleAlert, ExternalLink, FileCode2, GitPullRequest,
   History, ShieldCheck, Sparkles,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { getPRTestStatus } from '../services/api';
+import type { PRTestStatus } from '../services/api';
 import { cancelTestExecution, enqueueTestExecution, generateTestsForFix, getRepositoryIntelligence, getTestExecutionJob, requestSemanticReview, validateSuggestedFix } from '../services/api';
 import type { CanonicalIssue, DiffFile, FixValidationReport, GeneratedTestCase, IssueExplanation, LearningResource, RepositoryIntelligence, ReviewFinding, ReviewResponse, SuggestedFix, TestExecutionJob, ToolResult } from '../types/review';
 
@@ -47,6 +49,28 @@ export default function ReviewWorkspacePage({
   const uniqueCount = review.unique_issue_count ?? (issueData.mode === 'canonical' ? issueData.issues.length : null);
   const observationCount = review.raw_observation_count ?? review.findings?.length ?? 0;
   const tools = review.tool_results ?? [];
+  const [prTests, setPRTests] = useState<PRTestStatus | null>(null);
+  useEffect(() => {
+    if (review.is_demo) { setPRTests(null); return; }
+    let active = true;
+    let pending = false;
+    let timer: number | undefined;
+    const refresh = async () => {
+      if (pending || !active) return;
+      pending = true;
+      try {
+        const status = await getPRTestStatus(review.review_id);
+        if (!active) return;
+        setPRTests(status);
+        if (['queued', 'in_progress'].includes(status.status)) timer = window.setTimeout(() => { void refresh(); }, 15000);
+      } catch {
+        if (active) setPRTests({ status: 'unavailable', executed: false, head_sha: review.pull_request.head_sha ?? '', workflow: 'PR Tests', conclusion: null, summary: 'Could not retrieve PR test status from GitHub.', html_url: null, updated_at: null });
+      } finally { pending = false; }
+    };
+    setPRTests(null);
+    void refresh();
+    return () => { active = false; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [review.review_id, review.is_demo, review.pull_request.head_sha]);
 
   return <section className="content-page review-workspace">
     <div className="workspace-back-row">
@@ -120,6 +144,7 @@ export default function ReviewWorkspacePage({
         <ToolGroup title="AI review" tools={tools.filter((tool) => tool.tool === 'ai_review')} empty="No AI review status was returned."/>
         <ToolGroup title="PR tests" tools={tools.filter((tool) => tool.tool === 'tests')} empty="No PR test-runner status was returned."/>
       </div>
+      {!review.is_demo && prTests && <p className="workspace-validation-note" role="status"><strong>{pretty(prTests.status)}</strong> · {prTests.summary}{prTests.html_url && <> · <a href={prTests.html_url} target="_blank" rel="noreferrer">View GitHub Actions run</a></>}{prTests.updated_at && <> · Updated {formatDate(prTests.updated_at)}</>}</p>}
       <p className="workspace-validation-note"><ShieldCheck size={14}/> Tool status is shown as reported. PR tests are not implied unless the backend marks them executed.</p>
     </section>
 

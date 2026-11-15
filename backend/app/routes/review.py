@@ -9,12 +9,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from pymongo.errors import PyMongoError
 
 from app.database.mongo_connection import StorageUnavailable
@@ -33,6 +34,8 @@ from app.database.test_execution_jobs import (
 )
 from app.github_service.access import ensure_public_repository
 from app.github_service.client import GitHubAPIError
+from app.github_service.actions_status import get_pr_test_status
+from app.github_service.pull_requests import fetch_current_pull_request_head_sha
 from app.github_service.parser import InvalidPullRequestURL, parse_pull_request_url
 from app.routes.auth import current_claims
 from app.schemas.generated_test import GeneratedTestCase
@@ -56,6 +59,18 @@ from app.verification.source_analysis import validate_static_fix
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
 _logger = logging.getLogger(__name__)
+
+
+class PRTestStatusResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["queued", "in_progress", "passed", "failed", "cancelled", "timed_out", "skipped", "stale", "not_configured", "unavailable", "permission_error", "rate_limited", "infrastructure_error"]
+    executed: bool
+    head_sha: str = Field(max_length=64)
+    workflow: Literal["PR Tests"]
+    conclusion: str | None = Field(default=None, max_length=40)
+    summary: str = Field(max_length=300)
+    html_url: str | None = Field(default=None, max_length=2048)
+    updated_at: str | None = Field(default=None, max_length=40)
 
 
 @router.post("/{review_id}/issues/{issue_id}/fixes/{fix_id}/generate-tests")
@@ -512,6 +527,28 @@ def get_review(
     if review is None:
         raise HTTPException(status_code=404, detail="Review not found.")
     return review
+
+
+@router.get("/{review_id}/pr-tests", response_model=PRTestStatusResponse)
+async def read_pr_test_status(review_id: str, claims: Annotated[dict[str, Any], Depends(current_claims)]):
+    review = require_review_access(review_id, claims["uid"])
+    if review is None or review.get("is_demo"):
+        raise HTTPException(status_code=404, detail="Live review not found.")
+    if not allow_attempt("pr-test-status", claims["uid"], limit=30, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many PR test status refreshes.")
+    pr = review.get("pull_request", {})
+    owner, repo, number, sha = pr.get("repository_owner"), pr.get("repository_name"), pr.get("pull_request_number"), pr.get("head_sha")
+    if not isinstance(owner, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", owner) or not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", repo) or not isinstance(number, int) or isinstance(number, bool) or number < 1 or not isinstance(sha, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", sha):
+        raise HTTPException(status_code=422, detail="Review is missing canonical pull request identity.")
+    try:
+        current_sha = await fetch_current_pull_request_head_sha(owner, repo, number)
+    except GitHubAPIError:
+        return {"status": "unavailable", "executed": False, "head_sha": sha.lower(), "workflow": "PR Tests", "conclusion": None, "summary": "Could not verify the current pull request head with GitHub.", "html_url": None, "updated_at": None}
+    if not current_sha:
+        return {"status": "unavailable", "executed": False, "head_sha": sha.lower(), "workflow": "PR Tests", "conclusion": None, "summary": "GitHub did not return the current pull request head.", "html_url": None, "updated_at": None}
+    if current_sha.lower() != sha.lower():
+        return {"status": "stale", "executed": False, "head_sha": sha.lower(), "workflow": "PR Tests", "conclusion": None, "summary": "The pull request has a newer head commit. Re-run the review to view current test results.", "html_url": None, "updated_at": None}
+    return await get_pr_test_status(owner, repo, number, sha)
 
 
 class FixDecisionRequest(BaseModel):
