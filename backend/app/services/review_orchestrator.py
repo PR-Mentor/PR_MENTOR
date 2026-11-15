@@ -249,7 +249,6 @@ async def analyze(
 
     test_result = run_tests()
     tool_results.append({"tool": "tests", **test_result})
-    warnings.append(test_result["message"])
 
     findings = normalized_static + ai_findings
     if not request.include_learning:

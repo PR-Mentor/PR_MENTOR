@@ -95,8 +95,8 @@ export default function ReviewWorkspacePage({
     </header>
 
     {review.is_demo && <div className="workspace-notice demo-notice"><Sparkles size={16}/><span>Illustrative demo data only. These issues do not describe the submitted pull request.</span></div>}
-    {review.warnings?.length > 0 && <div className="workspace-warnings" aria-label="Review warnings">
-      {review.warnings.map((warning, index) => <div key={`${index}-${warning}`}><CircleAlert size={14}/>{warning}</div>)}
+    {review.warnings?.filter((warning) => !warning.toLowerCase().includes('pr tests are unavailable until an isolated container or sandbox runner is configured')).length > 0 && <div className="workspace-warnings" aria-label="Review warnings">
+      {review.warnings.filter((warning) => !warning.toLowerCase().includes('pr tests are unavailable until an isolated container or sandbox runner is configured')).map((warning, index) => <div key={`${index}-${warning}`}><CircleAlert size={14}/>{warning}</div>)}
     </div>}
 
     <nav className="workspace-nav" aria-label="Review sections">
@@ -142,7 +142,7 @@ export default function ReviewWorkspacePage({
       <div className="workspace-validation-grid">
         <ToolGroup title="Static analysis" tools={tools.filter((tool) => ['ruff', 'bandit'].includes(tool.tool))} empty="No Ruff or Bandit status was returned."/>
         <ToolGroup title="AI review" tools={tools.filter((tool) => tool.tool === 'ai_review')} empty="No AI review status was returned."/>
-        <ToolGroup title="PR tests" tools={tools.filter((tool) => tool.tool === 'tests')} empty="No PR test-runner status was returned."/>
+        <ToolGroup title="PR tests" tools={prTests ? [{ tool: 'tests', status: prTests.status, executed: prTests.executed, message: prTests.summary, html_url: prTests.html_url }] : tools.filter((tool) => tool.tool === 'tests')} empty="PR test status is retrieved from GitHub Actions for this pull request."/>
       </div>
       {!review.is_demo && prTests && <p className="workspace-validation-note" role="status"><strong>{pretty(prTests.status)}</strong> · {prTests.summary}{prTests.html_url && <> · <a href={prTests.html_url} target="_blank" rel="noreferrer">View GitHub Actions run</a></>}{prTests.updated_at && <> · Updated {formatDate(prTests.updated_at)}</>}</p>}
       <p className="workspace-validation-note"><ShieldCheck size={14}/> Tool status is shown as reported. PR tests are not implied unless the backend marks them executed.</p>
@@ -488,6 +488,7 @@ function ToolGroup({ title, tools, empty }: { title: string; tools: ToolResult[]
           </li>;
         })}</ol>
       </div>}
+      {tool.tool === 'tests' && tool.html_url && <a href={tool.html_url} target="_blank" rel="noreferrer">View GitHub Actions run</a>}
     </article>;
   }) : <p className="workspace-muted">{empty}</p>}</section>;
 }

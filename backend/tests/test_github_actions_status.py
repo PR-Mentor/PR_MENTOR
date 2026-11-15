@@ -5,6 +5,15 @@ import asyncio
 import pytest
 
 from app.github_service import actions_status
+from app.verification.test_runner import run_tests
+
+
+def test_review_placeholder_defers_to_github_actions_without_sandbox_warning():
+    result = run_tests(target="ignored", command="ignored")
+    assert result["status"] == "pending"
+    assert result["executed"] is False
+    assert "GitHub Actions" in result["message"]
+    assert "sandbox" not in result["message"].lower()
 
 
 def _run(sha: str, **overrides):
