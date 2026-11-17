@@ -1,6 +1,6 @@
 import type { ReviewResponse } from '../types/review';
 
-export type ReviewRoutePage = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces' | 'benchmarks';
+export type ReviewRoutePage = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces';
 export type ReviewRouteState =
   | { status: 'loading' }
   | { status: 'success'; review: ReviewResponse }

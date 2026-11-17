@@ -25,8 +25,6 @@ export type WorkspaceRole = 'owner' | 'admin' | 'editor' | 'viewer';
 export interface WorkspaceMember { user_id: string; email: string; role: WorkspaceRole; joined_at: string }
 export interface Workspace { workspace_id: string; name: string; created_by: string; created_at: string; role: WorkspaceRole; members?: WorkspaceMember[] }
 export interface WorkspaceInvitation { workspace_id: string; email: string; role: Exclude<WorkspaceRole, 'owner'>; token: string; expires_at: string }
-export interface BenchmarkDataset { dataset_id: string; name: string; cases: Array<Record<string, unknown>>; created_at: string; updated_at: string }
-export interface BenchmarkRun { run_id: string; created_at: string; status: 'completed' | 'incomplete'; case_count: number; labeled_case_count: number; missing_label_case_count: number; missing_prediction_case_count: number; metrics: Record<string, number | null>; model_configurations: Array<Record<string, unknown> & { provider: string | null; model: string | null }>; case_results: Array<Record<string, unknown>>; limitations: string[] }
 
 export class ApiRequestError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -89,20 +87,6 @@ export function listWorkspaceReviews(workspaceId: string): Promise<ReviewRespons
 }
 export function getWorkspaceLearningInsights(workspaceId: string): Promise<LearningInsights> {
   return request<LearningInsights>(`/api/workspaces/${encodeURIComponent(workspaceId)}/learning-insights`);
-}
-
-export function listBenchmarkDatasets(): Promise<BenchmarkDataset[]> { return request<BenchmarkDataset[]>('/api/benchmarks'); }
-export function createBenchmarkDataset(name: string, cases: Array<Record<string, unknown>>): Promise<BenchmarkDataset> {
-  return request<BenchmarkDataset>('/api/benchmarks', { method: 'POST', body: JSON.stringify({ name, cases }) });
-}
-export function updateBenchmarkLabels(datasetId: string, cases: Array<Record<string, unknown>>): Promise<BenchmarkDataset> {
-  return request<BenchmarkDataset>(`/api/benchmarks/${encodeURIComponent(datasetId)}/labels`, { method: 'PUT', body: JSON.stringify({ cases }) });
-}
-export function runBenchmark(datasetId: string): Promise<BenchmarkRun> {
-  return request<BenchmarkRun>(`/api/benchmarks/${encodeURIComponent(datasetId)}/runs`, { method: 'POST' });
-}
-export function listBenchmarkRuns(datasetId: string): Promise<BenchmarkRun[]> {
-  return request<BenchmarkRun[]>(`/api/benchmarks/${encodeURIComponent(datasetId)}/runs`);
 }
 
 export async function analyzePullRequest(url: string, mode: AnalysisMode): Promise<ReviewResponse> {

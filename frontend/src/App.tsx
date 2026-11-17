@@ -17,7 +17,6 @@ import type { CurrentUser } from './services/api';
 import { getReviewRouteView, loadReviewRoute, resolvePageRoute } from './services/review-route.js';
 import ReviewWorkspacePage from './pages/ReviewWorkspacePage';
 import WorkspacesPage from './pages/WorkspacesPage';
-import BenchmarksPage from './pages/BenchmarksPage';
 import DeveloperProfilePage from './pages/DeveloperProfilePage';
 import type {
   AnalysisMode, DiffFile, LearningExercise, LearningHistory, LearningProgress,
@@ -27,7 +26,7 @@ import { useAuth } from './auth/AuthContext';
 import LoginPage from './pages/LoginPage';
 import LandingPage from './components/LandingPage';
 
-type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces' | 'benchmarks';
+type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces';
 type Theme = 'light' | 'dark';
 
 function setDocumentTheme(theme: Theme) {
@@ -44,7 +43,6 @@ const nav: Array<{ id: Page; label: string; icon: typeof Search }> = [
   { id: 'analytics', label: 'Insights & analytics', icon: BarChart3 },
   { id: 'profile', label: 'Developer profile', icon: UserRound },
   { id: 'workspaces', label: 'Workspaces', icon: Users },
-  { id: 'benchmarks', label: 'Benchmarks', icon: BarChart3 },
 ];
 
 function formatDate(value?: string) {
@@ -359,7 +357,7 @@ function Workspace() {
   };
 
   const activeExerciseData = exercises.find((item) => item.id === activeExercise);
-  const activeTitle = useMemo(() => ({ discover: 'Discover', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab', analytics: 'Insights & analytics', profile: 'Developer profile', workspaces: 'Workspaces', benchmarks: 'Benchmarks' }[page]), [page]);
+  const activeTitle = useMemo(() => ({ discover: 'Discover', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab', analytics: 'Insights & analytics', profile: 'Developer profile', workspaces: 'Workspaces' }[page]), [page]);
   const reviewRouteView = getReviewRouteView(route.reviewId, review, reviewBusy, reviewError, reviewNotFound);
 
   const toggleTheme = () => {
@@ -424,7 +422,6 @@ function Workspace() {
           {page === 'analytics' && <AnalyticsPage state={analyticsState} error={analyticsError} analytics={analytics} insights={insights} onRetry={() => go('analytics')}/>}
           {page === 'profile' && <DeveloperProfilePage user={user} onOpenReview={openReviewRoute} onOpenLearning={() => go('learning')} onOpenHistory={() => go('history')}/>}
           {page === 'workspaces' && <WorkspacesPage onOpenReview={openReviewRoute}/>}
-          {page === 'benchmarks' && <BenchmarksPage/>}
           <footer className="footer"><span>PR Mentor <i>·</i> Review with care.</span><span>API data is shown as returned; unavailable services are labeled.</span></footer>
         </main>
       </div>

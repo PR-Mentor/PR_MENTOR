@@ -14,7 +14,6 @@ test('preserves existing application routes', () => {
   assert.deepEqual(resolvePageRoute('/analytics'), { page: 'analytics', reviewId: null });
   assert.deepEqual(resolvePageRoute('/profile'), { page: 'profile', reviewId: null });
   assert.deepEqual(resolvePageRoute('/workspaces'), { page: 'workspaces', reviewId: null });
-  assert.deepEqual(resolvePageRoute('/benchmarks'), { page: 'benchmarks', reviewId: null });
   assert.deepEqual(resolvePageRoute('/unknown'), { page: 'discover', reviewId: null });
 });
 

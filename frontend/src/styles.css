@@ -566,9 +566,6 @@ a { color: inherit; }
 .workspace-member-list small, .workspace-shared-reviews small { color: var(--muted, #64748b); }
 .workspace-member-actions { align-items: center; }
 .workspace-token { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0; padding: 9px; border-radius: 8px; background: var(--subtle, #f1f5f9); overflow-wrap: anywhere; }
-.benchmark-runs-title { margin-top: 28px; }
-.benchmark-run { display: grid; gap: 6px; margin: 12px 0; padding: 12px; border: 1px solid var(--line, #dbe2ea); border-radius: 10px; }
-.benchmark-run span, .benchmark-run small { color: var(--muted, #64748b); font-size: 13px; }
 .analytics-panel textarea { width: 100%; min-height: 240px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .workspace-shared-reviews article { align-items: center; }
 .workspace-empty { color: var(--muted, #64748b); }

@@ -88,23 +88,6 @@ def _init_db(db: sqlite3.Connection, path_str: str) -> None:
             PRIMARY KEY(workspace_id, review_id)
         );
         CREATE INDEX IF NOT EXISTS workspace_share_review_idx ON workspace_review_shares(review_id);
-        CREATE TABLE IF NOT EXISTS benchmark_datasets (
-            dataset_id TEXT PRIMARY KEY,
-            owner_id TEXT NOT NULL REFERENCES auth_users(user_id) ON DELETE CASCADE,
-            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),
-            cases_json TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS benchmark_dataset_owner_idx ON benchmark_datasets(owner_id, updated_at);
-        CREATE TABLE IF NOT EXISTS benchmark_runs (
-            run_id TEXT PRIMARY KEY,
-            dataset_id TEXT NOT NULL REFERENCES benchmark_datasets(dataset_id) ON DELETE CASCADE,
-            owner_id TEXT NOT NULL REFERENCES auth_users(user_id) ON DELETE CASCADE,
-            payload TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS benchmark_run_owner_idx ON benchmark_runs(owner_id, created_at);
         CREATE TABLE IF NOT EXISTS review_jobs (
             job_id TEXT PRIMARY KEY,
             owner_id TEXT NOT NULL,
