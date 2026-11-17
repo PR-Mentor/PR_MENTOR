@@ -473,3 +473,84 @@ export interface ApiErrorBody {
   detail?: string | Array<{ msg?: string }>;
   error?: { message?: string };
 }
+
+// PR-Connected Learning Lab Types
+export interface PRLearningSpace {
+  space_id: string;
+  canonical_repo: string;
+  pr_number: number;
+  pr_title: string;
+  pr_url: string;
+  latest_review_id: string;
+  review_count: number;
+  review_snapshot_ids: string[];
+  primary_language: string;
+  languages: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LearningConcept {
+  concept_id: string;
+  space_id: string;
+  title: string;
+  summary: string;
+  why_it_matters: string;
+  category: string;
+  language: string;
+  canonical_issue_ids: string[];
+  exercise_ids: string[];
+  order_index: number;
+  status: 'not_started' | 'in_progress' | 'mastered';
+}
+
+export interface CodingExercise {
+  exercise_id: string;
+  space_id: string;
+  concept_id: string;
+  title: string;
+  description: string;
+  instructions: string;
+  language: string;
+  difficulty: string;
+  category: string;
+  starter_code: string;
+  buggy_code?: string;
+  expected_behavior: string;
+  hints: string[];
+  explanation: string;
+  completion_criteria: string[];
+  validation_rules: Record<string, unknown>;
+  points: number;
+}
+
+export interface ExerciseDraft {
+  draft_id: string;
+  exercise_id: string;
+  user_id: string;
+  code: string;
+  updated_at: string;
+}
+
+export interface ExerciseSubmission {
+  submission_id: string;
+  exercise_id: string;
+  user_id: string;
+  code: string;
+  status: 'completed' | 'failed' | 'passed';
+  passed: boolean;
+  feedback: string;
+  eval_details: Record<string, unknown>;
+  submitted_at: string;
+}
+
+export interface LearningLabDashboard {
+  total_spaces: number;
+  total_concepts: number;
+  mastered_concepts: number;
+  total_exercises: number;
+  completed_exercises: number;
+  active_spaces: PRLearningSpace[];
+  recent_submissions: ExerciseSubmission[];
+  recommended_exercises: CodingExercise[];
+}

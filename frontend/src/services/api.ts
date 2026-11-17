@@ -15,6 +15,12 @@ import type {
   SavedPullRequest,
   GeneratedTestCase,
   TestExecutionJob,
+  PRLearningSpace,
+  LearningConcept,
+  CodingExercise,
+  ExerciseDraft,
+  ExerciseSubmission,
+  LearningLabDashboard,
 } from '../types/review';
 import { authenticatedFetch, getGitHubProviderToken } from './auth';
 
@@ -208,4 +214,63 @@ export function getTestExecutionJob(executionId: string): Promise<TestExecutionJ
 
 export function cancelTestExecution(executionId: string): Promise<{ status: string }> {
   return request(`/api/reviews/execution-jobs/${encodeURIComponent(executionId)}`, { method: 'DELETE' });
+}
+
+// Learning Lab API Endpoints
+export function getLearningDashboard(): Promise<LearningLabDashboard> {
+  return request<LearningLabDashboard>('/api/learning/dashboard');
+}
+
+export function getLearningSpaces(): Promise<PRLearningSpace[]> {
+  return request<PRLearningSpace[]>('/api/learning/spaces');
+}
+
+export function resolveLearningSpace(reviewId: string): Promise<PRLearningSpace> {
+  return request<PRLearningSpace>('/api/learning/spaces/resolve', {
+    method: 'POST',
+    body: JSON.stringify({ review_id: reviewId }),
+  });
+}
+
+export function getLearningSpace(spaceId: string): Promise<PRLearningSpace> {
+  return request<PRLearningSpace>(`/api/learning/spaces/${encodeURIComponent(spaceId)}`);
+}
+
+export function getSpaceConcepts(spaceId: string): Promise<LearningConcept[]> {
+  return request<LearningConcept[]>(`/api/learning/spaces/${encodeURIComponent(spaceId)}/concepts`);
+}
+
+export function getSpaceConcept(spaceId: string, conceptId: string): Promise<LearningConcept> {
+  return request<LearningConcept>(`/api/learning/spaces/${encodeURIComponent(spaceId)}/concepts/${encodeURIComponent(conceptId)}`);
+}
+
+export function getSpaceExercises(spaceId: string, conceptId?: string): Promise<CodingExercise[]> {
+  const query = conceptId ? `?concept_id=${encodeURIComponent(conceptId)}` : '';
+  return request<CodingExercise[]>(`/api/learning/spaces/${encodeURIComponent(spaceId)}/exercises${query}`);
+}
+
+export function getCodingExercise(exerciseId: string): Promise<CodingExercise> {
+  return request<CodingExercise>(`/api/learning/coding-exercises/${encodeURIComponent(exerciseId)}`);
+}
+
+export function getExerciseDraft(exerciseId: string): Promise<ExerciseDraft | null> {
+  return request<ExerciseDraft | null>(`/api/learning/coding-exercises/${encodeURIComponent(exerciseId)}/draft`);
+}
+
+export function saveExerciseDraft(exerciseId: string, code: string): Promise<ExerciseDraft> {
+  return request<ExerciseDraft>(`/api/learning/coding-exercises/${encodeURIComponent(exerciseId)}/draft`, {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
+
+export function submitCodingExercise(exerciseId: string, code: string): Promise<ExerciseSubmission> {
+  return request<ExerciseSubmission>(`/api/learning/coding-exercises/${encodeURIComponent(exerciseId)}/submit`, {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
+
+export function getExerciseSubmissions(exerciseId: string): Promise<ExerciseSubmission[]> {
+  return request<ExerciseSubmission[]>(`/api/learning/coding-exercises/${encodeURIComponent(exerciseId)}/submissions`);
 }

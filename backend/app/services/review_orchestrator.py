@@ -562,6 +562,11 @@ def _persist(response: ReviewResponse, user_id: str | None = None, *, owner_id: 
 
         if workspaces.get_role(response.workspace_id, effective_id) in {"owner", "admin", "editor"}:
             workspaces.link_review(response.workspace_id, response.review_id, effective_id)
+    try:
+        from app.services.learning_spaces import get_learning_service
+        get_learning_service().resolve_or_create_space(response.model_dump(mode="json"), effective_id)
+    except Exception:
+        pass
 
 
 def _populate_reconciliation(response: ReviewResponse, observations: list[FindingObservation]) -> None:

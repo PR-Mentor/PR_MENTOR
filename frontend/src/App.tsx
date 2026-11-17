@@ -18,6 +18,7 @@ import { getReviewRouteView, loadReviewRoute, resolvePageRoute } from './service
 import ReviewWorkspacePage from './pages/ReviewWorkspacePage';
 import WorkspacesPage from './pages/WorkspacesPage';
 import DeveloperProfilePage from './pages/DeveloperProfilePage';
+import LearningLabPage from './pages/LearningLabPage';
 import type {
   AnalysisMode, DiffFile, LearningExercise, LearningHistory, LearningProgress,
   LearningInsights, LearningResult, PersonalAnalytics, ReviewFinding, ReviewResponse, SavedPullRequest, Severity, SuggestedFix,
@@ -418,7 +419,7 @@ function Workspace() {
           {page === 'history' && <HistoryPage state={historyState} error={historyError} items={history} onOpen={openReview} onDiscover={() => go('discover')}/>}
           {page === 'saved' && <SavedPage state={savedState} error={savedError} items={saved} onRemove={removeSaved} onSelect={selectSaved} onRefresh={() => void refreshSaved()} onDiscover={() => go('discover')}/>}
           {page === 'diff' && <DiffPage review={review} state={diffState} error={diffError} files={diff} warnings={diffWarnings} onBack={() => review?.review_id ? openReviewRoute(review.review_id) : go('review')} onDiscover={() => go('discover')}/>}
-          {page === 'learning' && <LearningPage state={learningState} error={learningError} exercises={exercises} active={activeExerciseData} setActive={(id) => { setActiveExercise(id); setAnswer(''); setAnswerResult(null); setAnswerError(''); }} answer={answer} setAnswer={setAnswer} result={answerResult} answerError={answerError} busy={answerBusy} progress={progress} history={learningHistory} onSubmit={submitAnswer}/>}
+          {page === 'learning' && <LearningLabPage onOpenReview={openReviewRoute} onNavigateDiscover={() => go('discover')}/>}
           {page === 'analytics' && <AnalyticsPage state={analyticsState} error={analyticsError} analytics={analytics} insights={insights} onRetry={() => go('analytics')}/>}
           {page === 'profile' && <DeveloperProfilePage user={user} onOpenReview={openReviewRoute} onOpenLearning={() => go('learning')} onOpenHistory={() => go('history')}/>}
           {page === 'workspaces' && <WorkspacesPage onOpenReview={openReviewRoute}/>}

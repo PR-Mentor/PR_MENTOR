@@ -36,6 +36,74 @@ def _init_db(db: sqlite3.Connection, path_str: str) -> None:
             user_id TEXT,
             owner_id TEXT
         );
+        CREATE TABLE IF NOT EXISTS learning_spaces (
+            space_id TEXT PRIMARY KEY,
+            canonical_repo TEXT NOT NULL,
+            pr_number INTEGER NOT NULL,
+            pr_title TEXT,
+            pr_url TEXT,
+            latest_review_id TEXT,
+            review_count INTEGER DEFAULT 1,
+            primary_language TEXT,
+            languages_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            owner_id TEXT,
+            UNIQUE(canonical_repo, pr_number, owner_id)
+        );
+        CREATE TABLE IF NOT EXISTS learning_concepts (
+            concept_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT,
+            why_it_matters TEXT,
+            category TEXT,
+            language TEXT,
+            canonical_issue_ids_json TEXT,
+            exercise_ids_json TEXT,
+            order_index INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'not_started',
+            owner_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS learning_exercises (
+            exercise_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            concept_id TEXT NOT NULL,
+            canonical_issue_id TEXT,
+            title TEXT NOT NULL,
+            description TEXT,
+            instructions TEXT,
+            language TEXT NOT NULL,
+            difficulty TEXT,
+            category TEXT,
+            starter_code TEXT,
+            buggy_code TEXT,
+            expected_behavior TEXT,
+            hints_json TEXT,
+            explanation TEXT,
+            completion_criteria_json TEXT,
+            validation_rules_json TEXT,
+            points INTEGER DEFAULT 10
+        );
+        CREATE TABLE IF NOT EXISTS learning_drafts (
+            draft_id TEXT PRIMARY KEY,
+            exercise_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            code TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(exercise_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS learning_submissions (
+            submission_id TEXT PRIMARY KEY,
+            exercise_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            code TEXT NOT NULL,
+            status TEXT NOT NULL,
+            passed INTEGER NOT NULL,
+            feedback TEXT,
+            eval_details_json TEXT,
+            submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS users (
             firebase_uid TEXT PRIMARY KEY,
             payload TEXT NOT NULL
