@@ -418,6 +418,17 @@ export interface PersonalAnalytics {
   analysis_window_limit: number;
   findings_by_category: Record<string, number>;
   findings_by_severity: Record<string, number>;
+  findings_by_language?: Record<string, number>;
+  issue_lifecycle?: Record<string, number>;
+  ai_orchestration?: {
+    total_tokens: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    estimated_cost_usd: number;
+    models_used: string[];
+    providers_used: string[];
+    fallback_count: number;
+  };
   suggested_fix_count: number;
   fix_decisions: Record<string, number>;
   validation_reports_by_status: Record<string, number>;

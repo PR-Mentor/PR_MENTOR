@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowUpRight, BookOpen, RefreshCw, UserRound } from 'lucide-react';
-import { getLearningHistory, getLearningInsights, getLearningProgress, getPersonalAnalytics, getReviewHistory } from '../services/api';
+import { getLearningDashboard, getLearningHistory, getLearningInsights, getLearningProgress, getPersonalAnalytics, getReviewHistory } from '../services/api';
 import type { CurrentUser } from '../services/api';
-import type { LearningHistory, LearningInsights, LearningProgress, PersonalAnalytics, ReviewResponse, SuggestedFix } from '../types/review';
+import type { LearningHistory, LearningInsights, LearningLabDashboard, LearningProgress, PersonalAnalytics, ReviewResponse, SuggestedFix } from '../types/review';
 
 interface Props { user: CurrentUser; onOpenReview: (reviewId: string) => void; onOpenLearning: () => void; onOpenHistory: () => void }
-type ProfileData = { analytics: PersonalAnalytics; insights: LearningInsights; progress: LearningProgress; learningHistory: LearningHistory; reviews: ReviewResponse[] };
+type ProfileData = { analytics: PersonalAnalytics; insights: LearningInsights; progress: LearningProgress; learningHistory: LearningHistory; reviews: ReviewResponse[]; dashboard: LearningLabDashboard | null };
 type ProfileIssue = { issue_id: string; category: string; status: string | null; suggested_fixes?: SuggestedFix[] };
 
 function issuesOf(review: ReviewResponse): ProfileIssue[] {
@@ -26,10 +26,10 @@ export default function DeveloperProfilePage({ user, onOpenReview, onOpenLearnin
   const load = async () => {
     setBusy(true); setError('');
     try {
-      const [analytics, insights, progress, learningHistory, reviews] = await Promise.all([
-        getPersonalAnalytics(), getLearningInsights(), getLearningProgress(), getLearningHistory(), getReviewHistory(100, false),
+      const [analytics, insights, progress, learningHistory, reviews, dashboard] = await Promise.all([
+        getPersonalAnalytics(), getLearningInsights(), getLearningProgress(), getLearningHistory(), getReviewHistory(100, false), getLearningDashboard().catch(() => null),
       ]);
-      setData({ analytics, insights, progress, learningHistory, reviews });
+      setData({ analytics, insights, progress, learningHistory, reviews, dashboard });
     } catch (reason) {
       setData(null);
       setError(reason instanceof Error ? reason.message : 'Developer profile data is unavailable.');
@@ -64,6 +64,16 @@ export default function DeveloperProfilePage({ user, onOpenReview, onOpenLearnin
     for (const issue of issues) categoryCounts.set(issue.category, (categoryCounts.get(issue.category) ?? 0) + 1);
     const categories = new Set(issues.map((issue) => issue.category));
     for (const category of categories) categoryRates.set(category, { recent: rate(recent, category), earlier: rate(earlier, category) });
+
+    const languageCounts = new Map<string, number>();
+    for (const review of liveReviews) {
+      for (const issue of review.canonical_issues ?? []) {
+        const fp = (issue.file_path ?? '').toLowerCase();
+        const lang = fp.endsWith('.py') ? 'python' : (fp.endsWith('.c') || fp.endsWith('.h')) ? 'c' : (fp.endsWith('.cpp') || fp.endsWith('.hpp') || fp.endsWith('.cc')) ? 'cpp' : fp.endsWith('.java') ? 'java' : 'other';
+        languageCounts.set(lang, (languageCounts.get(lang) ?? 0) + 1);
+      }
+    }
+
     const fixDecisions = new Map<string, number>();
     const validationStatuses = new Map<string, number>();
     let fixCount = 0;
@@ -78,7 +88,7 @@ export default function DeveloperProfilePage({ user, onOpenReview, onOpenLearnin
       current.attempts += 1; current.correct += Number(attempt.correct);
       learningRates.set(attempt.category, current);
     }
-    return { issues, lifecycle, timeline, categoryRates, categoryCounts, fixDecisions, validationStatuses, fixCount, learningRates, liveReviewCount: liveReviews.length };
+    return { issues, lifecycle, timeline, categoryRates, categoryCounts, languageCounts, fixDecisions, validationStatuses, fixCount, learningRates, liveReviewCount: liveReviews.length };
   }, [data]);
 
   if (busy) return <section className="content-page"><div className="page-heading"><div><span className="eyebrow">PERSONAL DEVELOPMENT</span><h1>Developer profile</h1><p>Private summaries from your saved review and learning history.</p></div></div><p role="status">Loading your profile evidence…</p></section>;
@@ -96,16 +106,17 @@ export default function DeveloperProfilePage({ user, onOpenReview, onOpenLearnin
       <Metric label="DISTINCT LIVE PRS REVIEWED" value={data.analytics.live_pull_request_count.toLocaleString()} detail="Unique account-owned public PRs; demo reviews excluded"/>
       <Metric label="FINDINGS IDENTIFIED" value={data.analytics.live_finding_count.toLocaleString()} detail="Exact lifetime count across account-owned live reviews; canonical issues are preferred over legacy findings"/>
       <Metric label="SUGGESTED FIXES" value={derived.fixCount.toLocaleString()} detail="Proposals in live PRs in the analyzed window"/>
-      <Metric label="LEARNING EXERCISES" value={data.progress.exercises_completed.toLocaleString()} detail={`${data.progress.attempt_count} persisted answer attempts`}/>
+      <Metric label="PRACTICAL CODING EXERCISES" value={(data.dashboard?.completed_exercises ?? data.progress.exercises_completed).toLocaleString()} detail={data.dashboard ? `${data.dashboard.mastered_concepts} concepts mastered in ${data.dashboard.total_spaces} PR spaces` : `${data.progress.attempt_count} persisted answer attempts`}/>
     </div>
     {sampleIsPartial && <p className="profile-data-note">Finding, lifecycle, fix, and validation summaries cover the latest {data.reviews.length} of {data.analytics.total_reviews} stored review records. Older records are not counted. Demo reviews are excluded from developer activity.</p>}
     {data.analytics.total_reviews === 0 && <p className="workspace-empty">No live reviews are stored for this account yet. Demo reviews are excluded from your personal profile.</p>}
     <div className="analytics-grid">
       <section className="analytics-panel"><h2>Issue lifecycle</h2><p>Counts from the review history window; legacy findings without lifecycle state remain unclassified.</p><div className="analytics-row"><span>Resolved</span><strong>{derived.lifecycle.resolved}</strong></div><div className="analytics-row"><span>Open</span><strong>{derived.lifecycle.open}</strong></div><div className="analytics-row"><span>Dismissed</span><strong>{derived.lifecycle.dismissed}</strong></div><div className="analytics-row"><span>Unclassified legacy</span><strong>{derived.lifecycle.unclassified}</strong></div></section>
+      {derived.languageCounts.size > 0 && <section className="analytics-panel"><h2>Languages reviewed</h2><p>Findings categorized across programming languages.</p>{[...derived.languageCounts.entries()].sort((a, b) => b[1] - a[1]).map(([lang, count]) => <div className="analytics-row" key={lang}><span>{lang.toUpperCase()}</span><strong>{count} findings</strong></div>)}</section>}
       <section className="analytics-panel"><h2>Finding categories</h2><p>Most frequent categories in the analyzed window.</p>{categoryRows.length ? categoryRows.slice(0, 8).map(([category, count]) => <div className="profile-bar-row" key={category}><span>{label(category)}</span><div className="profile-bar-track"><i style={{ width: `${(count / maxCategory) * 100}%` }}/></div><strong>{count}</strong></div>) : <p>No findings in the available review history.</p>}</section>
       <section className="analytics-panel"><h2>Findings over time</h2><p>Stored findings grouped by review month.</p>{derived.timeline.length ? <div className="profile-timeline" role="img" aria-label="Findings per month in recent review history">{derived.timeline.map(([month, count]) => <div key={month}><strong>{count}</strong><i style={{ height: `${Math.max(6, (count / maxMonth) * 100)}%` }}/><span>{formatMonth(month)}</span></div>)}</div> : <p>Monthly trends appear after dated reviews are available.</p>}</section>
       <section className="analytics-panel"><h2>Fix and validation outcomes</h2><p>Recorded developer decisions and deterministic reports from live PR reviews.</p>{[...derived.fixDecisions.entries()].map(([name, count]) => <div className="analytics-row" key={name}><span>Fixes {label(name)}</span><strong>{count}</strong></div>)}{(() => { const accepted = derived.fixDecisions.get('accepted') ?? 0; const rejected = derived.fixDecisions.get('rejected') ?? 0; const decided = accepted + rejected; return decided ? <p>Acceptance rate among recorded decisions: {Math.round((accepted / decided) * 100)}% ({accepted}/{decided}).</p> : null; })()}{[...derived.validationStatuses.entries()].map(([name, count]) => <div className="analytics-row" key={name}><span>Validation {label(name)}</span><strong>{count}</strong></div>)}{!derived.fixDecisions.size && !derived.validationStatuses.size && <p>No fix decisions or validation reports are recorded in the live PR review window.</p>}</section>
-      <section className="analytics-panel"><h2>Learning progress</h2><p>{data.progress.attempt_count ? `${Math.round(data.progress.accuracy * 100)}% correct across ${data.progress.attempt_count} persisted attempts.` : 'No learning answers have been recorded yet.'}</p>{derived.learningRates.size > 0 && data.progress.attempt_count > data.learningHistory.attempts.length && <p>Category accuracy below uses the latest {data.learningHistory.attempts.length} attempts.</p>}{[...derived.learningRates.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([category, value]) => <div className="analytics-row" key={category}><span>{label(category)}</span><strong>{value.correct}/{value.attempts}</strong></div>)}<button type="button" className="secondary-button" onClick={onOpenLearning}><BookOpen size={15}/> Open Learning Lab</button></section>
+      <section className="analytics-panel"><h2>Learning progress</h2><p>{data.dashboard ? `${data.dashboard.completed_exercises} coding exercises completed across ${data.dashboard.total_spaces} PR learning spaces.` : data.progress.attempt_count ? `${Math.round(data.progress.accuracy * 100)}% correct across ${data.progress.attempt_count} persisted attempts.` : 'No learning answers have been recorded yet.'}</p>{derived.learningRates.size > 0 && data.progress.attempt_count > data.learningHistory.attempts.length && <p>Category accuracy below uses the latest {data.learningHistory.attempts.length} attempts.</p>}{[...derived.learningRates.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([category, value]) => <div className="analytics-row" key={category}><span>{label(category)}</span><strong>{value.correct}/{value.attempts}</strong></div>)}<button type="button" className="secondary-button" onClick={onOpenLearning}><BookOpen size={15}/> Open Learning Lab</button></section>
       <section className="analytics-panel"><h2>Patterns and recommendations</h2><p>{data.insights.basis}</p>{categoryRows.slice(0, 4).map(([category, count]) => <p key={category}><strong>{label(category)}</strong>: {count} findings in this window{derived.categoryRates.get(category) ? ` · recent/earlier rate ${derived.categoryRates.get(category)!.recent.toFixed(2)}/${derived.categoryRates.get(category)!.earlier.toFixed(2)} per review` : ''}</p>)}{!categoryRows.length && <p>Recommendations will appear when review findings are available.</p>}</section>
     </div>
     <section className="workspace-panel profile-review-history"><div><h2>Recent review history</h2><p>Open a review to inspect reconciled findings, explanations, fixes, decisions, and validation attempts.</p></div><button type="button" className="secondary-button" onClick={onOpenHistory}>Full review history</button>{data.reviews.slice(0, 8).map((review) => <article key={review.review_id}><div><strong>{review.pull_request.repository_owner}/{review.pull_request.repository_name} · #{review.pull_request.pull_request_number}</strong><small>{review.pull_request.title} · {issuesOf(review).length} findings · {new Date(review.created_at).toLocaleDateString()}</small></div><button type="button" className="secondary-button" onClick={() => onOpenReview(review.review_id)}>Open review <ArrowUpRight size={14}/></button></article>)}{!data.reviews.length && <p>No review history is available yet.</p>}</section>

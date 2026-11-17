@@ -51,8 +51,11 @@ def normalize_canonical_repo_pr(url_or_repo: str, pr_number: int | None = None) 
     return canonical_repo, effective_num, canonical_url
 
 
-def generate_space_id(canonical_repo: str, pr_number: int) -> str:
+def generate_space_id(canonical_repo: str, pr_number: int, owner_id: str | None = None) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", canonical_repo.lower()).strip("-")
+    if owner_id:
+        owner_slug = re.sub(r"[^a-z0-9]+", "-", owner_id.lower()).strip("-")
+        return f"space-{slug}-{pr_number}-{owner_slug[:12]}"
     return f"space-{slug}-{pr_number}"
 
 
@@ -69,17 +72,17 @@ class LearningSpaceService:
         title = pr_meta.get("title") or "Pull Request"
 
         canonical_repo, pr_num, canonical_url = normalize_canonical_repo_pr(pr_url, num)
-        space_id = generate_space_id(canonical_repo, pr_num)
         review_id = review.get("review_id", "")
 
         now_str = datetime.now(UTC).isoformat()
         with _get_db() as db:
             row = db.execute(
-                "SELECT * FROM learning_spaces WHERE space_id = ? AND (? IS NULL OR owner_id = ?)",
-                (space_id, owner_id, owner_id),
+                "SELECT * FROM learning_spaces WHERE canonical_repo = ? AND pr_number = ? AND ((owner_id IS NULL AND ? IS NULL) OR owner_id = ?)",
+                (canonical_repo, pr_num, owner_id, owner_id),
             ).fetchone()
 
             if row:
+                space_id = row["space_id"]
                 review_count = row["review_count"] + 1
                 db.execute(
                     """
@@ -90,6 +93,7 @@ class LearningSpaceService:
                     (review_id, review_count, now_str, space_id),
                 )
             else:
+                space_id = generate_space_id(canonical_repo, pr_num, owner_id)
                 # Detect primary language from canonical issues or default to python
                 canonical_issues = review.get("canonical_issues", [])
                 languages = set()
