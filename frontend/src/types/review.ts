@@ -185,7 +185,7 @@ export interface SuggestedFix {
   file_path: string;
   start_line: number;
   end_line: number;
-  language: 'python';
+  language: 'python' | 'c' | 'cpp' | 'java';
   base_commit_sha: string;
   file_blob_sha?: string | null;
   expected_original_code: string;

@@ -417,6 +417,7 @@ a { color: inherit; }
 .workspace-issue-summary { flex: 1; min-width: 0; display: grid; gap: 7px; }
 .workspace-issue-summary > strong { font-size: 13px; line-height: 1.45; }
 .workspace-issue-summary > span { flex-wrap: wrap; gap: 7px 14px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.workspace-lang-badge { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 6px; font-size: 11px; font-weight: 600; background: #eef2f6; color: #475569; margin-left: 6px; }
 .workspace-issue-summary code, .workspace-file-list code, .workspace-observation code, .workspace-explanation-card code { overflow-wrap: anywhere; }
 .workspace-issue-status { padding: 5px 9px; border-radius: 20px; color: #475569; background: #f1f5f9; font-size: 11px; }
 .issue-open { color: #a33a31; background: #fff0ee; }

@@ -209,12 +209,30 @@ function countBy<T>(items: T[], key: (item: T) => string): Record<string, number
   }, {});
 }
 
+function detectedLanguage(path: string): string | null {
+  const norm = path.toLowerCase();
+  if (norm.endsWith('.py') || norm.endsWith('.pyi')) return 'Python';
+  if (norm.endsWith('.c') || norm.endsWith('.h')) return 'C';
+  if (norm.endsWith('.cpp') || norm.endsWith('.cc') || norm.endsWith('.cxx') || norm.endsWith('.hpp') || norm.endsWith('.hh')) return 'C++';
+  if (norm.endsWith('.java')) return 'Java';
+  return null;
+}
+
 function CanonicalIssueCard({ issue, review, accountId, onFixDecision }: { issue: CanonicalIssue; review: ReviewResponse; accountId: string; onFixDecision: Props['onFixDecision'] }) {
   const observations = Array.isArray(issue.observations) ? issue.observations : [];
+  const lang = detectedLanguage(issue.file_path);
   return <details className="workspace-issue">
     <summary>
       <SeverityLabel severity={issue.severity}/>
-      <span className="workspace-issue-summary"><strong>{issue.normalized_description}</strong><span><code>{issue.file_path}</code>{formatLine(issue.line_start, issue.line_end)}<em>{pretty(issue.category)}</em></span></span>
+      <span className="workspace-issue-summary">
+        <strong>{issue.normalized_description}</strong>
+        <span>
+          <code>{issue.file_path}</code>
+          {formatLine(issue.line_start, issue.line_end)}
+          <em>{pretty(issue.category)}</em>
+          {lang && <span className="workspace-lang-badge">{lang}</span>}
+        </span>
+      </span>
       <span className={`workspace-issue-status issue-${issue.status}`}>{pretty(issue.status)}</span>
       <span className="workspace-observation-count">{observations.length} {observations.length === 1 ? 'source' : 'sources'}</span>
     </summary>

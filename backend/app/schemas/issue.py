@@ -526,7 +526,7 @@ class SuggestedFix(BaseModel):
     file_path: str = Field(min_length=1, max_length=1_000)
     start_line: int = Field(ge=1, strict=True)
     end_line: int = Field(ge=1, strict=True)
-    language: Literal["python"]
+    language: Literal["python", "c", "cpp", "java"]
     base_commit_sha: str = Field(min_length=1, max_length=64)
     file_blob_sha: str | None = Field(default=None, min_length=1, max_length=64)
     expected_original_code: str = Field(min_length=1, max_length=MAX_FIX_CODE_CHARS)
