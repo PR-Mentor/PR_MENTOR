@@ -114,6 +114,19 @@ def _init_db(db: sqlite3.Connection, path_str: str) -> None:
             password_hash TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS auth_identities (
+            identity_id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            provider_uid TEXT NOT NULL,
+            email TEXT NOT NULL,
+            email_verified INTEGER NOT NULL DEFAULT 0 CHECK(email_verified IN (0, 1)),
+            user_id TEXT NOT NULL REFERENCES auth_users(user_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            linked_at TEXT,
+            UNIQUE(provider, provider_uid)
+        );
+        CREATE INDEX IF NOT EXISTS auth_identities_email_idx ON auth_identities(email);
+        CREATE INDEX IF NOT EXISTS auth_identities_user_idx ON auth_identities(user_id);
         CREATE TABLE IF NOT EXISTS auth_sessions (
             token_hash TEXT PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES auth_users(user_id) ON DELETE CASCADE,
@@ -236,6 +249,13 @@ def _init_db(db: sqlite3.Connection, path_str: str) -> None:
         )
     db.execute("CREATE INDEX IF NOT EXISTS reviews_user_created ON reviews(user_id, created_at DESC)")
     db.execute("CREATE INDEX IF NOT EXISTS saved_user_created ON saved_pull_requests(user_id, created_at DESC)")
+    db.execute(
+        """
+        INSERT OR IGNORE INTO auth_identities(identity_id, provider, provider_uid, email, email_verified, user_id, created_at, linked_at)
+        SELECT 'local:' || user_id, 'local', user_id, email, 1, user_id, created_at, created_at
+        FROM auth_users
+        """
+    )
     _INITIALIZED_PATHS.add(path_str)
 
 

@@ -186,6 +186,12 @@ def user_email(user_id: str) -> str | None:
         item = _db()["auth_users"].find_one({"user_id": user_id}, {"email": 1})
         if item and isinstance(item.get("email"), str):
             return str(item["email"])
+        # Fallback to auth_identities collection
+        ident = _db()["auth_identities"].find_one(
+            {"$or": [{"user_id": user_id}, {"provider_uid": user_id}]}, {"email": 1}
+        )
+        if ident and isinstance(ident.get("email"), str):
+            return str(ident["email"])
         # Fallback to users collection (Firebase/Supabase profile store)
         user_doc = _db()["users"].find_one({"firebase_uid": user_id}, {"email": 1})
         return str(user_doc["email"]) if user_doc and isinstance(user_doc.get("email"), str) else None
@@ -193,6 +199,13 @@ def user_email(user_id: str) -> str | None:
         row = db.execute("SELECT email FROM auth_users WHERE user_id=?", (user_id,)).fetchone()
         if row and row["email"]:
             return str(row["email"])
+        # Fallback to auth_identities table
+        ident_row = db.execute(
+            "SELECT email FROM auth_identities WHERE user_id=? OR provider_uid=?",
+            (user_id, user_id),
+        ).fetchone()
+        if ident_row and ident_row["email"]:
+            return str(ident_row["email"])
         # Fallback to users table
         user_row = db.execute("SELECT payload FROM users WHERE firebase_uid=?", (user_id,)).fetchone()
         if user_row:

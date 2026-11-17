@@ -83,6 +83,34 @@ class CodingExercise(BaseModel):
     validation_rules: dict[str, Any] = Field(default_factory=dict)
     points: int = 10
 
+    def to_public(self) -> CodingExercisePublic:
+        data = self.model_dump(exclude={"validation_rules"})
+        return CodingExercisePublic.model_validate(data)
+
+
+class CodingExercisePublic(BaseModel):
+    """Public interactive practical coding exercise view with internal validation rules protected."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    exercise_id: str
+    space_id: str
+    concept_id: str
+    canonical_issue_id: str | None = None
+    title: str
+    description: str
+    instructions: str
+    language: Literal["python", "c", "cpp", "java"]
+    difficulty: ExerciseDifficulty = "beginner"
+    category: ExerciseCategory = "code_quality"
+    starter_code: str
+    buggy_code: str | None = None
+    expected_behavior: str
+    hints: list[str] = Field(default_factory=list)
+    explanation: str = ""
+    completion_criteria: list[str] = Field(default_factory=list)
+    points: int = 10
+
 
 class ExerciseDraft(BaseModel):
     """User in-progress code draft for an exercise."""

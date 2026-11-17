@@ -531,7 +531,7 @@ export interface CodingExercise {
   hints: string[];
   explanation: string;
   completion_criteria: string[];
-  validation_rules: Record<string, unknown>;
+  validation_rules?: Record<string, unknown>;
   points: number;
 }
 

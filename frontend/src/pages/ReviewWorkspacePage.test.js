@@ -247,3 +247,30 @@ test('uses a narrow-screen code layout in the workspace styles', async () => {
   assert.match(styles, /@media\s*\(max-width:\s*620px\)[\s\S]*?\.workspace-code-grid\s*\{\s*grid-template-columns:\s*1fr;/);
   assert.match(styles, /\.workspace-code-grid pre\s*\{[^}]*overflow-x:\s*auto/s);
 });
+
+test('displays explicit overflow indicator when diff files exceed eight', () => {
+  const tenFiles = Array.from({ length: 10 }, (_, i) => ({
+    path: `src/file_${i + 1}.py`,
+    status: 'modified',
+    added: 1,
+    removed: 1,
+    hunks: [],
+    truncated: false,
+  }));
+  const html = render(review(), { diffFiles: tenFiles });
+  assert.ok(html.includes('Showing 8 of 10 files. Open full diff to inspect all changed files.'));
+});
+
+test('displays explicit overflow indicator when repository reviews exceed five', () => {
+  const sevenReviews = Array.from({ length: 7 }, (_, i) => ({
+    ...review({ review_id: `review-${i + 1}` }),
+    pull_request: {
+      repository_owner: 'acme',
+      repository_name: 'widget',
+      pull_request_number: 100 + i,
+      title: `PR #${100 + i}`,
+    },
+  }));
+  const html = render(review(), { history: sevenReviews });
+  assert.ok(html.includes('Showing 5 of 7 repository reviews. View all reviews for complete history.'));
+});

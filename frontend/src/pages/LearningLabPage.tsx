@@ -78,6 +78,7 @@ export default function LearningLabPage({ onOpenReview, onNavigateDiscover }: Pr
   const [draftSaving, setDraftSaving] = useState(false);
   const [draftSaveMessage, setDraftSaveMessage] = useState('');
   const [submissions, setSubmissions] = useState<ExerciseSubmission[]>([]);
+  const [showAllSubmissions, setShowAllSubmissions] = useState(false);
   const [latestSubmission, setLatestSubmission] = useState<ExerciseSubmission | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -389,9 +390,21 @@ export default function LearningLabPage({ onOpenReview, onNavigateDiscover }: Pr
               {/* Submissions History */}
               {submissions.length > 0 && (
                 <div className="history-section" aria-labelledby={historyHeadingId}>
-                  <h4 id={historyHeadingId}><History size={14} /> Attempt History</h4>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <h4 id={historyHeadingId} style={{ margin: 0 }}><History size={14} /> Attempt History ({submissions.length})</h4>
+                    {submissions.length > 5 && (
+                      <button
+                        type="button"
+                        className="text-action"
+                        onClick={() => setShowAllSubmissions(!showAllSubmissions)}
+                        style={{ fontSize: '0.8rem', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-primary, #6366f1)' }}
+                      >
+                        {showAllSubmissions ? 'Show recent 5' : `Show all ${submissions.length}`}
+                      </button>
+                    )}
+                  </div>
                   <div className="history-items">
-                    {submissions.slice(0, 5).map((sub) => (
+                    {(showAllSubmissions ? submissions : submissions.slice(0, 5)).map((sub) => (
                       <div key={sub.submission_id} className={`history-item ${sub.passed ? 'passed' : 'failed'}`}>
                         <div className="history-status">
                           {sub.passed ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}

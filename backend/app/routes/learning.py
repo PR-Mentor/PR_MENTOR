@@ -13,6 +13,7 @@ from app.routes.auth import current_user
 from app.schemas.learning import AnswerRequest, LearningExercise
 from app.schemas.learning_lab import (
     CodingExercise,
+    CodingExercisePublic,
     ExerciseDraft,
     ExerciseSubmission,
     LearningConcept,
@@ -92,26 +93,27 @@ def get_space_concept(space_id: str, concept_id: str, user: Annotated[dict, Depe
     return concept
 
 
-@router.get("/spaces/{space_id}/exercises", response_model=list[CodingExercise])
+@router.get("/spaces/{space_id}/exercises", response_model=list[CodingExercisePublic])
 def list_space_exercises(
     space_id: str,
     concept_id: str | None = None,
     user: Annotated[dict, Depends(current_user)] = None,
 ):
     service = get_learning_service()
-    return service.list_exercises(space_id, concept_id)
+    exercises = service.list_exercises(space_id, concept_id)
+    return [e.to_public() for e in exercises]
 
 
 # --- Coding Exercises, Drafts & Submissions ---
 
 
-@router.get("/coding-exercises/{exercise_id}", response_model=CodingExercise)
+@router.get("/coding-exercises/{exercise_id}", response_model=CodingExercisePublic)
 def get_coding_exercise(exercise_id: str, user: Annotated[dict, Depends(current_user)] = None):
     service = get_learning_service()
     exercise = service.get_exercise(exercise_id)
     if not exercise:
         raise HTTPException(status_code=404, detail="Coding exercise not found.")
-    return exercise
+    return exercise.to_public()
 
 
 @router.get("/coding-exercises/{exercise_id}/draft", response_model=ExerciseDraft | None)

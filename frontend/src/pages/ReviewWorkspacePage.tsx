@@ -138,7 +138,10 @@ export default function ReviewWorkspacePage({
     <section className="workspace-section" id="diff" aria-labelledby="diff-title">
       <div className="workspace-section-heading"><div><span className="section-index">05</span><div><h2 id="diff-title">Code & diff</h2><p>Inspect the changed files and open the existing full diff view.</p></div></div><button type="button" className="secondary-button workspace-open-diff" onClick={onOpenDiff}>Open full diff <ArrowRight size={14}/></button></div>
       {diffFiles.length
-        ? <div className="workspace-file-list">{diffFiles.slice(0, 8).map((file) => <div key={`${file.path}-${file.status}`}><FileCode2 size={15}/><code>{file.path}</code><span>{file.added ? `+${file.added}` : ''}{file.removed ? ` −${file.removed}` : ''}</span><em>{pretty(file.status)}</em></div>)}</div>
+        ? <>
+            <div className="workspace-file-list">{diffFiles.slice(0, 8).map((file) => <div key={`${file.path}-${file.status}`}><FileCode2 size={15}/><code>{file.path}</code><span>{file.added ? `+${file.added}` : ''}{file.removed ? ` −${file.removed}` : ''}</span><em>{pretty(file.status)}</em></div>)}</div>
+            {diffFiles.length > 8 && <p className="workspace-muted workspace-overflow-notice">Showing 8 of {diffFiles.length} files. Open full diff to inspect all changed files.</p>}
+          </>
         : <EmptyNotice title="Diff details unavailable" detail="No diff file data was included in this review response. The full diff endpoint may still contain stored patch data."/>}
       {diffWarnings.map((warning, index) => <p className="workspace-diff-warning" key={`${index}-${warning}`}><CircleAlert size={13}/>{warning}</p>)}
     </section>
@@ -148,7 +151,10 @@ export default function ReviewWorkspacePage({
       {historyState === 'loading' && <div className="workspace-inline-state" role="status">Loading repository review history…</div>}
       {historyState === 'error' && <div className="workspace-inline-state" role="alert">{historyError || 'Review history is unavailable.'}</div>}
       {historyState === 'ready' && (previousReviews.length
-        ? <div className="workspace-history-list">{previousReviews.slice(0, 5).map((item) => <button key={item.review_id} type="button" onClick={() => onOpenReview(item.review_id)}><span><strong>{item.pull_request.title || `Pull request #${item.pull_request.pull_request_number}`}</strong><small>#{item.pull_request.pull_request_number} · {formatDate(item.created_at)}</small></span><span className="workspace-count">{typeof item.unique_issue_count === 'number' ? `${item.unique_issue_count} issues` : 'Open review'}</span><ArrowRight size={15}/></button>)}</div>
+        ? <>
+            <div className="workspace-history-list">{previousReviews.slice(0, 5).map((item) => <button key={item.review_id} type="button" onClick={() => onOpenReview(item.review_id)}><span><strong>{item.pull_request.title || `Pull request #${item.pull_request.pull_request_number}`}</strong><small>#{item.pull_request.pull_request_number} · {formatDate(item.created_at)}</small></span><span className="workspace-count">{typeof item.unique_issue_count === 'number' ? `${item.unique_issue_count} issues` : 'Open review'}</span><ArrowRight size={15}/></button>)}</div>
+            {previousReviews.length > 5 && <p className="workspace-muted workspace-overflow-notice">Showing 5 of {previousReviews.length} repository reviews. View all reviews for complete history.</p>}
+          </>
         : <EmptyNotice title="No earlier repository reviews" detail="History appears here when this repository has other stored reviews."/>)}
     </section>
   </section>;
