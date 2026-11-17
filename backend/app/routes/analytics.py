@@ -167,3 +167,31 @@ async def repository_intelligence(
             status_code=503,
             detail="Repository intelligence is temporarily unavailable.",
         ) from exc
+
+
+@router.get("/analytics/ai-orchestration")
+def ai_orchestration_analytics(_user: dict = Depends(current_user)):
+    """Safe, non-secret diagnostic telemetry on AI models, health, and routing."""
+    from app.ai_orchestration.health import get_health_tracker
+    from app.ai_orchestration.models import get_model_registry
+    from app.ai_orchestration.router import get_hybrid_router
+    from app.ai_orchestration.tasks import get_task_registry
+
+    task_reg = get_task_registry()
+    model_reg = get_model_registry()
+    health = get_health_tracker()
+    router_inst = get_hybrid_router()
+
+    tasks_data = [t.to_dict() for t in task_reg.list_tasks()]
+    models_data = [m.to_dict() for m in model_reg.list_models()]
+
+    routing_explanations = {}
+    for t in task_reg.list_tasks():
+        routing_explanations[t.task_id] = router_inst.explain_routing(t.task_id)
+
+    return {
+        "tasks": tasks_data,
+        "models": models_data,
+        "routing": routing_explanations,
+        "status": "operational",
+    }

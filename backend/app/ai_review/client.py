@@ -163,6 +163,11 @@ async def complete_json(
     total_attempts = 0
     attempted_providers: list[str] = []
     last_reason = "provider request failed"
+    from app.ai_orchestration.health import get_health_tracker
+    from app.ai_orchestration.models import get_model_registry
+    health_tracker = get_health_tracker()
+    model_registry = get_model_registry()
+
     for provider_index, provider in enumerate(providers):
         for attempt in range(retries + 1):
             total_attempts += 1
@@ -172,23 +177,34 @@ async def complete_json(
                 content, usage, latency_ms = await _request_provider(
                     provider, system_prompt, user_prompt, timeout or http_timeout(), response_limit,
                 )
+                health_tracker.record_success(provider.name)
+                prompt_toks = int(usage.get("prompt_tokens", 0) or 0)
+                comp_toks = int(usage.get("completion_tokens", 0) or 0)
+                cost = model_registry.estimate_cost(provider.model, provider.name, prompt_toks, comp_toks)
+
                 _last_call.set({
                     "provider": provider.name, "model": provider.model,
-                        "fallback_used": provider_index > 0 or bool(exclude_providers),
-                        "attempt_count": total_attempts, "providers_attempted": attempted_providers.copy(),
-                        "usage": usage, "latency_ms": latency_ms,
-                        "model_configuration": {
-                            "provider": provider.name, "model": provider.model,
-                            "protocol": "openai_chat_completions", "temperature": 0,
-                            "response_format": "json_object", "request_timeout_seconds": timeout or http_timeout(),
-                            "max_response_bytes": response_limit, "supports_json": provider.supports_json,
-                        },
+                    "fallback_used": provider_index > 0 or bool(exclude_providers),
+                    "attempt_count": total_attempts, "providers_attempted": attempted_providers.copy(),
+                    "usage": usage, "latency_ms": latency_ms,
+                    "estimated_cost_usd": cost,
+                    "model_configuration": {
+                        "provider": provider.name, "model": provider.model,
+                        "protocol": "openai_chat_completions", "temperature": 0,
+                        "response_format": "json_object", "request_timeout_seconds": timeout or http_timeout(),
+                        "max_response_bytes": response_limit, "supports_json": provider.supports_json,
+                    },
                 })
                 return content
             except AIReviewUnavailable as exc:
+                category, retryable, retry_after = health_tracker.classify_exception(exc)
+                health_tracker.record_failure(provider.name, category, str(exc), retry_after)
                 last_reason = str(exc)
+                if not retryable:
+                    break
                 if attempt < retries:
-                    await asyncio.sleep(0.2 * (2 ** attempt))
+                    delay = retry_after if retry_after is not None else (0.2 * (2 ** attempt))
+                    await asyncio.sleep(min(delay, 5.0))
     _last_call.set({"status": "unavailable", "providers_attempted": attempted_providers, "attempt_count": total_attempts})
     raise AIReviewUnavailable(f"Configured AI provider chain failed: {last_reason}")
 
