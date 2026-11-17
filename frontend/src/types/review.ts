@@ -100,11 +100,14 @@ export interface CanonicalIssue {
   status: 'open' | 'resolved' | 'dismissed';
   observations: FindingObservation[];
   explanation?: IssueExplanation | null;
+  explanation_status?: 'completed' | 'partial' | 'failed' | 'unavailable' | 'not_requested';
+  explanation_failure_reason?: string | null;
   suggested_fixes?: SuggestedFix[];
 }
 
 export type FixGenerationStatus = 'generated' | 'stale' | 'conflicted';
 export type FixDecisionStatus = 'pending' | 'accepted' | 'rejected';
+export type FixLifecycleStatus = 'proposed' | 'statically_verified' | 'fully_verified' | 'verification_failed' | 'unverified';
 export type FixValidationStatus = 'passed' | 'failed' | 'partial' | 'inconclusive' | 'unavailable' | 'not_run';
 export type FixValidationCheckStatus = FixValidationStatus | 'skipped';
 export type FixValidationProvenanceProfile = 'source_analysis' | 'snapshot_integrity' | 'ai_assessment' | 'test_execution' | 'non_source' | 'legacy_unverified';
@@ -193,6 +196,7 @@ export interface SuggestedFix {
   confidence: number;
   generation_status: FixGenerationStatus;
   decision_status: FixDecisionStatus;
+  verification_status?: FixLifecycleStatus;
   generated_at: string;
   decided_at?: string | null;
   validation_reports?: FixValidationReport[];

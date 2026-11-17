@@ -308,7 +308,23 @@ function SuggestedFixCard({ fix, issue, review, accountId, onDecision }: { fix: 
     try { await cancelTestExecution(executionJob.execution_id); setExecutionJob(await getTestExecutionJob(executionJob.execution_id)); }
     catch (reason) { setExecutionError(reason instanceof Error ? reason.message : 'Cancellation could not be requested.'); }
   };
-  return <article className="workspace-fix"><div className="workspace-fix-heading"><strong>{fix.change_summary}</strong><span className={`workspace-fix-status fix-${fix.decision_status}`}>{fix.decision_status}</span></div>
+  const vStatus = fix.verification_status ?? 'proposed';
+  const vStatusLabel = {
+    proposed: 'AI-Proposed (Unverified)',
+    statically_verified: 'Statically Verified',
+    fully_verified: 'Fully Verified',
+    verification_failed: 'Verification Failed',
+    unverified: 'Unverified',
+  }[vStatus] ?? pretty(vStatus);
+
+  return <article className="workspace-fix">
+    <div className="workspace-fix-heading">
+      <strong>{fix.change_summary}</strong>
+      <div className="workspace-fix-status-group">
+        <span className={`workspace-fix-badge fix-verify-${vStatus}`}>{vStatusLabel}</span>
+        <span className={`workspace-fix-status fix-${fix.decision_status}`}>{fix.decision_status}</span>
+      </div>
+    </div>
     <p>{fix.rationale}</p><div className="workspace-fix-meta"><code>{fix.file_path}:{fix.start_line}–{fix.end_line}</code><span>{Math.round(fix.confidence * 100)}% model confidence</span><span>{current ? 'Snapshot current at review time' : 'Current snapshot not verified'}</span></div>
     <details><summary>Review proposed code</summary><div className="workspace-code-grid"><div><h4>Original</h4><pre><code>{fix.expected_original_code}</code></pre></div><div><h4>Proposal</h4><pre><code>{fix.proposed_code}</code></pre></div></div></details>
     {!review.is_demo && <button type="button" className="secondary-button" disabled={validationBusy} onClick={() => void runValidation()}>{validationBusy ? 'Checking snapshot and source…' : 'Run source validation'}</button>}
@@ -380,8 +396,10 @@ function ExplanationField({ label, value }: { label: string; value?: string | nu
 }
 
 const trustedResourceHosts = new Set([
-  'bandit.readthedocs.io', 'cheatsheetseries.owasp.org', 'cwe.mitre.org', 'developer.mozilla.org',
-  'docs.astral.sh', 'docs.github.com', 'docs.python.org', 'fastapi.tiangolo.com', 'owasp.org', 'peps.python.org',
+  'bandit.readthedocs.io', 'cheatsheetseries.owasp.org', 'clang.llvm.org', 'cve.org',
+  'cwe.mitre.org', 'developer.mozilla.org', 'docs.astral.sh', 'docs.github.com',
+  'docs.oracle.com', 'docs.python.org', 'en.cppreference.com', 'fastapi.tiangolo.com',
+  'owasp.org', 'peps.python.org', 'pypi.org',
 ]);
 
 function LearningResourceLink({ resource }: { resource: LearningResource }) {

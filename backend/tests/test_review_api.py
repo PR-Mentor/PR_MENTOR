@@ -193,6 +193,81 @@ def test_fix_validation_route_persists_attempt_without_claiming_execution(client
     persisted = get_store().get_review(record["review_id"], owner_id=owner_id)
     reports = persisted["canonical_issues"][0]["suggested_fixes"][0]["validation_reports"]
     assert len(reports) == 1 and reports[0]["validation_id"] == "validation-attempt-1"
+    assert persisted["canonical_issues"][0]["suggested_fixes"][0]["verification_status"] == "unverified"
+
+
+def test_validate_fix_transitions_verification_status_on_pass_and_fail(client, monkeypatch):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from app.routes import review as review_routes
+    from app.services.fix_eligibility import FixEligibilityResult
+    from app.schemas.issue import (
+        FixValidationCheckResult,
+        FixValidationEvidenceReference,
+        FixValidationReport,
+        FixValidationSnapshot,
+    )
+
+    record = client.post("/api/reviews/analyze", json={"url": "https://github.com/example/val-test/pull/14", "mode": "demo"}).json()
+    record["is_demo"] = False
+    record["analysis_mode"] = "live"
+    issue = record["canonical_issues"][0]
+    fix = {
+        "fix_id": "fix-status-check", "canonical_issue_id": issue["issue_id"],
+        "file_path": issue["file_path"], "start_line": 1, "end_line": 1,
+        "language": "python", "base_commit_sha": "a" * 40, "file_blob_sha": "b" * 40,
+        "expected_original_code": "x = 1", "proposed_code": "x = 2",
+        "change_summary": "Fix code", "rationale": "Better code",
+        "confidence": 0.9, "generation_status": "generated", "decision_status": "pending",
+        "generated_at": datetime.now(UTC).isoformat(), "validation_reports": [],
+        "verification_status": "proposed",
+    }
+    issue["suggested_fixes"] = [fix]
+    owner_id = client.get("/api/auth/me").json()["user_id"]
+    get_store().save_review(record, owner_id=owner_id)
+    snapshot = FixValidationSnapshot(file_path=fix["file_path"], base_commit_sha="a" * 40, checked_head_sha="c" * 40, baseline_blob_sha="b" * 40, proposed_blob_sha="d" * 40)
+    now = datetime.now(UTC)
+
+    async def eligible(*_args, **_kwargs):
+        return FixEligibilityResult("eligible", "Current source verified.", snapshot, "x = 1\n", "x = 2\n")
+
+    monkeypatch.setattr(review_routes, "evaluate_fix_eligibility", eligible)
+
+    # 1. Test passing validation updates status to statically_verified
+    passed_report = FixValidationReport(
+        validation_id="val-pass", fix_id=fix["fix_id"], attempt_number=1,
+        status="passed", started_at=now, completed_at=now, snapshot=snapshot,
+        checks=[FixValidationCheckResult(
+            check_id="syntax", check_name="Syntax", provenance_profile="non_source",
+            status="passed", required=True, started_at=now, completed_at=now,
+            evidence=[FixValidationEvidenceReference(
+                evidence_id="syntax-evidence", kind="tool_result", description="Syntax clean",
+            )],
+        )],
+    )
+    monkeypatch.setattr(review_routes, "validate_static_fix", lambda *_args, **_kwargs: SimpleNamespace(report=passed_report, tool_results={}))
+
+    resp = client.post(f"/api/reviews/{record['review_id']}/issues/{issue['issue_id']}/fixes/{fix['fix_id']}/validate")
+    assert resp.status_code == 200
+    persisted = get_store().get_review(record["review_id"], owner_id=owner_id)
+    assert persisted["canonical_issues"][0]["suggested_fixes"][0]["verification_status"] == "statically_verified"
+
+    # 2. Test failing validation updates status to verification_failed
+    failed_report = FixValidationReport(
+        validation_id="val-fail", fix_id=fix["fix_id"], attempt_number=2,
+        status="failed", started_at=now, completed_at=now, snapshot=snapshot,
+        checks=[FixValidationCheckResult(
+            check_id="syntax", check_name="Syntax", provenance_profile="non_source",
+            status="failed", required=True,
+        )],
+    )
+    monkeypatch.setattr(review_routes, "validate_static_fix", lambda *_args, **_kwargs: SimpleNamespace(report=failed_report, tool_results={}))
+
+    resp = client.post(f"/api/reviews/{record['review_id']}/issues/{issue['issue_id']}/fixes/{fix['fix_id']}/validate")
+    assert resp.status_code == 200
+    persisted = get_store().get_review(record["review_id"], owner_id=owner_id)
+    assert persisted["canonical_issues"][0]["suggested_fixes"][0]["verification_status"] == "verification_failed"
+
 
 
 def test_review_request_validation_and_unknown_records(client):

@@ -44,6 +44,8 @@ MAX_RESPONSE_ENTRIES = 12
 @dataclass
 class ExplanationGenerationResult:
     explanations: dict[str, IssueExplanation] = field(default_factory=dict)
+    issue_statuses: dict[str, str] = field(default_factory=dict)
+    issue_failure_reasons: dict[str, str] = field(default_factory=dict)
     batch_count: int = 0
     failed_batch_count: int = 0
     rejected_explanation_count: int = 0
@@ -91,40 +93,111 @@ async def generate_issue_explanations(
     batches = _batch_contexts(contexts)
     result.batch_count = len(batches)
     for batch in batches:
-        try:
-            prompt = build_issue_explanation_prompt(batch)
-            expected_ids = {item["issue_id"] for item in batch}
-            code_context_ids = {item["issue_id"] for item in batch if item["code_context"]}
-
-            def parse_for_batch(raw: str, expected=expected_ids, with_context=code_context_ids):
-                return _parse_bounded_explanation_response(raw, expected, with_context)
-
-            _raw, (explanations, rejected) = await complete_validated_json(
-                "issue_explanation", CANONICAL_ISSUE_EXPLANATION_GUIDANCE, prompt,
-                parse_for_batch,
-            )
-            metadata = last_call_metadata()
-            if metadata is not None:
-                result.provider_calls.append(metadata)
-        except AIReviewUnavailable as exc:
-            metadata = last_call_metadata()
-            if metadata is not None:
-                result.provider_calls.append(metadata)
+        explanations, rejected, failed_reason = await _process_batch_with_retry(batch, result)
+        if failed_reason:
             result.failed_batch_count += 1
-            result.failure_reasons.append(str(exc))
-            continue
-        except (ValueError, TypeError):
-            metadata = last_call_metadata()
-            if metadata is not None:
-                result.provider_calls.append(metadata)
-            # Serialization or parsing errors for one batch are isolated from
-            # other batches and from the review itself.
-            result.failed_batch_count += 1
-            result.failure_reasons.append("AI provider returned an invalid explanation batch.")
-            continue
+            result.failure_reasons.append(failed_reason)
+            for item in batch:
+                issue_id = item["issue_id"]
+                if issue_id not in result.explanations:
+                    result.issue_statuses[issue_id] = "failed"
+                    result.issue_failure_reasons[issue_id] = failed_reason
         result.explanations.update(explanations)
         result.rejected_explanation_count += rejected
+        for issue_id in explanations:
+            result.issue_statuses[issue_id] = "completed"
+
+    for issue in issues:
+        if issue.issue_id in ambiguous_ids:
+            result.issue_statuses[issue.issue_id] = "unavailable"
+            result.issue_failure_reasons[issue.issue_id] = "Canonical issue ID was ambiguous."
+        elif issue.issue_id not in result.explanations and issue.issue_id not in result.issue_statuses:
+            result.issue_statuses[issue.issue_id] = "failed"
+            result.issue_failure_reasons[issue.issue_id] = "Explanation could not be generated."
+
     return result
+
+
+async def _execute_single_batch(
+    batch: list[dict[str, Any]], result: ExplanationGenerationResult
+) -> tuple[dict[str, IssueExplanation], int, str | None]:
+    try:
+        prompt = build_issue_explanation_prompt(batch)
+        expected_ids = {item["issue_id"] for item in batch}
+        code_context_ids = {item["issue_id"] for item in batch if item["code_context"]}
+
+        def parse_for_batch(raw: str, expected=expected_ids, with_context=code_context_ids):
+            return _parse_bounded_explanation_response(raw, expected, with_context)
+
+        _raw, (explanations, rejected) = await complete_validated_json(
+            "issue_explanation", CANONICAL_ISSUE_EXPLANATION_GUIDANCE, prompt,
+            parse_for_batch,
+        )
+        metadata = last_call_metadata()
+        if metadata is not None:
+            result.provider_calls.append(metadata)
+        return explanations, rejected, None
+    except AIReviewUnavailable as exc:
+        metadata = last_call_metadata()
+        if metadata is not None:
+            result.provider_calls.append(metadata)
+        return {}, 0, str(exc)
+    except (ValueError, TypeError):
+        metadata = last_call_metadata()
+        if metadata is not None:
+            result.provider_calls.append(metadata)
+        return {}, 0, "AI provider returned an invalid explanation batch."
+
+
+def _is_provider_connectivity_error(reason: str | None) -> bool:
+    if not reason:
+        return False
+    lower = reason.lower()
+    return any(
+        phrase in lower
+        for phrase in [
+            "http 50", "http 429", "temporarily unavailable", "did not respond in time",
+            "not configured", "endpoint must use https",
+        ]
+    )
+
+
+async def _process_batch_with_retry(
+    batch: list[dict[str, Any]], result: ExplanationGenerationResult
+) -> tuple[dict[str, IssueExplanation], int, str | None]:
+    """Execute a batch. If a multi-issue batch fails due to response validation or parsing, isolate failures by retrying each issue individually."""
+    explanations, rejected, failed_reason = await _execute_single_batch(batch, result)
+    if failed_reason is None:
+        return explanations, rejected, None
+
+    # If the provider itself failed with a connectivity or infrastructure error (HTTP 503, timeout, etc.),
+    # do not hammer the failing provider with repeated individual requests.
+    if _is_provider_connectivity_error(failed_reason):
+        return {}, 0, failed_reason
+
+    # If the batch contained multiple issues, retry each individually to prevent
+    # one malformed or oversized explanation response from failing the others.
+    if len(batch) > 1:
+        isolated_explanations: dict[str, IssueExplanation] = {}
+        total_rejected = 0
+        any_success = False
+        last_sub_failure = failed_reason
+        for item in batch:
+            sub_expls, sub_rejected, sub_err = await _execute_single_batch([item], result)
+            if sub_err is None:
+                isolated_explanations.update(sub_expls)
+                total_rejected += sub_rejected
+                any_success = True
+                result.issue_statuses[item["issue_id"]] = "completed"
+            else:
+                last_sub_failure = sub_err
+                result.issue_statuses[item["issue_id"]] = "failed"
+                result.issue_failure_reasons[item["issue_id"]] = sub_err
+        if any_success:
+            return isolated_explanations, total_rejected, None
+        return {}, 0, last_sub_failure
+
+    return {}, 0, failed_reason
 
 
 def _batch_contexts(contexts: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:

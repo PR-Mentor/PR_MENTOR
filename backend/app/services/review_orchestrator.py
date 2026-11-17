@@ -291,6 +291,10 @@ async def analyze(
                 explanation = explanation_result.explanations.get(issue.issue_id)
                 if explanation is not None:
                     issue.explanation = explanation
+                    issue.explanation_status = "completed"
+                else:
+                    issue.explanation_status = explanation_result.issue_statuses.get(issue.issue_id, "failed")
+                    issue.explanation_failure_reason = explanation_result.issue_failure_reasons.get(issue.issue_id)
             explained_count = len(explanation_result.explanations)
             has_failures = bool(
                 explanation_result.failed_batch_count

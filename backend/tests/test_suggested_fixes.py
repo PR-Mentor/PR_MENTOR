@@ -53,8 +53,25 @@ def test_valid_suggested_fix_has_bounded_python_replacement_contract():
     assert fix.language == "python"
     assert fix.generation_status == "generated"
     assert fix.decision_status == "pending"
+    assert fix.verification_status == "proposed"
     assert fix.generated_at.utcoffset().total_seconds() == 0
     assert fix.decided_at is None
+
+
+@pytest.mark.parametrize("status", ["proposed", "statically_verified", "fully_verified", "verification_failed", "unverified"])
+def test_suggested_fix_supports_lifecycle_verification_statuses(status):
+    values = deepcopy(BASE_FIX)
+    values["verification_status"] = status
+    fix = SuggestedFix.model_validate(values)
+    assert fix.verification_status == status
+
+
+def test_suggested_fix_rejects_invalid_verification_status():
+    values = deepcopy(BASE_FIX)
+    values["verification_status"] = "invalid_status"
+    with pytest.raises(ValidationError):
+        SuggestedFix.model_validate(values)
+
 
 
 @pytest.mark.parametrize("field", [
