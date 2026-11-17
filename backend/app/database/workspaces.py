@@ -66,10 +66,21 @@ def list_members(workspace_id: str) -> list[dict[str, Any]]:
     if _mongo():
         rows = list(_db()["workspace_members"].find({"workspace_id": workspace_id}, {"_id": 0}))
         users = _db()["auth_users"]
-        return [{**row, "email": (users.find_one({"user_id": row["user_id"]}, {"email": 1}) or {}).get("email")} for row in rows]
+        user_profiles = _db()["users"]
+        return [{
+            **row,
+            "email": (users.find_one({"user_id": row["user_id"]}, {"email": 1}) or {}).get("email")
+                     or (user_profiles.find_one({"firebase_uid": row["user_id"]}, {"email": 1}) or {}).get("email")
+        } for row in rows]
     with connection() as db:
-        rows = db.execute("SELECT m.user_id, u.email, m.role, m.joined_at FROM workspace_members m JOIN auth_users u ON u.user_id=m.user_id WHERE m.workspace_id=? ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, m.joined_at", (workspace_id,)).fetchall()
-    return [dict(row) for row in rows]
+        rows = db.execute("SELECT m.user_id, u.email, m.role, m.joined_at FROM workspace_members m LEFT JOIN auth_users u ON u.user_id=m.user_id WHERE m.workspace_id=? ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, m.joined_at", (workspace_id,)).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if not d.get("email"):
+                d["email"] = user_email(d["user_id"])
+            result.append(d)
+    return result
 
 
 def create_invitation(token_hash: str, workspace_id: str, email: str, role: str, invited_by: str) -> datetime:
@@ -173,10 +184,26 @@ def list_shared_review_ids(workspace_id: str, *, limit: int | None = None) -> li
 def user_email(user_id: str) -> str | None:
     if _mongo():
         item = _db()["auth_users"].find_one({"user_id": user_id}, {"email": 1})
-        return str(item["email"]) if item and isinstance(item.get("email"), str) else None
+        if item and isinstance(item.get("email"), str):
+            return str(item["email"])
+        # Fallback to users collection (Firebase/Supabase profile store)
+        user_doc = _db()["users"].find_one({"firebase_uid": user_id}, {"email": 1})
+        return str(user_doc["email"]) if user_doc and isinstance(user_doc.get("email"), str) else None
     with connection() as db:
         row = db.execute("SELECT email FROM auth_users WHERE user_id=?", (user_id,)).fetchone()
-    return str(row["email"]) if row else None
+        if row and row["email"]:
+            return str(row["email"])
+        # Fallback to users table
+        user_row = db.execute("SELECT payload FROM users WHERE firebase_uid=?", (user_id,)).fetchone()
+        if user_row:
+            try:
+                import json
+                payload = json.loads(user_row["payload"])
+                if payload.get("email"):
+                    return str(payload["email"])
+            except Exception:
+                pass
+    return None
 
 
 def hash_invitation(token: str) -> str:

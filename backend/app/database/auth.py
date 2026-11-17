@@ -63,6 +63,35 @@ def get_user_by_id(user_id: str) -> dict[str, str] | None:
     return dict(row) if row else None
 
 
+def upsert_external_auth_user(user_id: str, email: str) -> None:
+    """Ensure an external authenticated user (e.g. Supabase, Firebase) exists in auth_users."""
+    if not user_id or not email:
+        return
+    clean_email = email.strip().casefold()
+    now = datetime.now(UTC)
+    if _mongo():
+        users = _mongo_db()["auth_users"]
+        users.update_one(
+            {"user_id": user_id},
+            {"$set": {"user_id": user_id, "email": clean_email, "updated_at": now}, "$setOnInsert": {"password_hash": "external", "created_at": now}},
+            upsert=True,
+        )
+        return
+    with connection() as db:
+        # Check if user already exists
+        existing = db.execute("SELECT user_id, email FROM auth_users WHERE user_id = ?", (user_id,)).fetchone()
+        if existing:
+            if existing["email"] != clean_email:
+                db.execute("UPDATE auth_users SET email = ? WHERE user_id = ?", (clean_email, user_id))
+            return
+        # If email belongs to another record, avoid UNIQUE constraint failure by upserting
+        db.execute(
+            "INSERT INTO auth_users(user_id, email, password_hash, created_at) VALUES (?, ?, 'external', ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET email=excluded.email",
+            (user_id, clean_email, now.isoformat()),
+        )
+
+
 def save_session(token_hash: str, user_id: str, expires_at: datetime) -> None:
     if _mongo():
         _mongo_db()["auth_sessions"].replace_one(

@@ -178,6 +178,11 @@ def current_claims(
 def current_user(claims: Annotated[dict[str, Any], Depends(current_claims)]) -> dict[str, Any]:
     uid = claims["uid"]
     email = claims.get("email") or ""
+    if uid and email:
+        try:
+            auth_store.upsert_external_auth_user(uid, email)
+        except Exception:
+            pass
     return {
         "user_id": uid,
         "firebase_uid": uid,
