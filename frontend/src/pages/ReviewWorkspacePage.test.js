@@ -91,7 +91,7 @@ test('renders overview counts, canonical issue, provenance, evidence, explanatio
   const html = render(review());
   for (const content of ['Review overview', 'UNIQUE ISSUES', '>1<', 'OBSERVATIONS', 'Findings',
     'Untrusted input reaches shell execution.', 'AI candidate', 'AI reviewer', 'SEC-1',
-    'Original evidence and context', 'subprocess.run(command, shell=True)', 'AI explanations',
+    'Original evidence and context', 'subprocess.run(command, shell=True)', 'AI explanations: 1/1',
     'AI-generated guidance', 'Untrusted input can reach shell execution.', 'Root cause', 'Concept',
     'Python subprocess documentation', 'Limitations and uncertainty',
     'src/run.py', 'Open full diff', 'Review history']) {

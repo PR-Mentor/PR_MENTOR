@@ -499,6 +499,13 @@ a { color: inherit; }
   .workspace-file-list em { display: none; }
 }
 
+.workspace-heading-pills { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.workspace-badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 600; border: 1px solid var(--line); }
+.workspace-badge.badge-success { color: #166534; background: #f0fdf4; border-color: #bbf7d0; }
+.workspace-badge.badge-warning { color: #854d0e; background: #fefce8; border-color: #fef08a; }
+.workspace-badge.badge-muted { color: #64748b; background: #f8fafc; border-color: #e2e8f0; }
+.workspace-badge.badge-neutral { color: var(--ink); background: var(--surface-soft); border-color: var(--line); }
+
 /* Contextual teaching attached to its canonical issue. */
 .workspace-explanation-status { margin: 0; padding: 11px 13px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--surface-soft); font-size: 13px; line-height: 1.6; }
 .workspace-explanation-status.status-partial, .workspace-explanation-status.status-unavailable { color: #76531a; background: #fff8e8; border-color: #f0dfb8; }

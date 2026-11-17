@@ -96,7 +96,20 @@ export default function ReviewWorkspacePage({
     </section>
 
     <section className="workspace-section" id="findings" aria-labelledby="findings-title">
-      <div className="workspace-section-heading"><div><span className="section-index">02</span><div><h2 id="findings-title">Findings</h2><p>{issueData.mode === 'canonical' ? 'Canonical issues group evidence from each reporting source.' : 'This stored review predates canonical issue grouping; original findings are shown as received.'}</p></div></div><span className="workspace-count">{issueData.mode === 'canonical' ? `${issueData.issues.length} ISSUES` : `${issueData.legacyFindings.length} FINDINGS`}</span></div>
+      <div className="workspace-section-heading">
+        <div>
+          <span className="section-index">02</span>
+          <div>
+            <h2 id="findings-title">Findings</h2>
+            <p>{issueData.mode === 'canonical' ? 'Canonical issues group evidence from each reporting source. Explanations and verified guidance are consolidated directly on each finding.' : 'This stored review predates canonical issue grouping; original findings are shown as received.'}</p>
+          </div>
+        </div>
+        <div className="workspace-heading-pills">
+          <ExplanationGenerationBadge review={review} legacy={issueData.mode === 'legacy'}/>
+          <span className="workspace-count">{issueData.mode === 'canonical' ? `${issueData.issues.length} ISSUES` : `${issueData.legacyFindings.length} FINDINGS`}</span>
+        </div>
+      </div>
+      <ExplanationGenerationStatus review={review} legacy={issueData.mode === 'legacy'}/>
       {issueData.mode === 'canonical'
         ? issueData.issues.length
           ? <div className="workspace-issue-list">{issueData.issues.map((issue) => <CanonicalIssueCard issue={issue} review={review} accountId={accountId} onFixDecision={onFixDecision} key={issue.issue_id}/>)}</div>
@@ -106,16 +119,8 @@ export default function ReviewWorkspacePage({
           : <EmptyNotice title="No findings returned" detail="This review contains no findings. Review the tool statuses and warnings for analysis coverage."/>}
     </section>
 
-    <section className="workspace-section" id="explanations" aria-labelledby="explanations-title">
-      <div className="workspace-section-heading"><div><span className="section-index">03</span><div><h2 id="explanations-title">AI explanations</h2><p>Educational guidance belongs to each canonical issue. Original tool and AI observations remain separate evidence.</p></div></div></div>
-      <ExplanationGenerationStatus review={review} legacy={issueData.mode === 'legacy'}/>
-      {issueData.mode === 'legacy' && issueData.legacyFindings.some(hasLegacyExplanation)
-        ? <p className="workspace-muted">This older review has no canonical explanations. Existing AI candidate guidance is shown with its original finding.</p>
-        : null}
-    </section>
-
     <section className="workspace-section" id="validation" aria-labelledby="validation-title">
-      <div className="workspace-section-heading"><div><span className="section-index">04</span><div><h2 id="validation-title">Validation & analysis</h2><p>Reported tool status and execution evidence from this review.</p></div></div></div>
+      <div className="workspace-section-heading"><div><span className="section-index">03</span><div><h2 id="validation-title">Validation & analysis</h2><p>Reported tool status and execution evidence from this review.</p></div></div></div>
       <div className="workspace-validation-grid">
         <ToolGroup title="Static analysis" tools={tools.filter((tool) => ['ruff', 'bandit'].includes(tool.tool))} empty="No Ruff or Bandit status was returned."/>
         <ToolGroup title="AI review" tools={tools.filter((tool) => tool.tool === 'ai_review')} empty="No AI review status was returned."/>
@@ -124,7 +129,7 @@ export default function ReviewWorkspacePage({
     </section>
 
     <section className="workspace-section" id="repository-context" aria-labelledby="repository-context-title">
-      <div className="workspace-section-heading"><div><span className="section-index">05</span><div><h2 id="repository-context-title">Repository context</h2><p>Snapshot-bound Python structure and import relationships for the public repository.</p></div></div></div>
+      <div className="workspace-section-heading"><div><span className="section-index">04</span><div><h2 id="repository-context-title">Repository context</h2><p>Snapshot-bound Python structure and import relationships for the public repository.</p></div></div></div>
       {!review.is_demo && pullRequest.head_sha
         ? <RepositoryIntelligencePanel owner={pullRequest.repository_owner} repository={pullRequest.repository_name} refSha={pullRequest.head_sha}/>
         : <p className="workspace-muted">Repository intelligence is available for live reviews with a full commit SHA.</p>}
@@ -396,6 +401,23 @@ function isSafeLearningResource(value: string) {
   } catch {
     return false;
   }
+}
+
+function ExplanationGenerationBadge({ review, legacy }: { review: ReviewResponse; legacy: boolean }) {
+  if (legacy) return <span className="workspace-badge badge-neutral">Legacy review</span>;
+  const tool = review.tool_results?.find((item) => item.tool === 'issue_explanations');
+  if (!tool) return null;
+  const hasCounts = Number.isFinite(tool.explained_issue_count) && Number.isFinite(tool.issue_count);
+  if (tool.status === 'completed') {
+    return <span className="workspace-badge badge-success"><Sparkles size={13}/> {hasCounts ? `AI explanations: ${tool.explained_issue_count}/${tool.issue_count}` : 'AI explanations generated'}</span>;
+  }
+  if (tool.status === 'partial') {
+    return <span className="workspace-badge badge-warning"><Sparkles size={13}/> {hasCounts ? `AI explanations: ${tool.explained_issue_count}/${tool.issue_count} partial` : 'AI explanations partial'}</span>;
+  }
+  if (tool.status === 'unavailable') {
+    return <span className="workspace-badge badge-muted"><Sparkles size={13}/> AI explanations unavailable</span>;
+  }
+  return null;
 }
 
 function ExplanationGenerationStatus({ review, legacy }: { review: ReviewResponse; legacy: boolean }) {
