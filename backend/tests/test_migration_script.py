@@ -1,5 +1,6 @@
 """Tests for SQLite to MongoDB migration script with Learning Lab support."""
 
+import hashlib
 import json
 import sqlite3
 from contextlib import closing
@@ -460,28 +461,235 @@ def test_existing_records_not_overwritten_by_unrelated_migration(mock_target, po
     assert db["learning_spaces"].count_documents({}) == 2
 
 
-def test_real_sqlite_file_dry_run_and_quarantine_reporting(mock_target):
-    """Verify migration dry run and quarantine against the actual repository SQLite database."""
+@pytest.fixture
+def representative_sqlite_path(tmp_path):
+    """Representative SQLite database with valid records across all collections and an orphan draft."""
+    db_file = tmp_path / "representative_pr_mentor.sqlite3"
+    with closing(sqlite3.connect(db_file)) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE reviews (
+                review_id TEXT PRIMARY KEY,
+                user_id TEXT,
+                created_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                owner_id TEXT
+            );
+            CREATE TABLE saved_pull_requests (
+                saved_id TEXT PRIMARY KEY,
+                user_id TEXT,
+                url TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                owner_id TEXT
+            );
+            CREATE TABLE learning_attempts (
+                attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exercise_id TEXT NOT NULL,
+                category TEXT NOT NULL,
+                correct INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                user_id TEXT,
+                owner_id TEXT
+            );
+            CREATE TABLE learning_spaces (
+                space_id TEXT PRIMARY KEY,
+                canonical_repo TEXT NOT NULL,
+                pr_number INTEGER NOT NULL,
+                pr_title TEXT,
+                pr_url TEXT,
+                latest_review_id TEXT,
+                review_count INTEGER DEFAULT 1,
+                primary_language TEXT,
+                languages_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                owner_id TEXT
+            );
+            CREATE TABLE learning_concepts (
+                concept_id TEXT PRIMARY KEY,
+                space_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                summary TEXT,
+                why_it_matters TEXT,
+                category TEXT,
+                language TEXT,
+                canonical_issue_ids_json TEXT,
+                exercise_ids_json TEXT,
+                order_index INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'not_started',
+                owner_id TEXT
+            );
+            CREATE TABLE learning_exercises (
+                exercise_id TEXT PRIMARY KEY,
+                space_id TEXT NOT NULL,
+                concept_id TEXT NOT NULL,
+                canonical_issue_id TEXT,
+                title TEXT NOT NULL,
+                description TEXT,
+                instructions TEXT,
+                language TEXT NOT NULL,
+                difficulty TEXT,
+                category TEXT,
+                starter_code TEXT,
+                buggy_code TEXT,
+                expected_behavior TEXT,
+                hints_json TEXT,
+                explanation TEXT,
+                completion_criteria_json TEXT,
+                validation_rules_json TEXT,
+                points INTEGER DEFAULT 10
+            );
+            CREATE TABLE learning_drafts (
+                draft_id TEXT PRIMARY KEY,
+                exercise_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE learning_submissions (
+                submission_id TEXT PRIMARY KEY,
+                exercise_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                status TEXT NOT NULL,
+                passed INTEGER NOT NULL,
+                feedback TEXT,
+                eval_details_json TEXT,
+                submitted_at TEXT NOT NULL
+            );
+            """
+        )
+
+        conn.execute(
+            "INSERT INTO reviews VALUES ('r-rep-1', 'u-rep-1', '2026-11-10T10:00:00Z', '{\"review_id\": \"r-rep-1\", \"created_at\": \"2026-11-10T10:00:00Z\", \"findings\": []}', 'u-rep-1')"
+        )
+        conn.execute(
+            "INSERT INTO reviews VALUES ('r-rep-2', 'u-rep-2', '2026-11-10T11:00:00Z', '{\"review_id\": \"r-rep-2\", \"created_at\": \"2026-11-10T11:00:00Z\", \"findings\": []}', 'u-rep-2')"
+        )
+        conn.execute(
+            "INSERT INTO saved_pull_requests VALUES ('s-rep-1', 'u-rep-1', 'https://github.com/org/repo/pull/10', '2026-11-10T10:00:00Z', 'u-rep-1')"
+        )
+        conn.execute(
+            "INSERT INTO learning_attempts VALUES (1, 'ex-rep-1', 'security', 1, '2026-11-10T10:00:00Z', 'u-rep-1', 'u-rep-1')"
+        )
+        conn.execute(
+            """
+            INSERT INTO learning_spaces VALUES (
+                'space-rep-1', 'org/repo', 10, 'PR 10', 'https://github.com/org/repo/pull/10',
+                'r-rep-1', 1, 'python', '["python"]', '2026-11-10T10:00:00+00:00', '2026-11-10T10:00:00+00:00', 'u-rep-1'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO learning_concepts VALUES (
+                'concept-rep-1', 'space-rep-1', 'Input Validation', 'Summary', 'Why it matters',
+                'security', 'python', '["issue-rep-1"]', '[]', 1, 'not_started', 'u-rep-1'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO learning_exercises VALUES (
+                'ex-rep-1', 'space-rep-1', 'concept-rep-1', 'issue-rep-1',
+                'Sanitize Input', 'Desc', 'Inst', 'python', 'beginner', 'security',
+                'def sanitize(x): pass', 'def sanitize(x): return x', 'expected',
+                '["hint 1"]', 'explanation', '["crit 1"]', '{}', 10
+            )
+            """
+        )
+        # Valid draft
+        conn.execute(
+            """
+            INSERT INTO learning_drafts VALUES (
+                'draft-valid-1', 'ex-rep-1', 'u-rep-1', 'def sanitize(x): return clean(x)', '2026-11-10T12:00:00+00:00'
+            )
+            """
+        )
+        # Orphaned draft referencing missing exercise ex-test-draft-1
+        conn.execute(
+            """
+            INSERT INTO learning_drafts VALUES (
+                'draft-ex-test-draft-1-user-alice', 'ex-test-draft-1', 'user-alice', 'orphan draft code', '2026-11-10T13:00:00+00:00'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO learning_submissions VALUES (
+                'sub-rep-1', 'ex-rep-1', 'u-rep-1', 'def sanitize(x): return clean(x)', 'completed', 1,
+                'Passed feedback', '{"check": "ok"}', '2026-11-10T14:00:00+00:00'
+            )
+            """
+        )
+        conn.commit()
+
+    return db_file
+
+
+def test_real_sqlite_file_dry_run_and_quarantine_reporting(mock_target, representative_sqlite_path):
+    """Verify migration dry run, quarantine reporting, and source database immutability using a representative SQLite fixture."""
     db, store = mock_target
-    real_db_path = Path("backend/data/pr_mentor.sqlite3")
-    assert real_db_path.exists(), "PR Mentor SQLite database must exist"
+
+    # Compute source SQLite hash and record counts prior to dry run
+    sha256_before = hashlib.sha256(representative_sqlite_path.read_bytes()).hexdigest()
+    with closing(sqlite3.connect(representative_sqlite_path)) as conn:
+        counts_before = {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "reviews",
+                "saved_pull_requests",
+                "learning_attempts",
+                "learning_spaces",
+                "learning_concepts",
+                "learning_exercises",
+                "learning_drafts",
+                "learning_submissions",
+            )
+        }
 
     result = migrate(
-        real_db_path,
+        representative_sqlite_path,
         store,
         dry_run=True,
         include_learning_lab=True,
         reconcile=False,
     )
 
-    # Valid records were counted accurately
-    assert result["reviews"] == 21
-    assert result["learning_spaces"] == 3
-    assert result["learning_concepts"] == 5
-    assert result["learning_exercises"] == 5
-    assert result["learning_drafts"] == 0  # Only 1 draft exists and it is orphaned
-    assert result["learning_submissions"] == 4
+    # Immutability verification: source SQLite database file must not be modified in dry-run
+    sha256_after = hashlib.sha256(representative_sqlite_path.read_bytes()).hexdigest()
+    assert sha256_before == sha256_after, "Dry run must not modify the source SQLite database file"
+
+    with closing(sqlite3.connect(representative_sqlite_path)) as conn:
+        counts_after = {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in counts_before
+        }
+    assert counts_before == counts_after, "Source database table row counts must remain invariant during dry run"
+
+    # Migration counts match representative dataset
+    assert result["reviews"] == 2
+    assert result["saved_pull_requests"] == 1
+    assert result["learning_attempts"] == 1
+    assert result["learning_spaces"] == 1
+    assert result["learning_concepts"] == 1
+    assert result["learning_exercises"] == 1
+    assert result["learning_drafts"] == 1  # 1 valid draft migrated
+    assert result["learning_submissions"] == 1
     assert result["learning_drafts_quarantine"] == 1
+
+    # Accounting consistency: Source = Migrated + Skipped + Quarantined across all tracked collections
+    for table_name, src_count in result.source_counts.items():
+        mig_count = result.migrated_counts.get(table_name, 0)
+        skip_count = result.skipped_counts.get(table_name, 0)
+        quar_count = result.quarantined_counts.get(table_name, 0)
+        assert (
+            src_count == mig_count + skip_count + quar_count
+        ), f"Accounting discrepancy in {table_name}: source {src_count} != migrated {mig_count} + skipped {skip_count} + quarantined {quar_count}"
+
+    assert result.source_counts["learning_drafts"] == 2
+    assert result.migrated_counts["learning_drafts"] == 1
+    assert result.quarantined_counts["learning_drafts"] == 1
 
     # Orphan draft was detected and routed to quarantine
     assert len(result.quarantine_records) == 1
