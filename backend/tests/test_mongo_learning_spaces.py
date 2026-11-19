@@ -301,3 +301,104 @@ def test_validation_rules_never_exposed_via_public_api(mongo_service, monkeypatc
         assert "validation_rules" not in res2.json()
     finally:
         app.dependency_overrides.clear()
+
+
+def test_mongo_anonymous_space_resolution_and_deduplication(mongo_service, mongo_db):
+    """Verify owner_id=None (anonymous) space resolution and review snapshot deduplication."""
+    review1 = _sample_review(review_id="r-anon-1")
+    space1 = mongo_service.resolve_or_create_space(review1, owner_id=None)
+
+    assert space1.canonical_repo == "octocat/hello-world"
+    assert space1.pr_number == 101
+    assert space1.review_count == 1
+    assert space1.latest_review_id == "r-anon-1"
+
+    # Verify document in MongoDB
+    doc = mongo_db["learning_spaces"].find_one({"space_id": space1.space_id})
+    assert doc is not None
+    assert doc["owner_id"] is None
+    assert doc["review_count"] == 1
+
+    # Second snapshot with owner_id=None deduplicates to the same space
+    review2 = _sample_review(review_id="r-anon-2")
+    space2 = mongo_service.resolve_or_create_space(review2, owner_id=None)
+
+    assert space2.space_id == space1.space_id
+    assert space2.review_count == 2
+    assert space2.latest_review_id == "r-anon-2"
+    assert mongo_db["learning_spaces"].count_documents({}) == 1
+
+
+def test_mongo_anonymous_and_authenticated_owner_isolation(mongo_service, mongo_db):
+    """Verify complete isolation between anonymous (owner_id=None) and authenticated spaces."""
+    review = _sample_review()
+    space_anon = mongo_service.resolve_or_create_space(review, owner_id=None)
+    space_alice = mongo_service.resolve_or_create_space(review, owner_id="user-alice")
+
+    assert space_anon.space_id != space_alice.space_id
+
+    doc_anon = mongo_db["learning_spaces"].find_one({"space_id": space_anon.space_id})
+    assert doc_anon is not None
+    assert doc_anon["owner_id"] is None
+
+    doc_alice = mongo_db["learning_spaces"].find_one({"space_id": space_alice.space_id})
+    assert doc_alice is not None
+    assert doc_alice["owner_id"] == "user-alice"
+
+    # Listing as Alice does not reveal the anonymous space
+    alice_spaces = mongo_service.list_spaces(owner_id="user-alice")
+    assert len(alice_spaces) == 1
+    assert alice_spaces[0].space_id == space_alice.space_id
+
+    # Alice cannot get the anonymous space with her owner_id filter
+    assert mongo_service.get_space(space_anon.space_id, owner_id="user-alice") is None
+
+    # Getting anonymous space with owner_id=None succeeds
+    anon_fetched = mongo_service.get_space(space_anon.space_id, owner_id=None)
+    assert anon_fetched is not None
+    assert anon_fetched.space_id == space_anon.space_id
+
+    assert mongo_db["learning_spaces"].count_documents({}) == 2
+
+
+def test_mongo_anonymous_unique_index_semantics(mongo_db):
+    """Verify unique compound index enforcement on (canonical_repo, pr_number, owner_id)."""
+    now = datetime.now(UTC)
+    doc_anon_1 = {
+        "space_id": "space-anon-1",
+        "canonical_repo": "octocat/hello-world",
+        "pr_number": 101,
+        "pr_title": "PR 101",
+        "pr_url": "https://github.com/octocat/hello-world/pull/101",
+        "latest_review_id": "r-1",
+        "review_count": 1,
+        "primary_language": "python",
+        "languages": ["python"],
+        "created_at": now,
+        "updated_at": now,
+        "owner_id": None,
+    }
+    mongo_db["learning_spaces"].insert_one(doc_anon_1)
+
+    # Inserting a second document with identical (canonical_repo, pr_number, owner_id=None) violates unique index
+    import pymongo.errors
+    doc_anon_2 = dict(doc_anon_1)
+    doc_anon_2.pop("_id", None)
+    doc_anon_2["space_id"] = "space-anon-2"
+    with pytest.raises((pymongo.errors.DuplicateKeyError, Exception)):
+        mongo_db["learning_spaces"].insert_one(doc_anon_2)
+
+    # Inserting document with same repo/pr but authenticated owner succeeds
+    doc_auth = dict(doc_anon_1)
+    doc_auth.pop("_id", None)
+    doc_auth["space_id"] = "space-alice-1"
+    doc_auth["owner_id"] = "user-alice"
+    mongo_db["learning_spaces"].insert_one(doc_auth)
+    assert mongo_db["learning_spaces"].count_documents({}) == 2
+
+    # Inserting second document for same authenticated owner violates unique index
+    doc_auth_2 = dict(doc_auth)
+    doc_auth_2.pop("_id", None)
+    doc_auth_2["space_id"] = "space-alice-2"
+    with pytest.raises((pymongo.errors.DuplicateKeyError, Exception)):
+        mongo_db["learning_spaces"].insert_one(doc_auth_2)

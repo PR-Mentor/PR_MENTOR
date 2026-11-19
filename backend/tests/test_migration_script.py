@@ -228,10 +228,19 @@ def test_dry_run_does_not_modify_mongodb(mock_target, populated_sqlite_path):
     assert counts["learning_spaces"] == 1
     assert counts["learning_concepts"] == 1  # 1 valid, 1 orphan skipped
     assert counts["learning_exercises"] == 1  # 1 valid, 1 orphan skipped
-    assert counts["learning_drafts"] == 1  # 1 valid, 1 orphan skipped
+    assert counts["learning_drafts"] == 1  # 1 valid, 1 orphan quarantined
     assert counts["learning_submissions"] == 1  # 1 valid, 1 orphan skipped
+    assert counts["learning_drafts_quarantine"] == 1  # 1 orphan draft quarantined
 
-    # MongoDB collections remain completely empty
+    # Audit metadata counts
+    assert counts.source_counts["learning_drafts"] == 2
+    assert counts.migrated_counts["learning_drafts"] == 1
+    assert counts.quarantined_counts["learning_drafts"] == 1
+    assert counts.skipped_counts["learning_concepts"] == 1
+    assert counts.skipped_counts["learning_exercises"] == 1
+    assert counts.skipped_counts["learning_submissions"] == 1
+
+    # MongoDB collections remain completely empty (zero writes)
     for col in (
         "reviews",
         "saved_pull_requests",
@@ -240,6 +249,7 @@ def test_dry_run_does_not_modify_mongodb(mock_target, populated_sqlite_path):
         "learning_concepts",
         "learning_exercises",
         "learning_drafts",
+        "learning_drafts_quarantine",
         "learning_submissions",
     ):
         assert db[col].count_documents({}) == 0
@@ -260,6 +270,7 @@ def test_migration_transforms_types_and_skips_orphans(mock_target, populated_sql
     assert counts["learning_exercises"] == 1
     assert counts["learning_drafts"] == 1
     assert counts["learning_submissions"] == 1
+    assert counts["learning_drafts_quarantine"] == 1
 
     # Check transformed document shapes in MongoDB
     space_doc = db["learning_spaces"].find_one({"space_id": "space-valid-1"})
@@ -293,11 +304,23 @@ def test_migration_transforms_types_and_skips_orphans(mock_target, populated_sql
     assert sub_doc["eval_details"] == {"check": "ok"}
     assert isinstance(sub_doc["submitted_at"], datetime)
 
-    # Verify orphans were NOT inserted into MongoDB
+    # Verify orphans were NOT inserted into main Learning Lab collections
     assert db["learning_concepts"].find_one({"concept_id": "concept-orphan-1"}) is None
     assert db["learning_exercises"].find_one({"exercise_id": "exercise-orphan-1"}) is None
     assert db["learning_drafts"].find_one({"draft_id": "draft-orphan-1"}) is None
     assert db["learning_submissions"].find_one({"submission_id": "sub-orphan-1"}) is None
+
+    # Verify orphan draft was quarantined with correct schema and metadata
+    quarantine_doc = db["learning_drafts_quarantine"].find_one({"draft_id": "draft-orphan-1"})
+    assert quarantine_doc is not None
+    assert quarantine_doc["draft_id"] == "draft-orphan-1"
+    assert quarantine_doc["exercise_id"] == "exercise-nonexistent"
+    assert quarantine_doc["user_id"] == "u-1"
+    assert quarantine_doc["code"] == "code"
+    assert isinstance(quarantine_doc["updated_at"], datetime)
+    assert quarantine_doc["_quarantine_reason"] == "missing_parent_exercise: exercise-nonexistent"
+    assert quarantine_doc["_source_table"] == "learning_drafts"
+    assert isinstance(quarantine_doc["_quarantined_at"], datetime)
 
 
 def test_migration_is_idempotent_on_rerun(mock_target, populated_sqlite_path):
@@ -323,7 +346,169 @@ def test_migration_is_idempotent_on_rerun(mock_target, populated_sqlite_path):
     assert db["learning_concepts"].count_documents({}) == 1
     assert db["learning_exercises"].count_documents({}) == 1
     assert db["learning_drafts"].count_documents({}) == 1
+    assert db["learning_drafts_quarantine"].count_documents({}) == 1
     assert db["learning_submissions"].count_documents({}) == 1
+
+
+def test_quarantine_write_once_preserves_existing_record_and_metadata(mock_target, populated_sqlite_path):
+    """Verify quarantine uses write-once $setOnInsert: existing records, timestamps, and admin notes are preserved."""
+    db, store = mock_target
+    existing_quarantined_at = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
+    existing_doc = {
+        "draft_id": "draft-orphan-1",
+        "exercise_id": "exercise-nonexistent",
+        "user_id": "u-1",
+        "code": "original code from initial quarantine",
+        "updated_at": datetime(2026, 1, 10, 10, 0, 0, tzinfo=UTC),
+        "_quarantine_reason": "missing_parent_exercise: exercise-nonexistent",
+        "_source_table": "learning_drafts",
+        "_quarantined_at": existing_quarantined_at,
+        "admin_note": "Recovery investigation started",
+        "tags": ["needs_review", "orphan_triage"],
+    }
+    db["learning_drafts_quarantine"].insert_one(existing_doc)
+
+    result = migrate(
+        populated_sqlite_path,
+        store,
+        dry_run=False,
+        include_learning_lab=True,
+        reconcile=True,
+    )
+
+    # Verify no duplicate document is created in quarantine
+    assert db["learning_drafts_quarantine"].count_documents({}) == 1
+
+    # Verify existing document remains completely unchanged
+    quarantined = db["learning_drafts_quarantine"].find_one({"draft_id": "draft-orphan-1"})
+    assert quarantined is not None
+    assert quarantined["_quarantined_at"] == existing_quarantined_at
+    assert quarantined["admin_note"] == "Recovery investigation started"
+    assert quarantined["tags"] == ["needs_review", "orphan_triage"]
+    assert quarantined["code"] == "original code from initial quarantine"
+
+    # Verify migration summary remains accurate
+    assert result["learning_drafts_quarantine"] == 1
+    assert result.quarantined_counts["learning_drafts"] == 1
+    assert len(result.quarantine_records) == 1
+    assert result.quarantine_records[0]["id"] == "draft-orphan-1"
+
+
+def test_quarantine_record_and_skip_reason_details(mock_target, populated_sqlite_path):
+    """Verify detailed skip and quarantine reasons recorded during migration."""
+    db, store = mock_target
+    result = migrate(
+        populated_sqlite_path,
+        store,
+        dry_run=False,
+        include_learning_lab=True,
+        reconcile=True,
+    )
+
+    # Quarantined records
+    assert len(result.quarantine_records) == 1
+    assert result.quarantine_records[0] == {
+        "table": "learning_drafts",
+        "id": "draft-orphan-1",
+        "target_collection": "learning_drafts_quarantine",
+        "reason": "missing_parent_exercise: exercise-nonexistent",
+    }
+
+    # Skipped records
+    assert len(result.skip_reasons) == 3
+    skip_map = {item["id"]: item for item in result.skip_reasons}
+    assert skip_map["concept-orphan-1"]["reason"] == "missing_parent_space: space-nonexistent"
+    assert skip_map["exercise-orphan-1"]["reason"] == "missing_parent_concept: concept-nonexistent"
+    assert skip_map["sub-orphan-1"]["reason"] == "missing_parent_exercise: exercise-nonexistent"
+
+
+def test_existing_records_not_overwritten_by_unrelated_migration(mock_target, populated_sqlite_path):
+    """Verify existing MongoDB records not in source database are never overwritten or deleted."""
+    db, store = mock_target
+    now = datetime.now(UTC)
+    db["learning_spaces"].insert_one({
+        "space_id": "space-preexisting-unrelated",
+        "canonical_repo": "other/repo",
+        "pr_number": 999,
+        "pr_title": "Unrelated PR",
+        "pr_url": "https://github.com/other/repo/pull/999",
+        "latest_review_id": "r-unrelated",
+        "review_count": 1,
+        "primary_language": "go",
+        "languages": ["go"],
+        "created_at": now,
+        "updated_at": now,
+        "owner_id": "unrelated-owner",
+    })
+
+    migrate(
+        populated_sqlite_path,
+        store,
+        dry_run=False,
+        include_learning_lab=True,
+        reconcile=True,
+    )
+
+    # Pre-existing record is preserved
+    unrelated = db["learning_spaces"].find_one({"space_id": "space-preexisting-unrelated"})
+    assert unrelated is not None
+    assert unrelated["owner_id"] == "unrelated-owner"
+
+    # Migrated record also present
+    migrated = db["learning_spaces"].find_one({"space_id": "space-valid-1"})
+    assert migrated is not None
+    assert db["learning_spaces"].count_documents({}) == 2
+
+
+def test_real_sqlite_file_dry_run_and_quarantine_reporting(mock_target):
+    """Verify migration dry run and quarantine against the actual repository SQLite database."""
+    db, store = mock_target
+    real_db_path = Path("backend/data/pr_mentor.sqlite3")
+    assert real_db_path.exists(), "PR Mentor SQLite database must exist"
+
+    result = migrate(
+        real_db_path,
+        store,
+        dry_run=True,
+        include_learning_lab=True,
+        reconcile=False,
+    )
+
+    # Valid records were counted accurately
+    assert result["reviews"] == 21
+    assert result["learning_spaces"] == 3
+    assert result["learning_concepts"] == 5
+    assert result["learning_exercises"] == 5
+    assert result["learning_drafts"] == 0  # Only 1 draft exists and it is orphaned
+    assert result["learning_submissions"] == 4
+    assert result["learning_drafts_quarantine"] == 1
+
+    # Orphan draft was detected and routed to quarantine
+    assert len(result.quarantine_records) == 1
+    assert result.quarantine_records[0]["table"] == "learning_drafts"
+    assert result.quarantine_records[0]["id"] == "draft-ex-test-draft-1-user-alice"
+    assert result.quarantine_records[0]["reason"] == "missing_parent_exercise: ex-test-draft-1"
+    assert result.quarantine_records[0]["target_collection"] == "learning_drafts_quarantine"
+
+    # Zero writes performed to MongoDB
+    for col in (
+        "reviews",
+        "saved_pull_requests",
+        "learning_attempts",
+        "learning_spaces",
+        "learning_concepts",
+        "learning_exercises",
+        "learning_drafts",
+        "learning_drafts_quarantine",
+        "learning_submissions",
+    ):
+        assert db[col].count_documents({}) == 0
+
+    # Summary table formatting renders correctly
+    table_str = result.format_summary_table(dry_run=True)
+    assert "[DRY-RUN]" in table_str
+    assert "draft-ex-test-draft-1-user-alice" in table_str
+    assert "missing_parent_exercise: ex-test-draft-1" in table_str
 
 
 def test_reconciliation_detects_count_deficit(mock_target, populated_sqlite_path, monkeypatch):

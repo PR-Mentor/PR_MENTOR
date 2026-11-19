@@ -36,26 +36,113 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return cursor.fetchone() is not None
 
 
+class MigrationResult(dict):
+    """Result dictionary of migrated counts with detailed per-collection auditing metadata."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.source_counts: dict[str, int] = {}
+        self.migrated_counts: dict[str, int] = {}
+        self.skipped_counts: dict[str, int] = {}
+        self.quarantined_counts: dict[str, int] = {}
+        self.skip_reasons: list[dict[str, str]] = []
+        self.quarantine_records: list[dict[str, Any]] = []
+
+    def format_summary_table(self, *, dry_run: bool = False) -> str:
+        lines: list[str] = []
+        prefix = "[DRY-RUN] " if dry_run else ""
+        lines.append(f"\n{prefix}Learning Lab Migration Audit Summary:")
+        col_w = 28
+        cnt_w = 10
+        sep = "-" * (col_w + cnt_w * 4 + 4)
+        lines.append(sep)
+        lines.append(
+            f"{'Collection / Table':<{col_w}} "
+            f"{'Source':>{cnt_w}} "
+            f"{'Migrated':>{cnt_w}} "
+            f"{'Skipped':>{cnt_w}} "
+            f"{'Quarantined':>{cnt_w}}"
+        )
+        lines.append(sep)
+
+        all_keys = list(self.source_counts.keys())
+        tot_src = tot_mig = tot_skip = tot_quar = 0
+
+        for key in all_keys:
+            src = self.source_counts.get(key, 0)
+            mig = self.migrated_counts.get(key, 0)
+            skip = self.skipped_counts.get(key, 0)
+            quar = self.quarantined_counts.get(key, 0)
+            tot_src += src
+            tot_mig += mig
+            tot_skip += skip
+            tot_quar += quar
+            lines.append(
+                f"{key:<{col_w}} "
+                f"{src:>{cnt_w}} "
+                f"{mig:>{cnt_w}} "
+                f"{skip:>{cnt_w}} "
+                f"{quar:>{cnt_w}}"
+            )
+        lines.append(sep)
+        lines.append(
+            f"{'TOTAL':<{col_w}} "
+            f"{tot_src:>{cnt_w}} "
+            f"{tot_mig:>{cnt_w}} "
+            f"{tot_skip:>{cnt_w}} "
+            f"{tot_quar:>{cnt_w}}"
+        )
+        lines.append(sep)
+
+        if self.quarantine_records:
+            lines.append(f"\nQuarantined records ({len(self.quarantine_records)}):")
+            for item in self.quarantine_records:
+                target = item.get("target_collection", "quarantine")
+                lines.append(
+                    f"  - {item['table']} [{item['id']}]: {item['reason']} -> {target}"
+                )
+
+        if self.skip_reasons:
+            lines.append(f"\nSkipped records ({len(self.skip_reasons)}):")
+            for item in self.skip_reasons:
+                lines.append(
+                    f"  - {item['table']} [{item['id']}]: {item['reason']}"
+                )
+
+        return "\n".join(lines)
+
+
 def migrate_learning_lab(
     source: sqlite3.Connection,
     database: Database | Any,
     *,
     dry_run: bool = False,
+    result: MigrationResult | None = None,
 ) -> dict[str, int]:
-    """Migrate the 5 Learning Lab collections with parent-child integrity validation and type transformations."""
+    """Migrate the 5 Learning Lab collections with parent-child integrity validation and safe orphan quarantine."""
     counts = {
         "learning_spaces": 0,
         "learning_concepts": 0,
         "learning_exercises": 0,
         "learning_drafts": 0,
         "learning_submissions": 0,
+        "learning_drafts_quarantine": 0,
     }
-    orphans = {
-        "learning_concepts": 0,
-        "learning_exercises": 0,
-        "learning_drafts": 0,
-        "learning_submissions": 0,
-    }
+
+    if result is None:
+        result = MigrationResult()
+
+    for col in (
+        "learning_spaces",
+        "learning_concepts",
+        "learning_exercises",
+        "learning_drafts",
+        "learning_submissions",
+    ):
+        result.source_counts.setdefault(col, 0)
+        result.migrated_counts.setdefault(col, 0)
+        result.skipped_counts.setdefault(col, 0)
+        result.quarantined_counts.setdefault(col, 0)
 
     if not _table_exists(source, "learning_spaces"):
         return counts
@@ -67,6 +154,7 @@ def migrate_learning_lab(
     # 1. Spaces
     spaces_cursor = source.execute("SELECT * FROM learning_spaces")
     for row in spaces_cursor:
+        result.source_counts["learning_spaces"] += 1
         space_id = str(row["space_id"])
         valid_space_ids.add(space_id)
         langs = []
@@ -92,16 +180,20 @@ def migrate_learning_lab(
         if not dry_run:
             database["learning_spaces"].replace_one({"space_id": space_id}, doc, upsert=True)
         counts["learning_spaces"] += 1
+        result.migrated_counts["learning_spaces"] += 1
 
     # 2. Concepts
     if _table_exists(source, "learning_concepts"):
         concepts_cursor = source.execute("SELECT * FROM learning_concepts")
         for row in concepts_cursor:
+            result.source_counts["learning_concepts"] += 1
             space_id = str(row["space_id"])
             concept_id = str(row["concept_id"])
             if space_id not in valid_space_ids:
-                logger.warning("Skipping orphaned concept %s: space %s not found", concept_id, space_id)
-                orphans["learning_concepts"] += 1
+                reason = f"missing_parent_space: {space_id}"
+                logger.warning("Skipping orphaned concept %s: %s", concept_id, reason)
+                result.skipped_counts["learning_concepts"] += 1
+                result.skip_reasons.append({"table": "learning_concepts", "id": concept_id, "reason": reason})
                 continue
 
             valid_concept_ids.add(concept_id)
@@ -130,22 +222,25 @@ def migrate_learning_lab(
             if not dry_run:
                 database["learning_concepts"].replace_one({"concept_id": concept_id}, doc, upsert=True)
             counts["learning_concepts"] += 1
+            result.migrated_counts["learning_concepts"] += 1
 
     # 3. Exercises
     if _table_exists(source, "learning_exercises"):
         exercises_cursor = source.execute("SELECT * FROM learning_exercises")
         for row in exercises_cursor:
+            result.source_counts["learning_exercises"] += 1
             space_id = str(row["space_id"])
             concept_id = str(row["concept_id"])
             exercise_id = str(row["exercise_id"])
             if space_id not in valid_space_ids or concept_id not in valid_concept_ids:
-                logger.warning(
-                    "Skipping orphaned exercise %s: space %s or concept %s not found",
-                    exercise_id,
-                    space_id,
-                    concept_id,
+                reason = (
+                    f"missing_parent_space: {space_id}"
+                    if space_id not in valid_space_ids
+                    else f"missing_parent_concept: {concept_id}"
                 )
-                orphans["learning_exercises"] += 1
+                logger.warning("Skipping orphaned exercise %s: %s", exercise_id, reason)
+                result.skipped_counts["learning_exercises"] += 1
+                result.skip_reasons.append({"table": "learning_exercises", "id": exercise_id, "reason": reason})
                 continue
 
             valid_exercise_ids.add(exercise_id)
@@ -182,17 +277,41 @@ def migrate_learning_lab(
             if not dry_run:
                 database["learning_exercises"].replace_one({"exercise_id": exercise_id}, doc, upsert=True)
             counts["learning_exercises"] += 1
+            result.migrated_counts["learning_exercises"] += 1
 
-    # 4. Drafts
+    # 4. Drafts (Orphan drafts safely quarantined into dedicated learning_drafts_quarantine collection)
     if _table_exists(source, "learning_drafts"):
         drafts_cursor = source.execute("SELECT * FROM learning_drafts")
         for row in drafts_cursor:
+            result.source_counts["learning_drafts"] += 1
             exercise_id = str(row["exercise_id"])
             draft_id = str(row["draft_id"])
             user_id = str(row["user_id"])
             if exercise_id not in valid_exercise_ids:
-                logger.warning("Skipping orphaned draft %s: exercise %s not found", draft_id, exercise_id)
-                orphans["learning_drafts"] += 1
+                reason = f"missing_parent_exercise: {exercise_id}"
+                logger.warning("Quarantining orphaned draft %s: %s", draft_id, reason)
+                result.quarantined_counts["learning_drafts"] += 1
+                counts["learning_drafts_quarantine"] += 1
+                result.quarantine_records.append({
+                    "table": "learning_drafts",
+                    "id": draft_id,
+                    "target_collection": "learning_drafts_quarantine",
+                    "reason": reason,
+                })
+                if not dry_run:
+                    quarantine_doc = {
+                        "draft_id": draft_id,
+                        "exercise_id": exercise_id,
+                        "user_id": user_id,
+                        "code": str(row["code"]),
+                        "updated_at": _utc_datetime(row["updated_at"]),
+                        "_quarantine_reason": reason,
+                        "_source_table": "learning_drafts",
+                        "_quarantined_at": datetime.now(UTC),
+                    }
+                    database["learning_drafts_quarantine"].update_one(
+                        {"draft_id": draft_id}, {"$setOnInsert": quarantine_doc}, upsert=True
+                    )
                 continue
 
             doc = {
@@ -207,17 +326,21 @@ def migrate_learning_lab(
                     {"exercise_id": exercise_id, "user_id": user_id}, doc, upsert=True
                 )
             counts["learning_drafts"] += 1
+            result.migrated_counts["learning_drafts"] += 1
 
     # 5. Submissions
     if _table_exists(source, "learning_submissions"):
         subs_cursor = source.execute("SELECT * FROM learning_submissions")
         for row in subs_cursor:
+            result.source_counts["learning_submissions"] += 1
             exercise_id = str(row["exercise_id"])
             submission_id = str(row["submission_id"])
             user_id = str(row["user_id"])
             if exercise_id not in valid_exercise_ids:
-                logger.warning("Skipping orphaned submission %s: exercise %s not found", submission_id, exercise_id)
-                orphans["learning_submissions"] += 1
+                reason = f"missing_parent_exercise: {exercise_id}"
+                logger.warning("Skipping orphaned submission %s: %s", submission_id, reason)
+                result.skipped_counts["learning_submissions"] += 1
+                result.skip_reasons.append({"table": "learning_submissions", "id": submission_id, "reason": reason})
                 continue
 
             eval_details = {}
@@ -240,9 +363,12 @@ def migrate_learning_lab(
             if not dry_run:
                 database["learning_submissions"].replace_one({"submission_id": submission_id}, doc, upsert=True)
             counts["learning_submissions"] += 1
+            result.migrated_counts["learning_submissions"] += 1
 
-    if any(orphans.values()):
-        logger.info("Orphaned records skipped: %s", orphans)
+    if any(result.quarantined_counts.values()):
+        logger.info("Quarantined orphaned records: %s", dict(result.quarantined_counts))
+    if any(result.skipped_counts.values()):
+        logger.info("Skipped orphaned records: %s", dict(result.skipped_counts))
 
     return counts
 
@@ -254,7 +380,7 @@ def migrate(
     dry_run: bool = False,
     include_learning_lab: bool = False,
     reconcile: bool = True,
-) -> dict[str, int]:
+) -> MigrationResult:
     """Copy persisted data from SQLite without changing or deleting its source."""
     source_path = source_path.expanduser().resolve(strict=True)
     uri = source_path.as_uri() + "?mode=ro"
@@ -272,28 +398,52 @@ def migrate(
         create_indexes(database)
         create_learning_indexes(database)
 
-    counts = {"reviews": 0, "saved_pull_requests": 0, "learning_attempts": 0}
+    result = MigrationResult()
+    result["reviews"] = 0
+    result["saved_pull_requests"] = 0
+    result["learning_attempts"] = 0
+
+    result.source_counts["reviews"] = 0
+    result.source_counts["saved_pull_requests"] = 0
+    result.source_counts["learning_attempts"] = 0
+
+    result.migrated_counts["reviews"] = 0
+    result.migrated_counts["saved_pull_requests"] = 0
+    result.migrated_counts["learning_attempts"] = 0
+
+    result.skipped_counts["reviews"] = 0
+    result.skipped_counts["saved_pull_requests"] = 0
+    result.skipped_counts["learning_attempts"] = 0
+
+    result.quarantined_counts["reviews"] = 0
+    result.quarantined_counts["saved_pull_requests"] = 0
+    result.quarantined_counts["learning_attempts"] = 0
 
     with closing(sqlite3.connect(uri, uri=True)) as source:
         source.row_factory = sqlite3.Row
 
         if _table_exists(source, "reviews"):
             for row in source.execute("SELECT payload FROM reviews"):
+                result.source_counts["reviews"] += 1
                 review: dict[str, Any] = json.loads(row["payload"])
                 if not dry_run:
                     review_store.save_review(review, "legacy:unassigned")
-                counts["reviews"] += 1
+                result["reviews"] += 1
+                result.migrated_counts["reviews"] += 1
 
         if _table_exists(source, "saved_pull_requests"):
             for row in source.execute("SELECT saved_id, url, created_at FROM saved_pull_requests"):
+                result.source_counts["saved_pull_requests"] += 1
                 if not dry_run:
                     review_store.import_saved_record(row["saved_id"], row["url"], row["created_at"])
-                counts["saved_pull_requests"] += 1
+                result["saved_pull_requests"] += 1
+                result.migrated_counts["saved_pull_requests"] += 1
 
         if _table_exists(source, "learning_attempts"):
             for row in source.execute(
                 "SELECT attempt_id, exercise_id, category, correct, created_at FROM learning_attempts"
             ):
+                result.source_counts["learning_attempts"] += 1
                 if not dry_run:
                     review_store.import_learning_attempt(
                         row["attempt_id"],
@@ -302,21 +452,22 @@ def migrate(
                         bool(row["correct"]),
                         row["created_at"],
                     )
-                counts["learning_attempts"] += 1
+                result["learning_attempts"] += 1
+                result.migrated_counts["learning_attempts"] += 1
 
         if include_learning_lab:
-            ll_counts = migrate_learning_lab(source, database, dry_run=dry_run)
-            counts.update(ll_counts)
+            ll_counts = migrate_learning_lab(source, database, dry_run=dry_run, result=result)
+            result.update(ll_counts)
 
     if reconcile and not dry_run:
-        for collection_name, expected_count in counts.items():
+        for collection_name, expected_count in result.items():
             actual_count = database[collection_name].count_documents({})
             if actual_count < expected_count:
                 raise RuntimeError(
                     f"Reconciliation error for {collection_name}: expected at least {expected_count}, found {actual_count}"
                 )
 
-    return counts
+    return result
 
 
 def main() -> int:
@@ -358,6 +509,7 @@ def main() -> int:
             reconcile=not args.no_reconcile,
         )
         mode_str = "[DRY-RUN] " if args.dry_run else ""
+        print(counts.format_summary_table(dry_run=args.dry_run))
         print(f"{mode_str}SQLite import complete: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
         return 0
     finally:

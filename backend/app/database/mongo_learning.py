@@ -65,6 +65,9 @@ def create_learning_indexes(database: Database | Any) -> None:
     )
     database["learning_drafts"].create_index([("user_id", 1), ("updated_at", -1)], name="draft_user_updated_desc")
 
+    database["learning_drafts_quarantine"].create_index("draft_id", unique=True, name="quarantine_draft_id_unique")
+    database["learning_drafts_quarantine"].create_index([("user_id", 1), ("updated_at", -1)], name="quarantine_user_updated_desc")
+
     database["learning_submissions"].create_index("submission_id", unique=True, name="submission_id_unique")
     database["learning_submissions"].create_index(
         [("exercise_id", 1), ("user_id", 1), ("submitted_at", -1)],
@@ -83,6 +86,7 @@ class MongoLearningStore:
         self.concepts: Collection = database["learning_concepts"]
         self.exercises: Collection = database["learning_exercises"]
         self.drafts: Collection = database["learning_drafts"]
+        self.drafts_quarantine: Collection = database["learning_drafts_quarantine"]
         self.submissions: Collection = database["learning_submissions"]
         if ensure_indexes:
             create_learning_indexes(database)
@@ -256,6 +260,13 @@ class MongoLearningStore:
         if not doc:
             return None
         return ExerciseDraft.model_validate(_clean_doc(doc))
+
+    def list_quarantined_drafts(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {}
+        if user_id is not None:
+            query["user_id"] = user_id
+        cursor = self.drafts_quarantine.find(query).sort([("updated_at", -1), ("_id", -1)])
+        return [_clean_doc(d) for d in cursor]
 
     def save_submission(self, submission: ExerciseSubmission) -> None:
         doc = submission.model_dump()
