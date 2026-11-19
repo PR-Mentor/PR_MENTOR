@@ -100,7 +100,11 @@ def list_space_exercises(
     user: Annotated[dict, Depends(current_user)] = None,
 ):
     service = get_learning_service()
-    exercises = service.list_exercises(space_id, concept_id)
+    owner_id = user.get("user_id") if user else None
+    space = service.get_space(space_id, owner_id)
+    if not space:
+        raise HTTPException(status_code=404, detail="Learning space not found.")
+    exercises = service.list_exercises(space_id, concept_id, owner_id=owner_id)
     return [e.to_public() for e in exercises]
 
 

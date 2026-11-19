@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from app.database.connection import connection
+from app.database.sqlite_learning import LearningStore, get_learning_store
 from app.github_service.parser import parse_pull_request_url
 from app.schemas.learning_lab import (
     CodingExercise,
@@ -20,12 +18,6 @@ from app.schemas.learning_lab import (
     LearningLabDashboard,
     PRLearningSpace,
 )
-
-
-@contextmanager
-def _get_db():
-    with connection() as db:
-        yield db
 
 
 def normalize_canonical_repo_pr(url_or_repo: str, pr_number: int | None = None) -> tuple[str, int, str]:
@@ -62,6 +54,15 @@ def generate_space_id(canonical_repo: str, pr_number: int, owner_id: str | None 
 class LearningSpaceService:
     """Coordinates PR-derived learning spaces and coding exercises."""
 
+    def __init__(self, store: LearningStore | None = None) -> None:
+        self._store = store
+
+    @property
+    def store(self) -> LearningStore:
+        if self._store is not None:
+            return self._store
+        return get_learning_store()
+
     def resolve_or_create_space(
         self, review: dict[str, Any], owner_id: str | None = None
     ) -> PRLearningSpace:
@@ -74,74 +75,22 @@ class LearningSpaceService:
         canonical_repo, pr_num, canonical_url = normalize_canonical_repo_pr(pr_url, num)
         review_id = review.get("review_id", "")
 
-        now_str = datetime.now(UTC).isoformat()
-        with _get_db() as db:
-            row = db.execute(
-                "SELECT * FROM learning_spaces WHERE canonical_repo = ? AND pr_number = ? AND ((owner_id IS NULL AND ? IS NULL) OR owner_id = ?)",
-                (canonical_repo, pr_num, owner_id, owner_id),
-            ).fetchone()
+        canonical_issues = review.get("canonical_issues", [])
+        languages = set()
+        for issue in canonical_issues:
+            fp = issue.get("file_path", "").lower()
+            if fp.endswith(".py"):
+                languages.add("python")
+            elif fp.endswith(".c") or fp.endswith(".h"):
+                languages.add("c")
+            elif fp.endswith(".cpp") or fp.endswith(".hpp") or fp.endswith(".cc"):
+                languages.add("cpp")
+            elif fp.endswith(".java"):
+                languages.add("java")
 
-            if row:
-                space_id = row["space_id"]
-                review_count = row["review_count"] + 1
-                db.execute(
-                    """
-                    UPDATE learning_spaces
-                    SET latest_review_id = ?, review_count = ?, updated_at = ?
-                    WHERE space_id = ?
-                    """,
-                    (review_id, review_count, now_str, space_id),
-                )
-            else:
-                space_id = generate_space_id(canonical_repo, pr_num, owner_id)
-                # Detect primary language from canonical issues or default to python
-                canonical_issues = review.get("canonical_issues", [])
-                languages = set()
-                for issue in canonical_issues:
-                    fp = issue.get("file_path", "").lower()
-                    if fp.endswith(".py"):
-                        languages.add("python")
-                    elif fp.endswith(".c") or fp.endswith(".h"):
-                        languages.add("c")
-                    elif fp.endswith(".cpp") or fp.endswith(".hpp") or fp.endswith(".cc"):
-                        languages.add("cpp")
-                    elif fp.endswith(".java"):
-                        languages.add("java")
+        primary_lang = next(iter(languages)) if languages else "python"
 
-                primary_lang = next(iter(languages)) if languages else "python"
-
-                db.execute(
-                    """
-                    INSERT OR REPLACE INTO learning_spaces
-                    (space_id, canonical_repo, pr_number, pr_title, pr_url, latest_review_id, review_count,
-                     primary_language, languages_json, created_at, updated_at, owner_id)
-                    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        space_id,
-                        canonical_repo,
-                        pr_num,
-                        title,
-                        canonical_url,
-                        review_id,
-                        primary_lang,
-                        json.dumps(sorted(languages)),
-                        now_str,
-                        now_str,
-                        owner_id,
-                    ),
-                )
-
-        space = self.get_space(space_id, owner_id)
-        if space:
-            self._enrich_space_from_review(space, review, owner_id)
-            return space
-        if space:
-            self._enrich_space_from_review(space, review, owner_id)
-            return space
-
-        return PRLearningSpace(
-            space_id=space_id,
+        space, is_new = self.store.resolve_or_create_space_record(
             canonical_repo=canonical_repo,
             pr_number=pr_num,
             pr_title=title,
@@ -149,7 +98,12 @@ class LearningSpaceService:
             latest_review_id=review_id,
             primary_language=primary_lang,
             languages=sorted(languages),
+            owner_id=owner_id,
         )
+
+        self._enrich_space_from_review(space, review, owner_id)
+        refreshed = self.store.get_space(space.space_id, owner_id)
+        return refreshed or space
 
     def _enrich_space_from_review(
         self, space: PRLearningSpace, review: dict[str, Any], owner_id: str | None
@@ -159,91 +113,56 @@ class LearningSpaceService:
         if not canonical_issues:
             return
 
-        with _get_db() as db:
-            for idx, issue in enumerate(canonical_issues[:8]):
-                category = issue.get("category", "code_quality")
-                desc = issue.get("normalized_description") or "Code improvement opportunity"
-                file_path = issue.get("file_path", "")
-                issue_id = issue.get("issue_id", "")
-                obs = issue.get("observations", [])
-                evidence = [
-                    e for o in obs for e in o.get("original_finding", {}).get("evidence", [])
-                ][:3]
+        concepts: list[LearningConcept] = []
+        exercises: list[CodingExercise] = []
 
-                lang = "python"
-                fp_lower = file_path.lower()
-                if fp_lower.endswith(".c") or fp_lower.endswith(".h"):
-                    lang = "c"
-                elif fp_lower.endswith(".cpp") or fp_lower.endswith(".hpp") or fp_lower.endswith(".cc"):
-                    lang = "cpp"
-                elif fp_lower.endswith(".java"):
-                    lang = "java"
+        for idx, issue in enumerate(canonical_issues[:8]):
+            category = issue.get("category", "code_quality")
+            desc = issue.get("normalized_description") or "Code improvement opportunity"
+            file_path = issue.get("file_path", "")
+            issue_id = issue.get("issue_id", "")
 
-                concept_id = f"concept-{space.space_id}-{idx + 1}"
-                title = self._concept_title_for_issue(issue, lang)
-                summary = desc
-                why_it_matters = (
-                    issue.get("explanation", {}).get("why_it_matters")
-                    if isinstance(issue.get("explanation"), dict)
-                    else f"Addressing {category} issues ensures reliability, maintainability, and correctness in {lang.upper()} codebase."
-                )
+            lang = "python"
+            fp_lower = file_path.lower()
+            if fp_lower.endswith(".c") or fp_lower.endswith(".h"):
+                lang = "c"
+            elif fp_lower.endswith(".cpp") or fp_lower.endswith(".hpp") or fp_lower.endswith(".cc"):
+                lang = "cpp"
+            elif fp_lower.endswith(".java"):
+                lang = "java"
 
-                db.execute(
-                    """
-                    INSERT OR IGNORE INTO learning_concepts
-                    (concept_id, space_id, title, summary, why_it_matters, category, language,
-                     canonical_issue_ids_json, exercise_ids_json, order_index, status, owner_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_started', ?)
-                    """,
-                    (
-                        concept_id,
-                        space.space_id,
-                        title,
-                        summary,
-                        why_it_matters,
-                        category,
-                        lang,
-                        json.dumps([issue_id]),
-                        json.dumps([]),
-                        idx + 1,
-                        owner_id,
-                    ),
-                )
+            concept_id = f"concept-{space.space_id}-{idx + 1}"
+            title = self._concept_title_for_issue(issue, lang)
+            summary = desc
+            why_it_matters = (
+                issue.get("explanation", {}).get("why_it_matters")
+                if isinstance(issue.get("explanation"), dict)
+                else f"Addressing {category} issues ensures reliability, maintainability, and correctness in {lang.upper()} codebase."
+            )
 
-                exercise_id = f"ex-{concept_id}"
-                exercise = self._create_exercise_for_issue(
-                    exercise_id, space.space_id, concept_id, issue, lang
-                )
-                db.execute(
-                    """
-                    INSERT OR IGNORE INTO learning_exercises
-                    (exercise_id, space_id, concept_id, canonical_issue_id, title, description,
-                     instructions, language, difficulty, category, starter_code, buggy_code,
-                     expected_behavior, hints_json, explanation, completion_criteria_json,
-                     validation_rules_json, points)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        exercise.exercise_id,
-                        exercise.space_id,
-                        exercise.concept_id,
-                        exercise.canonical_issue_id,
-                        exercise.title,
-                        exercise.description,
-                        exercise.instructions,
-                        exercise.language,
-                        exercise.difficulty,
-                        exercise.category,
-                        exercise.starter_code,
-                        exercise.buggy_code,
-                        exercise.expected_behavior,
-                        json.dumps(exercise.hints),
-                        exercise.explanation,
-                        json.dumps(exercise.completion_criteria),
-                        json.dumps(exercise.validation_rules),
-                        exercise.points,
-                    ),
-                )
+            concept = LearningConcept(
+                concept_id=concept_id,
+                space_id=space.space_id,
+                title=title,
+                summary=summary,
+                why_it_matters=why_it_matters,
+                category=category,
+                language=lang,
+                canonical_issue_ids=[issue_id] if issue_id else [],
+                exercise_ids=[],
+                order_index=idx + 1,
+                status="not_started",
+            )
+            concepts.append(concept)
+
+            exercise_id = f"ex-{concept_id}"
+            exercise = self._create_exercise_for_issue(
+                exercise_id, space.space_id, concept_id, issue, lang
+            )
+            exercises.append(exercise)
+
+        self.store.save_concepts(concepts, owner_id)
+        self.store.save_exercises(exercises)
 
     def _concept_title_for_issue(self, issue: dict[str, Any], lang: str) -> str:
         desc = issue.get("normalized_description", "").lower()
@@ -368,244 +287,40 @@ def run_tool(safe_file_path: str) -> None:
         )
 
     def list_spaces(self, owner_id: str | None = None) -> list[PRLearningSpace]:
-        with _get_db() as db:
-            rows = db.execute(
-                "SELECT * FROM learning_spaces WHERE (? IS NULL OR owner_id = ?) ORDER BY updated_at DESC",
-                (owner_id, owner_id),
-            ).fetchall()
-        result = []
-        for r in rows:
-            langs = []
-            try:
-                langs = json.loads(r["languages_json"] or "[]")
-            except Exception:
-                pass
-            result.append(
-                PRLearningSpace(
-                    space_id=r["space_id"],
-                    canonical_repo=r["canonical_repo"],
-                    pr_number=r["pr_number"],
-                    pr_title=r["pr_title"] or "Pull Request",
-                    pr_url=r["pr_url"],
-                    latest_review_id=r["latest_review_id"] or "",
-                    review_count=r["review_count"],
-                    primary_language=r["primary_language"] or "python",
-                    languages=langs,
-                    created_at=datetime.fromisoformat(r["created_at"]),
-                    updated_at=datetime.fromisoformat(r["updated_at"]),
-                )
-            )
-        return result
+        return self.store.list_spaces(owner_id)
 
     def get_space(self, space_id: str, owner_id: str | None = None) -> PRLearningSpace | None:
-        with _get_db() as db:
-            row = db.execute(
-                "SELECT * FROM learning_spaces WHERE space_id = ? AND (? IS NULL OR owner_id = ?)",
-                (space_id, owner_id, owner_id),
-            ).fetchone()
-        if not row:
-            return None
-        langs = []
-        try:
-            langs = json.loads(row["languages_json"] or "[]")
-        except Exception:
-            pass
-        return PRLearningSpace(
-            space_id=row["space_id"],
-            canonical_repo=row["canonical_repo"],
-            pr_number=row["pr_number"],
-            pr_title=row["pr_title"] or "Pull Request",
-            pr_url=row["pr_url"],
-            latest_review_id=row["latest_review_id"] or "",
-            review_count=row["review_count"],
-            primary_language=row["primary_language"] or "python",
-            languages=langs,
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-        )
+        return self.store.get_space(space_id, owner_id)
 
     def list_concepts(self, space_id: str, owner_id: str | None = None) -> list[LearningConcept]:
-        with _get_db() as db:
-            rows = db.execute(
-                "SELECT * FROM learning_concepts WHERE space_id = ? AND (? IS NULL OR owner_id = ?) ORDER BY order_index ASC",
-                (space_id, owner_id, owner_id),
-            ).fetchall()
-        result = []
-        for r in rows:
-            issues = []
-            exercises = []
-            try:
-                issues = json.loads(r["canonical_issue_ids_json"] or "[]")
-                exercises = json.loads(r["exercise_ids_json"] or "[]")
-            except Exception:
-                pass
-            result.append(
-                LearningConcept(
-                    concept_id=r["concept_id"],
-                    space_id=r["space_id"],
-                    title=r["title"],
-                    summary=r["summary"] or "",
-                    why_it_matters=r["why_it_matters"] or "",
-                    category=r["category"] or "code_quality",
-                    language=r["language"] or "python",
-                    canonical_issue_ids=issues,
-                    exercise_ids=exercises,
-                    order_index=r["order_index"],
-                    status=r["status"] or "not_started",
-                )
-            )
-        return result
+        return self.store.list_concepts(space_id, owner_id)
 
     def get_concept(self, concept_id: str, owner_id: str | None = None) -> LearningConcept | None:
-        with _get_db() as db:
-            row = db.execute(
-                "SELECT * FROM learning_concepts WHERE concept_id = ? AND (? IS NULL OR owner_id = ?)",
-                (concept_id, owner_id, owner_id),
-            ).fetchone()
-        if not row:
-            return None
-        issues = []
-        exercises = []
-        try:
-            issues = json.loads(row["canonical_issue_ids_json"] or "[]")
-            exercises = json.loads(row["exercise_ids_json"] or "[]")
-        except Exception:
-            pass
-        return LearningConcept(
-            concept_id=row["concept_id"],
-            space_id=row["space_id"],
-            title=row["title"],
-            summary=row["summary"] or "",
-            why_it_matters=row["why_it_matters"] or "",
-            category=row["category"] or "code_quality",
-            language=row["language"] or "python",
-            canonical_issue_ids=issues,
-            exercise_ids=exercises,
-            order_index=row["order_index"],
-            status=row["status"] or "not_started",
-        )
+        return self.store.get_concept(concept_id, owner_id)
 
-    def list_exercises(self, space_id: str, concept_id: str | None = None) -> list[CodingExercise]:
-        with _get_db() as db:
-            if concept_id:
-                rows = db.execute(
-                    "SELECT * FROM learning_exercises WHERE space_id = ? AND concept_id = ?",
-                    (space_id, concept_id),
-                ).fetchall()
-            else:
-                rows = db.execute(
-                    "SELECT * FROM learning_exercises WHERE space_id = ?",
-                    (space_id,),
-                ).fetchall()
-        result = []
-        for r in rows:
-            hints = []
-            criteria = []
-            rules = {}
-            try:
-                hints = json.loads(r["hints_json"] or "[]")
-                criteria = json.loads(r["completion_criteria_json"] or "[]")
-                rules = json.loads(r["validation_rules_json"] or "{}")
-            except Exception:
-                pass
-            result.append(
-                CodingExercise(
-                    exercise_id=r["exercise_id"],
-                    space_id=r["space_id"],
-                    concept_id=r["concept_id"],
-                    canonical_issue_id=r["canonical_issue_id"],
-                    title=r["title"],
-                    description=r["description"] or "",
-                    instructions=r["instructions"] or "",
-                    language=r["language"],
-                    difficulty=r["difficulty"] or "beginner",
-                    category=r["category"] or "code_quality",
-                    starter_code=r["starter_code"] or "",
-                    buggy_code=r["buggy_code"],
-                    expected_behavior=r["expected_behavior"] or "",
-                    hints=hints,
-                    explanation=r["explanation"] or "",
-                    completion_criteria=criteria,
-                    validation_rules=rules,
-                    points=r["points"] or 10,
-                )
-            )
-        return result
+    def list_exercises(
+        self, space_id: str, concept_id: str | None = None, owner_id: str | None = None
+    ) -> list[CodingExercise]:
+        if owner_id is not None:
+            space = self.get_space(space_id, owner_id)
+            if not space:
+                return []
+        return self.store.list_exercises(space_id, concept_id)
 
     def get_exercise(self, exercise_id: str) -> CodingExercise | None:
-        with _get_db() as db:
-            row = db.execute(
-                "SELECT * FROM learning_exercises WHERE exercise_id = ?",
-                (exercise_id,),
-            ).fetchone()
-        if not row:
-            return None
-        hints = []
-        criteria = []
-        rules = {}
-        try:
-            hints = json.loads(row["hints_json"] or "[]")
-            criteria = json.loads(row["completion_criteria_json"] or "[]")
-            rules = json.loads(row["validation_rules_json"] or "{}")
-        except Exception:
-            pass
-        return CodingExercise(
-            exercise_id=row["exercise_id"],
-            space_id=row["space_id"],
-            concept_id=row["concept_id"],
-            canonical_issue_id=row["canonical_issue_id"],
-            title=row["title"],
-            description=row["description"] or "",
-            instructions=row["instructions"] or "",
-            language=row["language"],
-            difficulty=row["difficulty"] or "beginner",
-            category=row["category"] or "code_quality",
-            starter_code=row["starter_code"] or "",
-            buggy_code=row["buggy_code"],
-            expected_behavior=row["expected_behavior"] or "",
-            hints=hints,
-            explanation=row["explanation"] or "",
-            completion_criteria=criteria,
-            validation_rules=rules,
-            points=row["points"] or 10,
-        )
+        return self.store.get_exercise(exercise_id)
 
     def save_draft(self, exercise_id: str, user_id: str, code: str) -> ExerciseDraft:
-        draft_id = f"draft-{exercise_id}-{user_id}"
-        now_str = datetime.now(UTC).isoformat()
-        with _get_db() as db:
-            db.execute(
-                """
-                INSERT OR REPLACE INTO learning_drafts (draft_id, exercise_id, user_id, code, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (draft_id, exercise_id, user_id, code, now_str),
-            )
-        return ExerciseDraft(
-            exercise_id=exercise_id, user_id=user_id, code=code, updated_at=datetime.fromisoformat(now_str)
-        )
+        return self.store.save_draft(exercise_id, user_id, code)
 
     def get_draft(self, exercise_id: str, user_id: str) -> ExerciseDraft | None:
-        with _get_db() as db:
-            row = db.execute(
-                "SELECT * FROM learning_drafts WHERE exercise_id = ? AND user_id = ?",
-                (exercise_id, user_id),
-            ).fetchone()
-        if not row:
-            return None
-        return ExerciseDraft(
-            exercise_id=row["exercise_id"],
-            user_id=row["user_id"],
-            code=row["code"],
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-        )
+        return self.store.get_draft(exercise_id, user_id)
 
     def submit_exercise(self, exercise_id: str, user_id: str, code: str) -> ExerciseSubmission:
         exercise = self.get_exercise(exercise_id)
         if not exercise:
             raise ValueError("Exercise not found.")
 
-        # Stage 6 is dropped: Perform truthful static evaluation without arbitrary code execution
         rules = exercise.validation_rules
         forbidden = rules.get("forbidden", [])
         required = rules.get("required", [])
@@ -621,7 +336,9 @@ def run_tool(safe_file_path: str) -> None:
 
         feedback_parts = []
         if passed:
-            feedback_parts.append("Excellent! Static verification confirmed the vulnerable patterns were removed and defensive patterns were implemented.")
+            feedback_parts.append(
+                "Excellent! Static verification confirmed the vulnerable patterns were removed and defensive patterns were implemented."
+            )
             feedback_parts.append("Note: Runtime test sandbox execution is disabled in this tier for security.")
         else:
             if violations:
@@ -638,31 +355,8 @@ def run_tool(safe_file_path: str) -> None:
             "runtime_execution": "disabled_by_policy",
         }
 
-        sub_id = uuid4().hex
-        now_str = datetime.now(UTC).isoformat()
-        with _get_db() as db:
-            db.execute(
-                """
-                INSERT INTO learning_submissions
-                (submission_id, exercise_id, user_id, code, status, passed, feedback, eval_details_json, submitted_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (sub_id, exercise_id, user_id, code, status, 1 if passed else 0, feedback, json.dumps(eval_details), now_str),
-            )
-
-            if passed:
-                db.execute(
-                    "UPDATE learning_concepts SET status = 'mastered' WHERE concept_id = ?",
-                    (exercise.concept_id,),
-                )
-            else:
-                db.execute(
-                    "UPDATE learning_concepts SET status = 'in_progress' WHERE concept_id = ? AND status = 'not_started'",
-                    (exercise.concept_id,),
-                )
-
-        return ExerciseSubmission(
-            submission_id=sub_id,
+        submission = ExerciseSubmission(
+            submission_id=uuid4().hex,
             exercise_id=exercise_id,
             user_id=user_id,
             code=code,
@@ -670,73 +364,25 @@ def run_tool(safe_file_path: str) -> None:
             passed=passed,
             feedback=feedback,
             eval_details=eval_details,
-            submitted_at=datetime.fromisoformat(now_str),
+            submitted_at=datetime.now(UTC),
         )
+
+        self.store.save_submission(submission)
+
+        if passed:
+            self.store.update_concept_status(exercise.concept_id, "mastered")
+        else:
+            self.store.update_concept_status(
+                exercise.concept_id, "in_progress", only_if_status="not_started"
+            )
+
+        return submission
 
     def list_submissions(self, exercise_id: str | None, user_id: str) -> list[ExerciseSubmission]:
-        with _get_db() as db:
-            if exercise_id:
-                rows = db.execute(
-                    "SELECT * FROM learning_submissions WHERE exercise_id = ? AND user_id = ? ORDER BY submitted_at DESC",
-                    (exercise_id, user_id),
-                ).fetchall()
-            else:
-                rows = db.execute(
-                    "SELECT * FROM learning_submissions WHERE user_id = ? ORDER BY submitted_at DESC LIMIT 50",
-                    (user_id,),
-                ).fetchall()
-        result = []
-        for r in rows:
-            details = {}
-            try:
-                details = json.loads(r["eval_details_json"] or "{}")
-            except Exception:
-                pass
-            result.append(
-                ExerciseSubmission(
-                    submission_id=r["submission_id"],
-                    exercise_id=r["exercise_id"],
-                    user_id=r["user_id"],
-                    code=r["code"],
-                    status=r["status"],
-                    passed=bool(r["passed"]),
-                    feedback=r["feedback"] or "",
-                    eval_details=details,
-                    submitted_at=datetime.fromisoformat(r["submitted_at"]),
-                )
-            )
-        return result
+        return self.store.list_submissions(exercise_id, user_id)
 
     def get_dashboard(self, user_id: str | None = None) -> LearningLabDashboard:
-        spaces = self.list_spaces(user_id)
-        with _get_db() as db:
-            concept_count = db.execute("SELECT COUNT(*) AS c FROM learning_concepts").fetchone()["c"]
-            mastered_count = db.execute("SELECT COUNT(*) AS c FROM learning_concepts WHERE status = 'mastered'").fetchone()["c"]
-            exercise_count = db.execute("SELECT COUNT(*) AS c FROM learning_exercises").fetchone()["c"]
-
-            completed_subs = 0
-            recent_subs = []
-            if user_id:
-                completed_subs = db.execute(
-                    "SELECT COUNT(DISTINCT exercise_id) AS c FROM learning_submissions WHERE user_id = ? AND passed = 1",
-                    (user_id,),
-                ).fetchone()["c"]
-                recent_subs = self.list_submissions(None, user_id)[:10]
-
-        all_exercises = []
-        for s in spaces[:5]:
-            all_exercises.extend(self.list_exercises(s.space_id)[:2])
-
-        return LearningLabDashboard(
-            total_spaces=len(spaces),
-            total_concepts=concept_count,
-            mastered_concepts=mastered_count,
-            total_exercises=exercise_count,
-            completed_exercises=completed_subs,
-            active_spaces=spaces[:10],
-            recent_submissions=recent_subs,
-            recommended_exercises=all_exercises[:6],
-        )
+        return self.store.get_dashboard(user_id)
 
 
 _GLOBAL_SERVICE: LearningSpaceService | None = None
