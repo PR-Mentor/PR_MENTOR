@@ -63,7 +63,7 @@ export default function App() {
   if (isLoginRoute) return <LoginPage />;
   if (auth.loading) return <div className="app-auth-loading" role="status"><span className="brand-mark"><Code2 size={17}/><i/></span><LoaderCircle className="spin" size={18}/> Restoring your workspace…</div>;
   if (!auth.user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  return <Workspace />;
+  return <Workspace key={auth.user.firebase_uid} />;
 }
 
 function Workspace() {
@@ -289,16 +289,6 @@ function Workspace() {
       getReviewDiff(review.review_id).then((result) => { setDiff(result.files); setDiffWarnings(result.warnings); setDiffState('ready'); })
         .catch((error: unknown) => { setDiffError(error instanceof Error ? error.message : 'The stored diff is unavailable.'); setDiffState('error'); });
     }
-    if (page === 'learning') {
-      setLearningState('loading'); setLearningError('');
-      Promise.all([getLearningExercises(), getLearningProgress(), getLearningHistory()])
-        .then(([items, nextProgress, attempts]) => {
-          setExercises(items); setProgress(nextProgress); setLearningHistory(attempts);
-          setActiveExercise((current) => current && items.some((item) => item.id === current) ? current : items[0]?.id ?? '');
-          setLearningState('ready');
-        })
-        .catch((error: unknown) => { setLearningError(error instanceof Error ? error.message : 'Learning exercises are unavailable.'); setLearningState('error'); });
-    }
     if (page === 'analytics') {
       setAnalyticsState('loading'); setAnalyticsError('');
       Promise.all([getPersonalAnalytics(), getLearningInsights()])
@@ -306,6 +296,29 @@ function Workspace() {
         .catch((error: unknown) => { setAnalyticsError(error instanceof Error ? error.message : 'Analytics are unavailable.'); setAnalyticsState('error'); });
     }
   }, [page, refreshSaved, review?.review_id]);
+
+  const accountId = user?.user_id;
+  useEffect(() => {
+    if (page !== 'learning' || !accountId) return;
+    let active = true;
+    setLearningState('loading');
+    setLearningError('');
+    void Promise.all([getLearningExercises(), getLearningProgress(), getLearningHistory()])
+      .then(([items, nextProgress, attempts]) => {
+        if (!active) return;
+        setExercises(items);
+        setProgress(nextProgress);
+        setLearningHistory(attempts);
+        setActiveExercise((current) => items.some((item) => item.id === current) ? current : items[0]?.id ?? '');
+        setLearningState('ready');
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setLearningError(error instanceof Error ? error.message : 'Learning exercises are unavailable.');
+        setLearningState('error');
+      });
+    return () => { active = false; };
+  }, [page, accountId]);
 
   useEffect(() => {
     if (page !== 'review' || route.reviewId === null) return;
@@ -346,13 +359,13 @@ function Workspace() {
 
   const submitAnswer = async (event: FormEvent) => {
     event.preventDefault();
-    if (!activeExercise || !answer.trim()) return;
+    if (answerBusy || !activeExercise || !answer.trim()) return;
     setAnswerBusy(true); setAnswerError(''); setAnswerResult(null);
     try {
       const result = await submitExercise(activeExercise, answer);
       setAnswerResult(result); setProgress(result.progress); setAnswer('');
       try { setLearningHistory(await getLearningHistory()); }
-      catch { /* The accepted answer remains visible if only the history refresh fails. */ }
+      catch { setLearningHistory(null); }
     } catch (error) { setAnswerError(error instanceof Error ? error.message : 'Your answer could not be submitted.'); }
     finally { setAnswerBusy(false); }
   };
@@ -523,14 +536,14 @@ function AnalyticsMetric({ label, value, detail }: { label: string; value: strin
 }
 
 function LearningPage({ state, error, exercises, active, setActive, answer, setAnswer, result, answerError, busy, progress, history, onSubmit }: { state: string; error: string; exercises: LearningExercise[]; active?: LearningExercise; setActive: (id: string) => void; answer: string; setAnswer: (value: string) => void; result: LearningResult | null; answerError: string; busy: boolean; progress: LearningProgress | null; history: LearningHistory | null; onSubmit: (event: FormEvent) => void }) {
-  if (state === 'loading') return <section className="content-page"><PageHeading eyebrow="PRACTICE / LEARNING" title="Learning lab" intro="Exercises served by PR Mentor."/><LoadingState title="Loading exercises" detail="Fetching exercises and saved progress."/></section>;
+  if (state === 'idle' || state === 'loading') return <section className="content-page"><PageHeading eyebrow="PRACTICE / LEARNING" title="Learning lab" intro="Exercises served by PR Mentor."/><LoadingState title="Loading exercises" detail="Fetching exercises and saved progress."/></section>;
   if (state === 'error') return <section className="content-page"><PageHeading eyebrow="PRACTICE / LEARNING" title="Learning lab" intro="Exercises served by PR Mentor."/><ErrorState title="Learning is unavailable" message={error} action="Try again" onAction={() => window.location.reload()}/></section>;
   if (!active) return <section className="content-page"><PageHeading eyebrow="PRACTICE / LEARNING" title="Learning lab" intro="Exercises served by PR Mentor."/><EmptyState icon={<BookOpen size={22}/>} title="No exercises available" detail="The backend returned an empty exercise list." action="Back to discover" onAction={() => window.location.assign('/')}/></section>;
-  return <section className="content-page learning-page"><PageHeading eyebrow="PRACTICE / LEARNING" title="Learning lab" intro="Practice with exercises and progress stored by the backend."/><div className="learning-layout"><aside className="exercise-list"><div className="list-heading">EXERCISES <span>{exercises.length}</span></div>{exercises.map((exercise, index) => <button type="button" className={`exercise-link ${active.id === exercise.id ? 'active' : ''}`} key={exercise.id} onClick={() => setActive(exercise.id)}><span className="exercise-number">{String(index + 1).padStart(2, '0')}</span><span><strong>{exercise.title}</strong><small>{pretty(exercise.difficulty)} · {pretty(exercise.category)}</small></span><ChevronRight size={15}/></button>)}<div className="progress-box"><div><span>LEARNING ACCURACY</span><strong>{Math.round((progress?.accuracy ?? 0) * 100)}%</strong></div><div className="progress-track"><i style={{ width: `${Math.max(0, Math.min(100, (progress?.accuracy ?? 0) * 100))}%` }}/></div><small>{progress?.attempt_count ?? 0} attempts · {progress?.temporary ? 'temporary' : 'saved by backend'}</small></div></aside>
+  return <section className="content-page learning-page"><PageHeading eyebrow="PRACTICE / LEARNING" title="Learning lab" intro="Practice with exercises and progress stored by the backend."/><div className="learning-layout"><aside className="exercise-list"><div className="list-heading">EXERCISES <span>{exercises.length}</span></div>{exercises.map((exercise, index) => <button type="button" className={`exercise-link ${active.id === exercise.id ? 'active' : ''}`} key={exercise.id} disabled={busy} onClick={() => setActive(exercise.id)}><span className="exercise-number">{String(index + 1).padStart(2, '0')}</span><span><strong>{exercise.title}</strong><small>{pretty(exercise.difficulty)} · {pretty(exercise.category)}</small></span><ChevronRight size={15}/></button>)}<div className="progress-box"><div><span>LEARNING ACCURACY</span><strong>{Math.round((progress?.accuracy ?? 0) * 100)}%</strong></div><div className="progress-track"><i style={{ width: `${Math.max(0, Math.min(100, (progress?.accuracy ?? 0) * 100))}%` }}/></div><small>{progress?.attempt_count ?? 0} attempts · {progress?.temporary ? 'temporary' : 'saved by backend'}</small></div></aside>
     <div className="exercise-content"><div className="exercise-meta"><span>{active.language.toUpperCase()} / {pretty(active.category)}</span><span>{pretty(active.difficulty)}</span></div><h2>{active.title}</h2><p>{active.description}</p><div className="exercise-instruction"><strong>{active.instructions}</strong></div><pre className="exercise-code"><code>{active.code_snippet}</code></pre>{active.hints.length > 0 && <details className="hint-details"><summary><CircleAlert size={14}/> Show a hint</summary><ul>{active.hints.map((hint, index) => <li key={`${index}-${hint}`}>{hint}</li>)}</ul></details>}
-      <form onSubmit={onSubmit} className="exercise-form"><fieldset><legend>Choose your answer</legend>{active.options.map((option, index) => <label className={`answer-option ${answer === option ? 'selected' : ''}`} key={`${index}-${option}`}><input type="radio" name={`answer-${active.id}`} value={option} checked={answer === option} onChange={() => setAnswer(option)}/><span>{String.fromCharCode(65 + index)}</span>{option}</label>)}</fieldset>{answerError && <div className="alert error-alert" role="alert"><CircleAlert size={15}/>{answerError}</div>}<button className="primary-button" type="submit" disabled={!answer || busy}>{busy ? <><LoaderCircle className="spin" size={15}/> Checking</> : <>Submit answer <ArrowRight size={15}/></>}</button></form>
+      <form onSubmit={onSubmit} className="exercise-form"><fieldset disabled={busy}><legend>Choose your answer</legend>{active.options.map((option, index) => <label className={`answer-option ${answer === option ? 'selected' : ''}`} key={`${index}-${option}`}><input type="radio" name={`answer-${active.id}`} value={option} checked={answer === option} onChange={() => setAnswer(option)}/><span>{String.fromCharCode(65 + index)}</span>{option}</label>)}</fieldset>{answerError && <div className="alert error-alert" role="alert"><CircleAlert size={15}/>{answerError}</div>}<button className="primary-button" type="submit" disabled={!answer || busy}>{busy ? <><LoaderCircle className="spin" size={15}/> Checking</> : <>Submit answer <ArrowRight size={15}/></>}</button></form>
       {result && <div className={`answer-result ${result.correct ? 'correct' : 'incorrect'}`} role="status"><div><span>{result.correct ? <CheckCircle2 size={18}/> : <CircleAlert size={18}/>}</span><strong>{result.feedback}</strong></div><p>{result.explanation}</p><small>{result.points} points · progress updated by backend</small></div>}
-      <div className="learning-foot"><div><Activity size={15}/><span>{progress?.exercises_completed ?? 0} submissions recorded</span></div><div><History size={15}/><span>{history?.attempts.length ?? 0} saved attempts</span></div></div>
+      <div className="learning-foot"><div><Activity size={15}/><span>{progress?.exercises_completed ?? 0} exercises practiced</span></div><div><History size={15}/><span>{history ? `${history.attempts.length} recent attempts` : 'Recent attempts unavailable'}</span></div></div>
     </div></div></section>;
 }
 
