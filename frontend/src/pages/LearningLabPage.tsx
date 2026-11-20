@@ -325,48 +325,71 @@ export default function LearningLabPage({ onOpenReview, onNavigateDiscover }: Pr
                   <span className={`lang-badge lang-${exercise.language}`}>{exercise.language.toUpperCase()}</span>
                   <span className="category-badge">{pretty(exercise.category)}</span>
                   <span className={`difficulty-badge diff-${exercise.difficulty}`}>{pretty(exercise.difficulty)}</span>
+                  <span className="points-badge">+{exercise.points} pts</span>
                 </div>
                 <h2>{exercise.title}</h2>
-                <p className="concept-lead">{exercise.description}</p>
               </div>
 
-              {selectedConcept?.why_it_matters && (
-                <div className="why-it-matters-card">
+              {/* 1. Real-World Analogy Card */}
+              {(exercise.real_world_analogy || selectedConcept?.why_it_matters) && (
+                <div className="analogy-card" data-testid="analogy-card">
                   <div className="card-title">
-                    <Lightbulb size={16} /> Why This Matters In Real Code
+                    <BookOpen size={16} /> Real-World Analogy
                   </div>
-                  <p>{selectedConcept.why_it_matters}</p>
+                  <p>{exercise.real_world_analogy || selectedConcept?.why_it_matters}</p>
                 </div>
               )}
 
-              <div className="instructions-card">
-                <h3>Instructions</h3>
-                <p className="instruction-text">{exercise.instructions}</p>
-                {exercise.expected_behavior && (
-                  <div className="expected-behavior">
-                    <strong>Expected Behavior:</strong> {exercise.expected_behavior}
-                  </div>
-                )}
+              {/* 2. What is the Problem? Card */}
+              <div className="problem-card" data-testid="problem-card">
+                <div className="card-title">
+                  <CircleAlert size={15} /> What is the Problem?
+                </div>
+                <p className="problem-text">{exercise.problem_explanation || exercise.description}</p>
               </div>
 
-              {exercise.completion_criteria && exercise.completion_criteria.length > 0 && (
-                <div className="criteria-card" aria-labelledby={criteriaHeadingId}>
-                  <h4 id={criteriaHeadingId}>Completion Criteria</h4>
-                  <ul>
-                    {exercise.completion_criteria.map((crit, idx) => (
-                      <li key={idx}>
-                        <CheckCircle2 size={13} /> <span>{crit}</span>
-                      </li>
-                    ))}
-                  </ul>
+              {/* 3. Your Mission Card */}
+              <div className="mission-card" data-testid="mission-card">
+                <div className="card-title">
+                  <ShieldCheck size={15} /> Your Mission
+                </div>
+                <p className="mission-text">{exercise.mission || exercise.instructions}</p>
+              </div>
+
+              {/* 4. Code Demonstration / Before & After Example */}
+              {(exercise.buggy_code || exercise.example_input || exercise.expected_behavior) && (
+                <div className="example-comparison-card" data-testid="example-card">
+                  <div className="card-title">
+                    <Code2 size={15} /> Code Demonstration
+                  </div>
+                  <div className="example-grid">
+                    {exercise.buggy_code && (
+                      <div className="example-block">
+                        <span className="example-label before">Before (Vulnerable / Anti-pattern)</span>
+                        <pre className="example-code"><code>{exercise.buggy_code}</code></pre>
+                      </div>
+                    )}
+                    {(exercise.expected_behavior || exercise.example_output) && (
+                      <div className="example-block">
+                        <span className="example-label after">Expected Behavior / Defense</span>
+                        <div className="example-desc">{exercise.expected_behavior || exercise.example_output}</div>
+                      </div>
+                    )}
+                  </div>
+                  {exercise.example_input && (
+                    <div className="example-meta-row">
+                      <span className="example-meta-label">Sample Input:</span>
+                      <code className="example-meta-value">{exercise.example_input}</code>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* Step-by-Step Hints */}
+              {/* 5. Progressive Hints Section */}
               {exercise.hints && exercise.hints.length > 0 && (
                 <div className="hints-section" aria-labelledby={hintsHeadingId}>
                   <div className="hints-header">
-                    <span id={hintsHeadingId} className="hints-title"><Lightbulb size={14} /> Hints ({revealedHints}/{exercise.hints.length})</span>
+                    <span id={hintsHeadingId} className="hints-title"><Lightbulb size={14} /> Progressive Hints ({revealedHints}/{exercise.hints.length})</span>
                     {revealedHints < exercise.hints.length && (
                       <button type="button" className="text-hint-btn" onClick={revealNextHint}>
                         Reveal next hint
@@ -381,9 +404,34 @@ export default function LearningLabPage({ onOpenReview, onNavigateDiscover }: Pr
                       </div>
                     ))}
                     {revealedHints === 0 && (
-                      <p className="hint-prompt">Need guidance? Reveal a hint to steer your defense without giving away the full solution.</p>
+                      <p className="hint-prompt">Need guidance? Reveal progressive hints step-by-step without spoiling the solution.</p>
                     )}
                   </div>
+                </div>
+              )}
+
+              {/* 6. Why Does This Work? (Technical Explanation) */}
+              {exercise.explanation && (
+                <details className="technical-explanation-card" open={revealedHints >= exercise.hints.length}>
+                  <summary>
+                    <Sparkles size={14} />
+                    <span>Why Does This Work? (Technical Explanation)</span>
+                  </summary>
+                  <p>{exercise.explanation}</p>
+                </details>
+              )}
+
+              {/* 7. Completion Criteria Card */}
+              {exercise.completion_criteria && exercise.completion_criteria.length > 0 && (
+                <div className="criteria-card" aria-labelledby={criteriaHeadingId}>
+                  <h4 id={criteriaHeadingId}>Completion Criteria</h4>
+                  <ul>
+                    {exercise.completion_criteria.map((crit, idx) => (
+                      <li key={idx}>
+                        <CheckCircle2 size={13} /> <span>{crit}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
 

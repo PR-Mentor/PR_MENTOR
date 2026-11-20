@@ -178,6 +178,11 @@ def get_exercise(exercise_id: str):
             hints=coding_ex.hints,
             options=[],
             learning_objectives=coding_ex.completion_criteria,
+            real_world_analogy=coding_ex.real_world_analogy,
+            problem_explanation=coding_ex.problem_explanation,
+            mission=coding_ex.mission,
+            example_input=coding_ex.example_input,
+            example_output=coding_ex.example_output,
         )
 
     item = next((item for item in EXERCISES if item["id"] == exercise_id), None)

@@ -533,6 +533,11 @@ export interface CodingExercise {
   completion_criteria: string[];
   validation_rules?: Record<string, unknown>;
   points: number;
+  real_world_analogy?: string;
+  problem_explanation?: string;
+  mission?: string;
+  example_input?: string;
+  example_output?: string;
 }
 
 export interface ExerciseDraft {

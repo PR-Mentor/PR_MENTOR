@@ -1002,57 +1002,205 @@ a { color: inherit; }
 .difficulty-badge.diff-beginner { background: #e6f4ea; color: #137333; }
 .difficulty-badge.diff-intermediate { background: #fef7e0; color: #b06000; }
 .difficulty-badge.diff-advanced { background: #fce8e6; color: #c5221f; }
+.points-badge {
+  font-size: 10px;
+  font-weight: 750;
+  padding: 2px 7px;
+  background: #f1f3f4;
+  color: var(--ink);
+  border-radius: 4px;
+}
 
 .concept-header h2 {
-  margin: 0 0 8px;
-  font-size: 19px;
+  margin: 0 0 16px;
+  font-size: 20px;
   font-weight: 750;
+  line-height: 1.35;
 }
-.concept-lead {
-  margin: 0 0 18px;
+
+/* 1. Real-World Analogy Card */
+.analogy-card {
+  background: #fdfaf3;
+  border: 1px solid #f6e2b8;
+  border-left: 4px solid #e28743;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border-radius: 4px;
+}
+.analogy-card .card-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 13px;
-  color: var(--muted);
-  line-height: 1.5;
+  font-weight: 750;
+  color: #8c4c00;
+  margin-bottom: 6px;
 }
-.why-it-matters-card {
-  background: #fbf9fd;
-  border: 1px solid #ebdff5;
-  padding: 14px;
-  margin-bottom: 18px;
+.analogy-card p {
+  margin: 0;
+  font-size: 12.5px;
+  color: #3b2e1e;
+  line-height: 1.55;
 }
-.why-it-matters-card .card-title {
+
+/* 2. What is the Problem? Card */
+.problem-card {
+  background: #fafafb;
+  border: 1px solid var(--line);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border-radius: 4px;
+}
+.problem-card .card-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 750;
+  color: #b06000;
+  margin-bottom: 6px;
+}
+.problem-card .problem-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+
+/* 3. Your Mission Card */
+.mission-card {
+  background: #f5f9fc;
+  border: 1px solid #d4e5f3;
+  border-left: 4px solid var(--blue);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border-radius: 4px;
+}
+.mission-card .card-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 750;
+  color: #1a5c88;
+  margin-bottom: 6px;
+}
+.mission-card .mission-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink);
+}
+
+/* 4. Code Demonstration Comparison Card */
+.example-comparison-card {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  border-radius: 4px;
+}
+.example-comparison-card .card-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 750;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+.example-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 650px) {
+  .example-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.example-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.example-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.example-label.before {
+  color: #c5221f;
+}
+.example-label.after {
+  color: #137333;
+}
+.example-code {
+  background: #1e1e24;
+  color: #f1f5f9;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  margin: 0;
+  overflow-x: auto;
+}
+.example-desc {
+  background: var(--white);
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--ink);
+  line-height: 1.45;
+}
+.example-meta-row {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  font-size: 11.5px;
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+}
+.example-meta-label {
+  color: var(--muted);
+  font-weight: 600;
+}
+.example-meta-value {
+  font-family: var(--font-mono, monospace);
+  background: var(--white);
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+/* 6. Why Does This Work? Technical Explanation */
+.technical-explanation-card {
+  background: #fbf9fd;
+  border: 1px solid #ebdff5;
+  border-radius: 4px;
+  padding: 12px 14px;
+  margin-top: 16px;
+  margin-bottom: 16px;
+}
+.technical-explanation-card summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
   font-weight: 750;
   color: var(--purple-dark);
-  margin-bottom: 6px;
+  cursor: pointer;
+  user-select: none;
 }
-.why-it-matters-card p {
-  margin: 0;
+.technical-explanation-card p {
+  margin: 8px 0 0;
   font-size: 12px;
-  color: var(--ink);
-  line-height: 1.5;
-}
-.instructions-card {
-  margin-bottom: 18px;
-}
-.instructions-card h3 {
-  margin: 0 0 8px;
-  font-size: 14px;
-  font-weight: 700;
-}
-.instruction-text {
-  margin: 0 0 8px;
-  font-size: 13px;
-  line-height: 1.5;
-}
-.expected-behavior {
-  background: var(--paper);
-  border: 1px dashed var(--line);
-  padding: 10px 12px;
-  font-size: 12px;
+  line-height: 1.55;
   color: var(--ink);
 }
 .criteria-card {

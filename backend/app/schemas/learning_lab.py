@@ -82,6 +82,11 @@ class CodingExercise(BaseModel):
     completion_criteria: list[str] = Field(default_factory=list)
     validation_rules: dict[str, Any] = Field(default_factory=dict)
     points: int = 10
+    real_world_analogy: str | None = None
+    problem_explanation: str | None = None
+    mission: str | None = None
+    example_input: str | None = None
+    example_output: str | None = None
 
     def to_public(self) -> CodingExercisePublic:
         data = self.model_dump(exclude={"validation_rules"})
@@ -110,6 +115,11 @@ class CodingExercisePublic(BaseModel):
     explanation: str = ""
     completion_criteria: list[str] = Field(default_factory=list)
     points: int = 10
+    real_world_analogy: str | None = None
+    problem_explanation: str | None = None
+    mission: str | None = None
+    example_input: str | None = None
+    example_output: str | None = None
 
 
 class ExerciseDraft(BaseModel):
