@@ -21,11 +21,24 @@ async def lifespan(_app: FastAPI):
         close_mongo_client()
 
 
+class DynamicCorsOrigins:
+    """Dynamic collection for CORS origins allowing runtime/environment updates."""
+
+    def __contains__(self, origin: object) -> bool:
+        return origin in cors_origins()
+
+    def __iter__(self):
+        return iter(cors_origins())
+
+    def __len__(self):
+        return len(cors_origins())
+
+
 app = FastAPI(title="PR Mentor API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins(),
+    allow_origins=DynamicCorsOrigins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

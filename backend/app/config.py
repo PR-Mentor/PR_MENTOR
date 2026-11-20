@@ -38,16 +38,22 @@ def mongodb_database() -> str:
     return os.getenv("MONGODB_DATABASE", "pr_mentor").strip() or "pr_mentor"
 
 
+def is_staging() -> bool:
+    env = (os.getenv("PR_MENTOR_ENV") or os.getenv("ENVIRONMENT") or "").strip().lower()
+    return env == "staging" or mongodb_database() == "pr_mentor_staging"
+
+
 def cors_origins() -> list[str]:
-    defaults = "http://localhost:5173,http://127.0.0.1:5173,https://18rajritik.github.io,https://pr-mentor.github.io,https://prmentor.in,https://www.prmentor.in"
-    value = os.getenv("PR_MENTOR_CORS_ORIGINS", defaults)
-    origins = [origin.strip() for origin in value.split(",") if origin.strip()]
-    # Keep this app's production domains enabled when the host supplies a
-    # custom PR_MENTOR_CORS_ORIGINS list.
-    for origin in ("https://prmentor.in", "https://www.prmentor.in"):
-        if origin not in origins:
-            origins.append(origin)
-    return origins
+    raw_value = os.getenv("PR_MENTOR_CORS_ORIGINS")
+    if raw_value is not None:
+        return [origin.strip() for origin in raw_value.split(",") if origin.strip()]
+
+    if is_staging():
+        defaults = "http://localhost:5173,http://127.0.0.1:5173"
+    else:
+        defaults = "http://localhost:5173,http://127.0.0.1:5173,https://18rajritik.github.io,https://pr-mentor.github.io,https://prmentor.in,https://www.prmentor.in"
+
+    return [origin.strip() for origin in defaults.split(",") if origin.strip()]
 
 
 def http_timeout() -> float:

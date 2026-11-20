@@ -4,10 +4,16 @@ import argparse
 import json
 import logging
 import sqlite3
+import sys
 from contextlib import closing
 from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# Ensure backend root is on sys.path for direct script or submodule execution
+_BACKEND_DIR = Path(__file__).resolve().parents[1]
+if str(_BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_DIR))
 
 from pymongo.database import Database
 
@@ -373,6 +379,38 @@ def migrate_learning_lab(
     return counts
 
 
+def validate_target_database(
+    database: Database | Any,
+    expected_database: str | None,
+    *,
+    staging: bool = False,
+) -> str:
+    """Validate that the intended target database is explicitly confirmed before migrating.
+
+    Prevents accidental writes to the production database 'pr_mentor'.
+    """
+    if not expected_database or not str(expected_database).strip():
+        raise ValueError(
+            "Explicit target database confirmation is required to prevent accidental writes. "
+            "Specify the intended target database name (e.g. 'pr_mentor_staging')."
+        )
+
+    target_name = str(expected_database).strip()
+    actual_name = getattr(database, "name", None) or ""
+
+    if staging and target_name != "pr_mentor_staging":
+        raise ValueError(
+            f"Production target database '{target_name}' is rejected for staging mode; target must equal 'pr_mentor_staging'."
+        )
+
+    if actual_name and target_name != actual_name:
+        raise ValueError(
+            f"Target database mismatch: expected '{target_name}', but active database is '{actual_name}'."
+        )
+
+    return target_name
+
+
 def migrate(
     source_path: Path,
     store: MongoReviewStore | Database | Any,
@@ -380,6 +418,8 @@ def migrate(
     dry_run: bool = False,
     include_learning_lab: bool = False,
     reconcile: bool = True,
+    expected_database: str | None = None,
+    staging: bool = False,
 ) -> MigrationResult:
     """Copy persisted data from SQLite without changing or deleting its source."""
     source_path = source_path.expanduser().resolve(strict=True)
@@ -393,6 +433,9 @@ def migrate(
     else:
         database = store
         review_store = MongoReviewStore(database, ensure_indexes=False)
+
+    # Unconditionally enforce explicit target database confirmation across all entry points
+    validate_target_database(database, expected_database, staging=staging)
 
     if not dry_run:
         create_indexes(database)
@@ -470,13 +513,26 @@ def migrate(
     return result
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--source",
         type=Path,
         default=database_path(),
         help="SQLite file to read (default: PR_MENTOR_DATABASE_PATH)",
+    )
+    parser.add_argument(
+        "--target-database",
+        "--confirm-database",
+        dest="target_database",
+        type=str,
+        default=None,
+        help="Explicit confirmation of the intended target database (e.g. 'pr_mentor_staging')",
+    )
+    parser.add_argument(
+        "--staging",
+        action="store_true",
+        help="Enforce staging mode: target database must equal 'pr_mentor_staging'",
     )
     parser.add_argument(
         "--dry-run",
@@ -493,13 +549,24 @@ def main() -> int:
         action="store_true",
         help="Skip post-migration count reconciliation",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if storage_backend() != "mongodb":
         parser.error("Set PR_MENTOR_STORAGE=mongodb and configure MONGODB_URI before migrating.")
 
+    if not args.target_database:
+        parser.error(
+            "Explicit target database confirmation is required to prevent accidental writes. "
+            "Pass --target-database <name> (e.g. --target-database pr_mentor_staging)."
+        )
+
     try:
-        database = get_mongo_database()
+        # Dry-run must obtain the database through the shared MongoDB client
+        # without invoking automatic index initialization.
+        database = get_mongo_database(ensure_indexes=not args.dry_run)
+        validate_target_database(database, args.target_database, staging=args.staging)
+        print(f"Target database confirmed: '{database.name}'")
+
         store = MongoReviewStore(database, ensure_indexes=False)
         counts = migrate(
             args.source,
@@ -507,6 +574,8 @@ def main() -> int:
             dry_run=args.dry_run,
             include_learning_lab=not args.skip_learning_lab,
             reconcile=not args.no_reconcile,
+            expected_database=args.target_database,
+            staging=args.staging,
         )
         mode_str = "[DRY-RUN] " if args.dry_run else ""
         print(counts.format_summary_table(dry_run=args.dry_run))

@@ -11,7 +11,12 @@ import mongomock
 import pytest
 
 from app.database.mongo_reviews import MongoReviewStore
-from scripts.migrate_sqlite_to_mongodb import migrate, migrate_learning_lab
+from scripts.migrate_sqlite_to_mongodb import (
+    main,
+    migrate,
+    migrate_learning_lab,
+    validate_target_database,
+)
 
 
 @pytest.fixture
@@ -220,6 +225,7 @@ def test_dry_run_does_not_modify_mongodb(mock_target, populated_sqlite_path):
         dry_run=True,
         include_learning_lab=True,
         reconcile=False,
+        expected_database="migration_target_test",
     )
 
     # Valid records were counted
@@ -264,6 +270,7 @@ def test_migration_transforms_types_and_skips_orphans(mock_target, populated_sql
         dry_run=False,
         include_learning_lab=True,
         reconcile=True,
+        expected_database="migration_target_test",
     )
 
     assert counts["learning_spaces"] == 1
@@ -332,6 +339,7 @@ def test_migration_is_idempotent_on_rerun(mock_target, populated_sqlite_path):
         dry_run=False,
         include_learning_lab=True,
         reconcile=True,
+        expected_database="migration_target_test",
     )
     second = migrate(
         populated_sqlite_path,
@@ -339,6 +347,7 @@ def test_migration_is_idempotent_on_rerun(mock_target, populated_sqlite_path):
         dry_run=False,
         include_learning_lab=True,
         reconcile=True,
+        expected_database="migration_target_test",
     )
 
     assert first == second
@@ -375,6 +384,7 @@ def test_quarantine_write_once_preserves_existing_record_and_metadata(mock_targe
         dry_run=False,
         include_learning_lab=True,
         reconcile=True,
+        expected_database="migration_target_test",
     )
 
     # Verify no duplicate document is created in quarantine
@@ -404,6 +414,7 @@ def test_quarantine_record_and_skip_reason_details(mock_target, populated_sqlite
         dry_run=False,
         include_learning_lab=True,
         reconcile=True,
+        expected_database="migration_target_test",
     )
 
     # Quarantined records
@@ -448,6 +459,7 @@ def test_existing_records_not_overwritten_by_unrelated_migration(mock_target, po
         dry_run=False,
         include_learning_lab=True,
         reconcile=True,
+        expected_database="migration_target_test",
     )
 
     # Pre-existing record is preserved
@@ -654,6 +666,7 @@ def test_real_sqlite_file_dry_run_and_quarantine_reporting(mock_target, represen
         dry_run=True,
         include_learning_lab=True,
         reconcile=False,
+        expected_database="migration_target_test",
     )
 
     # Immutability verification: source SQLite database file must not be modified in dry-run
@@ -738,4 +751,269 @@ def test_reconciliation_detects_count_deficit(mock_target, populated_sqlite_path
             dry_run=False,
             include_learning_lab=True,
             reconcile=True,
+            expected_database="migration_target_test",
         )
+
+
+def test_staging_target_database_accepted(populated_sqlite_path):
+    """Confirm migration accepts explicit pr_mentor_staging target database."""
+    client = mongomock.MongoClient(tz_aware=True)
+    staging_db = client["pr_mentor_staging"]
+    store = MongoReviewStore(staging_db, ensure_indexes=False)
+
+    validated = validate_target_database(staging_db, "pr_mentor_staging", staging=True)
+    assert validated == "pr_mentor_staging"
+
+    result = migrate(
+        populated_sqlite_path,
+        store,
+        dry_run=False,
+        include_learning_lab=True,
+        expected_database="pr_mentor_staging",
+        staging=True,
+    )
+    assert result["reviews"] == 1
+    assert staging_db["reviews"].count_documents({}) == 1
+
+
+def test_production_target_database_rejected_for_staging_mode(populated_sqlite_path):
+    """Confirm production target database is rejected when staging mode is active."""
+    client = mongomock.MongoClient(tz_aware=True)
+    prod_db = client["pr_mentor"]
+    store = MongoReviewStore(prod_db, ensure_indexes=False)
+
+    with pytest.raises(ValueError, match="rejected for staging mode"):
+        validate_target_database(prod_db, "pr_mentor", staging=True)
+
+    with pytest.raises(ValueError, match="rejected for staging mode"):
+        migrate(
+            populated_sqlite_path,
+            store,
+            dry_run=False,
+            include_learning_lab=True,
+            expected_database="pr_mentor",
+            staging=True,
+        )
+
+
+def test_missing_target_confirmation_rejected(populated_sqlite_path):
+    """Confirm missing or blank target database confirmation is strictly rejected."""
+    client = mongomock.MongoClient(tz_aware=True)
+    staging_db = client["pr_mentor_staging"]
+    store = MongoReviewStore(staging_db, ensure_indexes=False)
+
+    for empty_val in (None, "", "   "):
+        with pytest.raises(ValueError, match="Explicit target database confirmation is required"):
+            validate_target_database(staging_db, empty_val)
+
+        with pytest.raises(ValueError, match="Explicit target database confirmation is required"):
+            migrate(
+                populated_sqlite_path,
+                store,
+                dry_run=False,
+                expected_database=empty_val,
+                staging=True,
+            )
+
+
+def test_rejection_occurs_before_mongodb_writes(populated_sqlite_path):
+    """Confirm rejection happens before any MongoDB collections or documents are created."""
+    client = mongomock.MongoClient(tz_aware=True)
+    prod_db = client["pr_mentor"]
+    store = MongoReviewStore(prod_db, ensure_indexes=False)
+
+    # Attempt migration with mismatched target and staging constraint
+    with pytest.raises(ValueError, match="rejected for staging mode"):
+        migrate(
+            populated_sqlite_path,
+            store,
+            dry_run=False,
+            include_learning_lab=True,
+            expected_database="pr_mentor",
+            staging=True,
+        )
+
+    # Zero collections created and zero documents written
+    for col in (
+        "reviews",
+        "saved_pull_requests",
+        "learning_attempts",
+        "learning_spaces",
+        "learning_concepts",
+        "learning_exercises",
+        "learning_drafts",
+        "learning_drafts_quarantine",
+        "learning_submissions",
+    ):
+        assert prod_db[col].count_documents({}) == 0
+
+
+def test_cli_target_database_safety_guards(populated_sqlite_path, monkeypatch, capsys):
+    """Test CLI target database confirmation, staging validation, and dry-run safety."""
+    client = mongomock.MongoClient(tz_aware=True)
+    staging_db = client["pr_mentor_staging"]
+
+    # Mock MongoDB connection and config
+    monkeypatch.setattr("scripts.migrate_sqlite_to_mongodb.storage_backend", lambda: "mongodb")
+    monkeypatch.setattr("scripts.migrate_sqlite_to_mongodb.get_mongo_database", lambda: staging_db)
+
+    # 1. Missing --target-database is rejected
+    with pytest.raises(SystemExit):
+        main(["--source", str(populated_sqlite_path)])
+
+    # 2. Production target rejected when --staging is passed
+    monkeypatch.setattr("scripts.migrate_sqlite_to_mongodb.get_mongo_database", lambda *args, **kwargs: client["pr_mentor"])
+    with pytest.raises(ValueError, match="rejected for staging mode"):
+        main([
+            "--source", str(populated_sqlite_path),
+            "--target-database", "pr_mentor",
+            "--staging",
+        ])
+
+    # 3. Valid staging target with dry-run is accepted and performs zero writes
+    monkeypatch.setattr("scripts.migrate_sqlite_to_mongodb.get_mongo_database", lambda *args, **kwargs: staging_db)
+    exit_code = main([
+        "--source", str(populated_sqlite_path),
+        "--target-database", "pr_mentor_staging",
+        "--staging",
+        "--dry-run",
+    ])
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    assert "Target database confirmed: 'pr_mentor_staging'" in captured.out
+    assert "[DRY-RUN]" in captured.out
+    # Zero writes in staging_db during dry-run
+    assert staging_db["reviews"].count_documents({}) == 0
+
+
+def test_programmatic_call_without_target_database_rejected(mock_target, populated_sqlite_path):
+    """Ensure no programmatic caller can bypass target database confirmation by omitting arguments."""
+    db, store = mock_target
+
+    # 1. Call with omitted expected_database argument
+    with pytest.raises(ValueError, match="Explicit target database confirmation is required"):
+        migrate(populated_sqlite_path, store)
+
+    # 2. Call with explicit None
+    with pytest.raises(ValueError, match="Explicit target database confirmation is required"):
+        migrate(populated_sqlite_path, store, expected_database=None)
+
+    # 3. Call with empty string
+    with pytest.raises(ValueError, match="Explicit target database confirmation is required"):
+        migrate(populated_sqlite_path, store, expected_database="")
+
+    # 4. Call with whitespace
+    with pytest.raises(ValueError, match="Explicit target database confirmation is required"):
+        migrate(populated_sqlite_path, store, expected_database="   ")
+
+    # 5. Call with mismatched database name
+    with pytest.raises(ValueError, match="Target database mismatch"):
+        migrate(populated_sqlite_path, store, expected_database="unintended_database")
+
+    # 6. Call with production database name when staging is requested
+    with pytest.raises(ValueError, match="rejected for staging mode"):
+        migrate(populated_sqlite_path, store, expected_database="pr_mentor", staging=True)
+
+    # Verify zero MongoDB writes across all collections
+    for col in (
+        "reviews",
+        "saved_pull_requests",
+        "learning_attempts",
+        "learning_spaces",
+        "learning_concepts",
+        "learning_exercises",
+        "learning_drafts",
+        "learning_drafts_quarantine",
+        "learning_submissions",
+    ):
+        assert db[col].count_documents({}) == 0
+
+
+def test_dry_run_does_not_invoke_index_creation(mock_target, populated_sqlite_path, monkeypatch):
+    """Ensure dry-run creates zero indexes and does not invoke create_indexes or create_learning_indexes."""
+    db, store = mock_target
+    called = {"review_indexes": 0, "learning_indexes": 0}
+
+    def fake_create_indexes(target_db):
+        called["review_indexes"] += 1
+
+    def fake_create_learning_indexes(target_db):
+        called["learning_indexes"] += 1
+
+    monkeypatch.setattr("scripts.migrate_sqlite_to_mongodb.create_indexes", fake_create_indexes)
+    monkeypatch.setattr("scripts.migrate_sqlite_to_mongodb.create_learning_indexes", fake_create_learning_indexes)
+
+    # Programmatic migrate dry-run
+    migrate(
+        populated_sqlite_path,
+        store,
+        dry_run=True,
+        include_learning_lab=True,
+        expected_database="migration_target_test",
+    )
+    assert called["review_indexes"] == 0
+    assert called["learning_indexes"] == 0
+
+    # CLI main dry-run
+    monkeypatch.setattr("scripts.migrate_sqlite_to_mongodb.storage_backend", lambda: "mongodb")
+    monkeypatch.setattr(
+        "scripts.migrate_sqlite_to_mongodb.get_mongo_database",
+        lambda ensure_indexes=True: db,
+    )
+    exit_code = main([
+        "--source", str(populated_sqlite_path),
+        "--target-database", "migration_target_test",
+        "--dry-run",
+    ])
+    assert exit_code == 0
+    assert called["review_indexes"] == 0
+    assert called["learning_indexes"] == 0
+
+
+def test_dry_run_creates_no_collections(populated_sqlite_path):
+    """Ensure dry-run creates no collections in a pristine MongoDB database."""
+    client = mongomock.MongoClient(tz_aware=True)
+    pristine_db = client["pristine_dryrun_db"]
+    store = MongoReviewStore(pristine_db, ensure_indexes=False)
+
+    assert pristine_db.list_collection_names() == []
+
+    migrate(
+        populated_sqlite_path,
+        store,
+        dry_run=True,
+        include_learning_lab=True,
+        expected_database="pristine_dryrun_db",
+    )
+
+    # Pristine database has zero collections created during dry run
+    assert pristine_db.list_collection_names() == []
+
+
+def test_live_migration_retains_required_index_initialization(populated_sqlite_path):
+    """Ensure live migration preserves required index initialization and document writes."""
+    client = mongomock.MongoClient(tz_aware=True)
+    live_db = client["live_migration_test"]
+    store = MongoReviewStore(live_db, ensure_indexes=False)
+
+    migrate(
+        populated_sqlite_path,
+        store,
+        dry_run=False,
+        include_learning_lab=True,
+        expected_database="live_migration_test",
+    )
+
+    # Required collections created with data
+    assert live_db["reviews"].count_documents({}) == 1
+    assert live_db["learning_spaces"].count_documents({}) == 1
+
+    # Indexes were created
+    review_indexes = [idx["name"] for idx in live_db["reviews"].list_indexes()]
+    space_indexes = [idx["name"] for idx in live_db["learning_spaces"].list_indexes()]
+    assert "review_id_unique" in review_indexes
+    assert "space_id_unique" in space_indexes
+
+
+
