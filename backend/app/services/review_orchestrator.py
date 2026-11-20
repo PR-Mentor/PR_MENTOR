@@ -28,6 +28,7 @@ from app.github_service.pull_requests import (
     fetch_pull_request,
     get_file_content,
 )
+from app.languages.registry import get_registry
 from app.schemas.finding import Finding, ReviewFinding
 from app.schemas.issue import CanonicalIssue, FindingObservation
 from app.schemas.review import AnalyzeRequest, ReviewResponse
@@ -119,8 +120,9 @@ async def analyze(
         warnings.append("Source analysis was skipped because the pull request head snapshot identity was unavailable or invalid.")
     else:
         source_candidates: list[str] = []
+        registry = get_registry()
         for item in bundle.files:
-            safe_name = _safe_python_path(item.filename)
+            safe_name = registry.sanitize_path(item.filename)
             if item.status == "removed" or safe_name is None:
                 continue
             if item.size is not None and item.size > MAX_SOURCE_BYTES:
@@ -128,7 +130,7 @@ async def analyze(
                 continue
             if len(source_candidates) >= MAX_SOURCE_FETCH_ATTEMPTS:
                 warnings.append(
-                    f"Source retrieval was capped at {MAX_SOURCE_FETCH_ATTEMPTS} Python files."
+                    f"Source retrieval was capped at {MAX_SOURCE_FETCH_ATTEMPTS} source files."
                 )
                 break
             source_candidates.append(safe_name)
@@ -168,24 +170,30 @@ async def analyze(
     static_observations: list[FindingObservation] = []
     with tempfile.TemporaryDirectory(prefix="pr-mentor-review-") as temp_name:
         temp_root = Path(temp_name)
-        targets = _write_sources(temp_root, source_files)
-        for name, runner, normalizer in (("ruff", run_ruff, normalize_ruff), ("bandit", run_bandit, normalize_bandit)):
-            if not targets:
-                tool_results.append({"tool": name, "status": "skipped", "executed": False, "reason": "No eligible Python source was available."})
-                continue
-            try:
-                raw_results = await asyncio.to_thread(runner, targets, root=temp_root)
-                legacy_findings: list[Finding] = normalizer(raw_results)
-                rendered = [_static_finding(name, item, temp_root) for item in legacy_findings]
-                normalized_static.extend(rendered)
-                static_observations.extend(
-                    FindingObservation(original_finding=finding, tool_name=name, rule_id=raw.rule_id)
-                    for raw, finding in zip(legacy_findings, rendered)
-                )
-                tool_results.append({"tool": name, "status": "completed", "executed": True, "findings": [item.model_dump(mode="json") for item in rendered]})
-            except (ToolExecutionError, PathValidationError, OSError):
-                tool_results.append({"tool": name, "status": "unavailable", "executed": False, "reason": "Analyzer execution failed or was unavailable; local execution details are not exposed."})
-                warnings.append(f"{name.title()} was unavailable; no {name.title()} findings are claimed.")
+        registry = get_registry()
+        partitioned = registry.partition_files_by_language(source_files)
+        if not source_files:
+            tool_results.append({
+                "tool": "ruff", "status": "skipped", "executed": False,
+                "reason": "No eligible Python source was available.",
+            })
+            tool_results.append({
+                "tool": "bandit", "status": "skipped", "executed": False,
+                "reason": "No eligible Python source was available.",
+            })
+        else:
+            for lang_id, lang_files in partitioned.items():
+                adapter = registry.get_adapter(lang_id)
+                if adapter is None:
+                    continue
+                lang_findings, lang_obs, lang_results = await adapter.run_static_analysis(lang_files, temp_root)
+                normalized_static.extend(lang_findings)
+                static_observations.extend(lang_obs)
+                tool_results.extend(lang_results)
+                for tr in lang_results:
+                    if tr.get("status") == "unavailable":
+                        tool_label = str(tr.get("tool", "")).replace("_", " ").title()
+                        warnings.append(f"{tool_label} was unavailable; no {tool_label} findings are claimed.")
 
     ai_findings: list[ReviewFinding] = []
     if is_configured():
@@ -195,7 +203,7 @@ async def analyze(
                     raise TypeError("Pull request source identity is unavailable.")
                 repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
             except Exception:  # noqa: BLE001 - full-repository context is optional; changed-file context remains available.
-                repository_structure = summarize_python_sources(source_files)
+                repository_structure = _summarize_sources_by_language(registry, source_files)
                 warnings.append("Full repository context was unavailable; AI review used changed-file structure only.")
             prompt_metadata = bundle.metadata.model_dump(mode="json")
             prompt_metadata["repository_structure"] = repository_structure
@@ -291,6 +299,10 @@ async def analyze(
                 explanation = explanation_result.explanations.get(issue.issue_id)
                 if explanation is not None:
                     issue.explanation = explanation
+                    issue.explanation_status = "completed"
+                else:
+                    issue.explanation_status = explanation_result.issue_statuses.get(issue.issue_id, "failed")
+                    issue.explanation_failure_reason = explanation_result.issue_failure_reasons.get(issue.issue_id)
             explained_count = len(explanation_result.explanations)
             has_failures = bool(
                 explanation_result.failed_batch_count
@@ -388,6 +400,19 @@ async def analyze(
     )
     await asyncio.to_thread(_persist, response, effective_id)
     return response
+
+
+def _summarize_sources_by_language(registry: Any, source_files: list[tuple[str, str]]) -> dict[str, Any]:
+    partitioned = registry.partition_files_by_language(source_files)
+    if set(partitioned.keys()) == {"python"}:
+        py_adapter = registry.get_adapter("python")
+        return py_adapter.summarize_sources(source_files) if py_adapter else {}
+    summary: dict[str, Any] = {}
+    for lang_id, files in partitioned.items():
+        adapter = registry.get_adapter(lang_id)
+        if adapter:
+            summary[lang_id] = adapter.summarize_sources(files)
+    return summary
 
 
 def _safe_python_path(filename: str) -> str | None:
@@ -537,6 +562,11 @@ def _persist(response: ReviewResponse, user_id: str | None = None, *, owner_id: 
 
         if workspaces.get_role(response.workspace_id, effective_id) in {"owner", "admin", "editor"}:
             workspaces.link_review(response.workspace_id, response.review_id, effective_id)
+    try:
+        from app.services.learning_spaces import get_learning_service
+        get_learning_service().resolve_or_create_space(response.model_dump(mode="json"), effective_id)
+    except Exception:
+        pass
 
 
 def _populate_reconciliation(response: ReviewResponse, observations: list[FindingObservation]) -> None:

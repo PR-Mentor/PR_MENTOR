@@ -100,11 +100,14 @@ export interface CanonicalIssue {
   status: 'open' | 'resolved' | 'dismissed';
   observations: FindingObservation[];
   explanation?: IssueExplanation | null;
+  explanation_status?: 'completed' | 'partial' | 'failed' | 'unavailable' | 'not_requested';
+  explanation_failure_reason?: string | null;
   suggested_fixes?: SuggestedFix[];
 }
 
 export type FixGenerationStatus = 'generated' | 'stale' | 'conflicted';
 export type FixDecisionStatus = 'pending' | 'accepted' | 'rejected';
+export type FixLifecycleStatus = 'proposed' | 'statically_verified' | 'fully_verified' | 'verification_failed' | 'unverified';
 export type FixValidationStatus = 'passed' | 'failed' | 'partial' | 'inconclusive' | 'unavailable' | 'not_run';
 export type FixValidationCheckStatus = FixValidationStatus | 'skipped';
 export type FixValidationProvenanceProfile = 'source_analysis' | 'snapshot_integrity' | 'ai_assessment' | 'test_execution' | 'non_source' | 'legacy_unverified';
@@ -182,7 +185,7 @@ export interface SuggestedFix {
   file_path: string;
   start_line: number;
   end_line: number;
-  language: 'python';
+  language: 'python' | 'c' | 'cpp' | 'java';
   base_commit_sha: string;
   file_blob_sha?: string | null;
   expected_original_code: string;
@@ -193,6 +196,7 @@ export interface SuggestedFix {
   confidence: number;
   generation_status: FixGenerationStatus;
   decision_status: FixDecisionStatus;
+  verification_status?: FixLifecycleStatus;
   generated_at: string;
   decided_at?: string | null;
   validation_reports?: FixValidationReport[];
@@ -414,6 +418,17 @@ export interface PersonalAnalytics {
   analysis_window_limit: number;
   findings_by_category: Record<string, number>;
   findings_by_severity: Record<string, number>;
+  findings_by_language?: Record<string, number>;
+  issue_lifecycle?: Record<string, number>;
+  ai_orchestration?: {
+    total_tokens: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    estimated_cost_usd: number;
+    models_used: string[];
+    providers_used: string[];
+    fallback_count: number;
+  };
   suggested_fix_count: number;
   fix_decisions: Record<string, number>;
   validation_reports_by_status: Record<string, number>;
@@ -468,4 +483,90 @@ export interface RepositoryIntelligence {
 export interface ApiErrorBody {
   detail?: string | Array<{ msg?: string }>;
   error?: { message?: string };
+}
+
+// PR-Connected Learning Lab Types
+export interface PRLearningSpace {
+  space_id: string;
+  canonical_repo: string;
+  pr_number: number;
+  pr_title: string;
+  pr_url: string;
+  latest_review_id: string;
+  review_count: number;
+  review_snapshot_ids: string[];
+  primary_language: string;
+  languages: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LearningConcept {
+  concept_id: string;
+  space_id: string;
+  title: string;
+  summary: string;
+  why_it_matters: string;
+  category: string;
+  language: string;
+  canonical_issue_ids: string[];
+  exercise_ids: string[];
+  order_index: number;
+  status: 'not_started' | 'in_progress' | 'mastered';
+}
+
+export interface CodingExercise {
+  exercise_id: string;
+  space_id: string;
+  concept_id: string;
+  title: string;
+  description: string;
+  instructions: string;
+  language: string;
+  difficulty: string;
+  category: string;
+  starter_code: string;
+  buggy_code?: string;
+  expected_behavior: string;
+  hints: string[];
+  explanation: string;
+  completion_criteria: string[];
+  validation_rules?: Record<string, unknown>;
+  points: number;
+  real_world_analogy?: string;
+  problem_explanation?: string;
+  mission?: string;
+  example_input?: string;
+  example_output?: string;
+}
+
+export interface ExerciseDraft {
+  draft_id: string;
+  exercise_id: string;
+  user_id: string;
+  code: string;
+  updated_at: string;
+}
+
+export interface ExerciseSubmission {
+  submission_id: string;
+  exercise_id: string;
+  user_id: string;
+  code: string;
+  status: 'completed' | 'failed' | 'passed';
+  passed: boolean;
+  feedback: string;
+  eval_details: Record<string, unknown>;
+  submitted_at: string;
+}
+
+export interface LearningLabDashboard {
+  total_spaces: number;
+  total_concepts: number;
+  mastered_concepts: number;
+  total_exercises: number;
+  completed_exercises: number;
+  active_spaces: PRLearningSpace[];
+  recent_submissions: ExerciseSubmission[];
+  recommended_exercises: CodingExercise[];
 }

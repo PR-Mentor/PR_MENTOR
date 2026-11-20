@@ -123,3 +123,65 @@ def test_invitation_is_bound_to_email_and_owner_cannot_be_removed(tmp_path, monk
         assert owner.delete(f"/api/workspaces/{workspace_id}/members/{invitee_user['user_id']}").status_code == 200
         owner_id = owner.get("/api/auth/me").json()["user_id"]
         assert owner.delete(f"/api/workspaces/{workspace_id}/members/{owner_id}").status_code == 409
+
+
+def test_supabase_or_firebase_authenticated_user_can_create_and_join_workspace(tmp_path, monkeypatch):
+    """External OAuth identities without prior auth_users row can create workspaces and accept invites."""
+    monkeypatch.setenv("PR_MENTOR_STORAGE", "sqlite")
+    monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / "workspace-external-auth.sqlite3"))
+    monkeypatch.setenv("PR_MENTOR_COOKIE_SECURE", "false")
+
+    from app.routes.auth import current_claims
+
+    # Mock external Supabase claims for owner and invitee
+    owner_claims = {
+        "uid": "supabase:user-uuid-1",
+        "email": "external-owner@example.com",
+        "name": "External Owner",
+        "email_verified": True,
+        "auth_provider": "supabase",
+        "firebase": {"sign_in_provider": "github"},
+    }
+    invitee_claims = {
+        "uid": "supabase:user-uuid-2",
+        "email": "external-invitee@example.com",
+        "name": "External Invitee",
+        "email_verified": True,
+        "auth_provider": "supabase",
+        "firebase": {"sign_in_provider": "github"},
+    }
+
+    # 1. External owner creates a workspace
+    app.dependency_overrides[current_claims] = lambda: owner_claims
+    with TestClient(app) as client:
+        ws_res = client.post("/api/workspaces", json={"name": "Cloud Team"})
+        assert ws_res.status_code == 201
+        ws_id = ws_res.json()["workspace_id"]
+        assert ws_res.json()["role"] == "owner"
+
+        # Owner invites external user
+        invite_res = client.post(
+            f"/api/workspaces/{ws_id}/invitations",
+            json={"email": "external-invitee@example.com", "role": "editor"},
+        )
+        assert invite_res.status_code == 201
+        token = invite_res.json()["token"]
+
+    # 2. External invitee accepts the invitation
+    app.dependency_overrides[current_claims] = lambda: invitee_claims
+    with TestClient(app) as client:
+        accept_res = client.post(
+            "/api/workspaces/invitations/accept",
+            json={"token": token},
+        )
+        assert accept_res.status_code == 200
+        assert accept_res.json()["role"] == "editor"
+
+        # Check membership list
+        details = client.get(f"/api/workspaces/{ws_id}")
+        assert details.status_code == 200
+        member_emails = [m["email"] for m in details.json()["members"]]
+        assert "external-owner@example.com" in member_emails
+        assert "external-invitee@example.com" in member_emails
+
+    app.dependency_overrides.clear()

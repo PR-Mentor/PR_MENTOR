@@ -36,6 +36,74 @@ def _init_db(db: sqlite3.Connection, path_str: str) -> None:
             user_id TEXT,
             owner_id TEXT
         );
+        CREATE TABLE IF NOT EXISTS learning_spaces (
+            space_id TEXT PRIMARY KEY,
+            canonical_repo TEXT NOT NULL,
+            pr_number INTEGER NOT NULL,
+            pr_title TEXT,
+            pr_url TEXT,
+            latest_review_id TEXT,
+            review_count INTEGER DEFAULT 1,
+            primary_language TEXT,
+            languages_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            owner_id TEXT,
+            UNIQUE(canonical_repo, pr_number, owner_id)
+        );
+        CREATE TABLE IF NOT EXISTS learning_concepts (
+            concept_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT,
+            why_it_matters TEXT,
+            category TEXT,
+            language TEXT,
+            canonical_issue_ids_json TEXT,
+            exercise_ids_json TEXT,
+            order_index INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'not_started',
+            owner_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS learning_exercises (
+            exercise_id TEXT PRIMARY KEY,
+            space_id TEXT NOT NULL,
+            concept_id TEXT NOT NULL,
+            canonical_issue_id TEXT,
+            title TEXT NOT NULL,
+            description TEXT,
+            instructions TEXT,
+            language TEXT NOT NULL,
+            difficulty TEXT,
+            category TEXT,
+            starter_code TEXT,
+            buggy_code TEXT,
+            expected_behavior TEXT,
+            hints_json TEXT,
+            explanation TEXT,
+            completion_criteria_json TEXT,
+            validation_rules_json TEXT,
+            points INTEGER DEFAULT 10
+        );
+        CREATE TABLE IF NOT EXISTS learning_drafts (
+            draft_id TEXT PRIMARY KEY,
+            exercise_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            code TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(exercise_id, user_id)
+        );
+        CREATE TABLE IF NOT EXISTS learning_submissions (
+            submission_id TEXT PRIMARY KEY,
+            exercise_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            code TEXT NOT NULL,
+            status TEXT NOT NULL,
+            passed INTEGER NOT NULL,
+            feedback TEXT,
+            eval_details_json TEXT,
+            submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS users (
             firebase_uid TEXT PRIMARY KEY,
             payload TEXT NOT NULL
@@ -46,6 +114,19 @@ def _init_db(db: sqlite3.Connection, path_str: str) -> None:
             password_hash TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS auth_identities (
+            identity_id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL,
+            provider_uid TEXT NOT NULL,
+            email TEXT NOT NULL,
+            email_verified INTEGER NOT NULL DEFAULT 0 CHECK(email_verified IN (0, 1)),
+            user_id TEXT NOT NULL REFERENCES auth_users(user_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            linked_at TEXT,
+            UNIQUE(provider, provider_uid)
+        );
+        CREATE INDEX IF NOT EXISTS auth_identities_email_idx ON auth_identities(email);
+        CREATE INDEX IF NOT EXISTS auth_identities_user_idx ON auth_identities(user_id);
         CREATE TABLE IF NOT EXISTS auth_sessions (
             token_hash TEXT PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES auth_users(user_id) ON DELETE CASCADE,
@@ -88,23 +169,6 @@ def _init_db(db: sqlite3.Connection, path_str: str) -> None:
             PRIMARY KEY(workspace_id, review_id)
         );
         CREATE INDEX IF NOT EXISTS workspace_share_review_idx ON workspace_review_shares(review_id);
-        CREATE TABLE IF NOT EXISTS benchmark_datasets (
-            dataset_id TEXT PRIMARY KEY,
-            owner_id TEXT NOT NULL REFERENCES auth_users(user_id) ON DELETE CASCADE,
-            name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),
-            cases_json TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS benchmark_dataset_owner_idx ON benchmark_datasets(owner_id, updated_at);
-        CREATE TABLE IF NOT EXISTS benchmark_runs (
-            run_id TEXT PRIMARY KEY,
-            dataset_id TEXT NOT NULL REFERENCES benchmark_datasets(dataset_id) ON DELETE CASCADE,
-            owner_id TEXT NOT NULL REFERENCES auth_users(user_id) ON DELETE CASCADE,
-            payload TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS benchmark_run_owner_idx ON benchmark_runs(owner_id, created_at);
         CREATE TABLE IF NOT EXISTS review_jobs (
             job_id TEXT PRIMARY KEY,
             owner_id TEXT NOT NULL,
@@ -185,6 +249,13 @@ def _init_db(db: sqlite3.Connection, path_str: str) -> None:
         )
     db.execute("CREATE INDEX IF NOT EXISTS reviews_user_created ON reviews(user_id, created_at DESC)")
     db.execute("CREATE INDEX IF NOT EXISTS saved_user_created ON saved_pull_requests(user_id, created_at DESC)")
+    db.execute(
+        """
+        INSERT OR IGNORE INTO auth_identities(identity_id, provider, provider_uid, email, email_verified, user_id, created_at, linked_at)
+        SELECT 'local:' || user_id, 'local', user_id, email, 1, user_id, created_at, created_at
+        FROM auth_users
+        """
+    )
     _INITIALIZED_PATHS.add(path_str)
 
 

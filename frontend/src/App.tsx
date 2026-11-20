@@ -17,8 +17,8 @@ import type { CurrentUser } from './services/api';
 import { getReviewRouteView, loadReviewRoute, resolvePageRoute } from './services/review-route.js';
 import ReviewWorkspacePage from './pages/ReviewWorkspacePage';
 import WorkspacesPage from './pages/WorkspacesPage';
-import BenchmarksPage from './pages/BenchmarksPage';
 import DeveloperProfilePage from './pages/DeveloperProfilePage';
+import LearningLabPage from './pages/LearningLabPage';
 import type {
   AnalysisMode, DiffFile, LearningExercise, LearningHistory, LearningProgress,
   LearningInsights, LearningResult, PersonalAnalytics, ReviewFinding, ReviewResponse, SavedPullRequest, Severity, SuggestedFix,
@@ -27,7 +27,7 @@ import { useAuth } from './auth/AuthContext';
 import LoginPage from './pages/LoginPage';
 import LandingPage from './components/LandingPage';
 
-type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces' | 'benchmarks';
+type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces';
 type Theme = 'light' | 'dark';
 
 function setDocumentTheme(theme: Theme) {
@@ -44,7 +44,6 @@ const nav: Array<{ id: Page; label: string; icon: typeof Search }> = [
   { id: 'analytics', label: 'Insights & analytics', icon: BarChart3 },
   { id: 'profile', label: 'Developer profile', icon: UserRound },
   { id: 'workspaces', label: 'Workspaces', icon: Users },
-  { id: 'benchmarks', label: 'Benchmarks', icon: BarChart3 },
 ];
 
 function formatDate(value?: string) {
@@ -372,7 +371,7 @@ function Workspace() {
   };
 
   const activeExerciseData = exercises.find((item) => item.id === activeExercise);
-  const activeTitle = useMemo(() => ({ discover: 'Discover', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab', analytics: 'Insights & analytics', profile: 'Developer profile', workspaces: 'Workspaces', benchmarks: 'Benchmarks' }[page]), [page]);
+  const activeTitle = useMemo(() => ({ discover: 'Discover', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab', analytics: 'Insights & analytics', profile: 'Developer profile', workspaces: 'Workspaces' }[page]), [page]);
   const reviewRouteView = getReviewRouteView(route.reviewId, review, reviewBusy, reviewError, reviewNotFound);
 
   const toggleTheme = () => {
@@ -433,11 +432,10 @@ function Workspace() {
           {page === 'history' && <HistoryPage state={historyState} error={historyError} items={history} onOpen={openReview} onDiscover={() => go('discover')}/>}
           {page === 'saved' && <SavedPage state={savedState} error={savedError} items={saved} onRemove={removeSaved} onSelect={selectSaved} onRefresh={() => void refreshSaved()} onDiscover={() => go('discover')}/>}
           {page === 'diff' && <DiffPage review={review} state={diffState} error={diffError} files={diff} warnings={diffWarnings} onBack={() => review?.review_id ? openReviewRoute(review.review_id) : go('review')} onDiscover={() => go('discover')}/>}
-          {page === 'learning' && <LearningPage state={learningState} error={learningError} exercises={exercises} active={activeExerciseData} setActive={(id) => { setActiveExercise(id); setAnswer(''); setAnswerResult(null); setAnswerError(''); }} answer={answer} setAnswer={setAnswer} result={answerResult} answerError={answerError} busy={answerBusy} progress={progress} history={learningHistory} onSubmit={submitAnswer}/>}
+          {page === 'learning' && <LearningLabPage onOpenReview={openReviewRoute} onNavigateDiscover={() => go('discover')}/>}
           {page === 'analytics' && <AnalyticsPage state={analyticsState} error={analyticsError} analytics={analytics} insights={insights} onRetry={() => go('analytics')}/>}
           {page === 'profile' && <DeveloperProfilePage user={user} onOpenReview={openReviewRoute} onOpenLearning={() => go('learning')} onOpenHistory={() => go('history')}/>}
           {page === 'workspaces' && <WorkspacesPage onOpenReview={openReviewRoute}/>}
-          {page === 'benchmarks' && <BenchmarksPage/>}
           <footer className="footer"><span>PR Mentor <i>·</i> Review with care.</span><span>API data is shown as returned; unavailable services are labeled.</span></footer>
         </main>
       </div>
@@ -524,8 +522,10 @@ function AnalyticsPage({ state, error, analytics, insights, onRetry }: { state: 
   return <section className="content-page analytics-page"><PageHeading eyebrow="WORKSPACE / ANALYTICS" title="Insights &amp; analytics" intro="Patterns and measures from your account's stored activity. These are descriptive, not developer rankings."/>
     <div className="analytics-cards"><AnalyticsMetric label="LIVE REVIEW RECORDS" value={String(analytics.total_reviews)} detail={`${analytics.reviews_analyzed} non-demo reviews in the recent window`}/><AnalyticsMetric label="SUGGESTED FIXES" value={String(analytics.suggested_fix_count)} detail="Stored proposals in analyzed reviews"/><AnalyticsMetric label="AVG REVIEW TIME" value={analytics.average_review_duration_ms === null ? '—' : `${(analytics.average_review_duration_ms / 1000).toFixed(1)}s`} detail="Recent-window backend duration"/><AnalyticsMetric label="FIX ACCEPTANCE" value={String(analytics.fix_decisions.accepted ?? 0)} detail={`${analytics.fix_decisions.rejected ?? 0} rejected by you`}/></div>
     <div className="analytics-grid"><section className="analytics-panel"><h2>Finding patterns</h2><p>Based on {analytics.reviews_analyzed} of at most {analytics.analysis_window_limit} recent reviews.</p>{ranked(analytics.findings_by_category).length ? ranked(analytics.findings_by_category).map(([name, count]) => <div className="analytics-row" key={name}><span>{pretty(name)}</span><strong>{count}</strong></div>) : <p>No stored findings in this window.</p>}</section>
+      {analytics.findings_by_language && Object.keys(analytics.findings_by_language).length > 0 && <section className="analytics-panel"><h2>Languages analyzed</h2><p>Findings categorized by programming language.</p>{ranked(analytics.findings_by_language).map(([lang, count]) => <div className="analytics-row" key={lang}><span>{lang.toUpperCase()}</span><strong>{count}</strong></div>)}</section>}
       <section className="analytics-panel"><h2>Validation history</h2><p>Reports recorded on suggested fixes.</p>{ranked(analytics.validation_reports_by_status).length ? ranked(analytics.validation_reports_by_status).map(([name, count]) => <div className="analytics-row" key={name}><span>{pretty(name)}</span><strong>{count}</strong></div>) : <p>No validation reports are stored yet.</p>}</section>
       <section className="analytics-panel"><h2>Learning topics</h2><p>{insights.basis}</p>{insights.repeated_patterns.length ? insights.repeated_patterns.map((item) => <div className="analytics-row" key={item.category}><span>{pretty(item.category)}</span><strong>{item.observation_count} findings</strong></div>) : <p>No repeated category pattern found in this window.</p>}<p>Fix decisions: {ranked(insights.fix_decisions).map(([name, count]) => `${pretty(name)} ${count}`).join(' · ') || 'none recorded'}</p><p>Validation outcomes: {ranked(insights.validation_reports_by_status).map(([name, count]) => `${pretty(name)} ${count}`).join(' · ') || 'none recorded'}</p></section>
+      {analytics.ai_orchestration && <section className="analytics-panel"><h2>AI orchestration &amp; cost</h2><p>Observed execution metrics across configured model providers.</p><div className="analytics-row"><span>Total tokens processed</span><strong>{analytics.ai_orchestration.total_tokens.toLocaleString()}</strong></div><div className="analytics-row"><span>Estimated model cost</span><strong>${analytics.ai_orchestration.estimated_cost_usd.toFixed(4)}</strong></div><div className="analytics-row"><span>Fallbacks used</span><strong>{analytics.ai_orchestration.fallback_count}</strong></div>{analytics.ai_orchestration.models_used.length > 0 && <p>Models: {analytics.ai_orchestration.models_used.join(', ')}</p>}</section>}
       <section className="analytics-panel"><h2>Metrics not yet available</h2><ul>{analytics.unavailable_metrics.map((item) => <li key={item}>{pretty(item)}</li>)}</ul></section>
     </div>
   </section>;

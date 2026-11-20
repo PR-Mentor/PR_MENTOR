@@ -101,16 +101,56 @@ def personal_analytics(user: dict = Depends(current_user)):  # noqa: B008 - Fast
         ) from exc
     categories: Counter = Counter()
     severities: Counter = Counter()
+    languages: Counter = Counter()
+    issue_lifecycle: Counter = Counter()
     decisions: Counter = Counter()
     validations: Counter = Counter()
     fix_count = duration_total = 0
+    total_tokens = prompt_tokens = completion_tokens = 0
+    estimated_cost_usd = 0.0
+    models_used: set[str] = set()
+    providers_used: set[str] = set()
+    fallback_count = 0
+
     for review in reviews:
         duration_total += int(review.get("duration_ms", 0) or 0)
+        meta = review.get("ai_execution_metadata") or review.get("ai_metadata")
+        if isinstance(meta, dict):
+            prompt_tokens += int(meta.get("prompt_tokens", 0) or 0)
+            completion_tokens += int(meta.get("completion_tokens", 0) or 0)
+            total_tokens += int(meta.get("total_tokens", 0) or 0)
+            estimated_cost_usd += float(meta.get("estimated_cost_usd", 0.0) or 0.0)
+            if meta.get("model"):
+                models_used.add(str(meta["model"]))
+            if meta.get("provider"):
+                providers_used.add(str(meta["provider"]))
+            if meta.get("fallback_used"):
+                fallback_count += 1
+
         for issue in _issues(review):
             if isinstance(issue.get("category"), str):
                 categories[issue["category"]] += 1
             if isinstance(issue.get("severity"), str):
                 severities[issue["severity"]] += 1
+
+            fp = (issue.get("file_path") or "").lower()
+            if fp.endswith(".py"):
+                languages["python"] += 1
+            elif fp.endswith(".c") or fp.endswith(".h"):
+                languages["c"] += 1
+            elif fp.endswith(".cpp") or fp.endswith(".hpp") or fp.endswith(".cc"):
+                languages["cpp"] += 1
+            elif fp.endswith(".java"):
+                languages["java"] += 1
+            elif fp:
+                languages["other"] += 1
+
+            status = issue.get("status")
+            if status in ("resolved", "open", "dismissed"):
+                issue_lifecycle[status] += 1
+            else:
+                issue_lifecycle["unclassified"] += 1
+
             for fix in issue.get("suggested_fixes", []):
                 fix_count += 1
                 if fix.get("decision_status") in {"accepted", "rejected"}:
@@ -126,6 +166,17 @@ def personal_analytics(user: dict = Depends(current_user)):  # noqa: B008 - Fast
         "analysis_window_limit": ANALYSIS_WINDOW,
         "findings_by_category": dict(sorted(categories.items())),
         "findings_by_severity": dict(sorted(severities.items())),
+        "findings_by_language": dict(sorted(languages.items())),
+        "issue_lifecycle": dict(sorted(issue_lifecycle.items())),
+        "ai_orchestration": {
+            "total_tokens": total_tokens,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "estimated_cost_usd": round(estimated_cost_usd, 4),
+            "models_used": sorted(models_used),
+            "providers_used": sorted(providers_used),
+            "fallback_count": fallback_count,
+        },
         "suggested_fix_count": fix_count,
         "fix_decisions": dict(sorted(decisions.items())),
         "validation_reports_by_status": dict(sorted(validations.items())),
@@ -133,11 +184,9 @@ def personal_analytics(user: dict = Depends(current_user)):  # noqa: B008 - Fast
         if reviews
         else None,
         "model_latency_ms": None,
-        "model_cost": None,
+        "model_cost": round(estimated_cost_usd, 4) if estimated_cost_usd > 0 else None,
         "accuracy_metrics": None,
         "unavailable_metrics": [
-            "model latency is not recorded",
-            "provider cost is not available",
             "human-labelled accuracy data is not available",
         ],
     }
@@ -167,3 +216,31 @@ async def repository_intelligence(
             status_code=503,
             detail="Repository intelligence is temporarily unavailable.",
         ) from exc
+
+
+@router.get("/analytics/ai-orchestration")
+def ai_orchestration_analytics(_user: dict = Depends(current_user)):
+    """Safe, non-secret diagnostic telemetry on AI models, health, and routing."""
+    from app.ai_orchestration.health import get_health_tracker
+    from app.ai_orchestration.models import get_model_registry
+    from app.ai_orchestration.router import get_hybrid_router
+    from app.ai_orchestration.tasks import get_task_registry
+
+    task_reg = get_task_registry()
+    model_reg = get_model_registry()
+    health = get_health_tracker()
+    router_inst = get_hybrid_router()
+
+    tasks_data = [t.to_dict() for t in task_reg.list_tasks()]
+    models_data = [m.to_dict() for m in model_reg.list_models()]
+
+    routing_explanations = {}
+    for t in task_reg.list_tasks():
+        routing_explanations[t.task_id] = router_inst.explain_routing(t.task_id)
+
+    return {
+        "tasks": tasks_data,
+        "models": models_data,
+        "routing": routing_explanations,
+        "status": "operational",
+    }

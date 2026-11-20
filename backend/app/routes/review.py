@@ -371,11 +371,19 @@ async def validate_suggested_fix(
         }
 
     fix.validation_reports.append(report)
+    if report.status == "passed":
+        fix.verification_status = "statically_verified"
+    elif report.status == "failed":
+        fix.verification_status = "verification_failed"
+    elif report.status in {"unavailable", "inconclusive", "not_run"}:
+        fix.verification_status = "unverified"
+
     issue_data = next(
         item for item in review["canonical_issues"] if item.get("issue_id") == issue_id
     )
     for item in issue_data["suggested_fixes"]:
         if item.get("fix_id") == fix_id:
+            item["verification_status"] = fix.verification_status
             item["validation_reports"] = [
                 entry.model_dump(mode="json") for entry in fix.validation_reports
             ]

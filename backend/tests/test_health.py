@@ -18,12 +18,21 @@ def test_cors_allows_frontend_development_origin(tmp_path, monkeypatch):
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
 
 
-def test_cors_keeps_custom_domain_when_origins_are_configured(tmp_path, monkeypatch):
+def test_cors_respects_custom_configured_origins(tmp_path, monkeypatch):
     monkeypatch.setenv("PR_MENTOR_STORAGE", "sqlite")
     monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / "custom-domain-cors.sqlite3"))
     monkeypatch.setenv("PR_MENTOR_CORS_ORIGINS", "https://another-frontend.example")
-    response = TestClient(app).options("/api/health", headers={
+    client = TestClient(app)
+    # Configured custom origin is allowed
+    response = client.options("/api/health", headers={
+        "Origin": "https://another-frontend.example",
+        "Access-Control-Request-Method": "GET",
+    })
+    assert response.headers["access-control-allow-origin"] == "https://another-frontend.example"
+
+    # Unconfigured production origin is NOT permitted when custom origins are configured
+    unconfigured_response = client.options("/api/health", headers={
         "Origin": "https://prmentor.in",
         "Access-Control-Request-Method": "GET",
     })
-    assert response.headers["access-control-allow-origin"] == "https://prmentor.in"
+    assert "access-control-allow-origin" not in unconfigured_response.headers

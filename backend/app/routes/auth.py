@@ -178,12 +178,29 @@ def current_claims(
 def current_user(claims: Annotated[dict[str, Any], Depends(current_claims)]) -> dict[str, Any]:
     uid = claims["uid"]
     email = claims.get("email") or ""
+    email_verified = bool(claims.get("email_verified"))
+    provider = claims.get("auth_provider") or (claims.get("firebase") or {}).get("sign_in_provider") or "external"
+    resolved_uid = uid
+    resolved_email = email
+    if uid:
+        try:
+            resolved = auth_store.resolve_or_create_identity({
+                "uid": uid,
+                "email": email,
+                "email_verified": email_verified,
+                "auth_provider": provider,
+            })
+            resolved_uid = resolved["user_id"]
+            resolved_email = resolved["email"]
+        except Exception:
+            pass
     return {
-        "user_id": uid,
-        "firebase_uid": uid,
-        "email": email,
-        "display_name": claims.get("name") or claims.get("preferred_username") or email or uid,
+        "user_id": resolved_uid,
+        "firebase_uid": resolved_uid,
+        "email": resolved_email,
+        "display_name": claims.get("name") or claims.get("preferred_username") or resolved_email or resolved_uid,
         "claims": claims,
+        "email_verified": email_verified,
     }
 
 
