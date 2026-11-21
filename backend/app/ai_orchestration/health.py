@@ -116,6 +116,8 @@ class ProviderHealthTracker:
                 return FailureCategory.RATE_LIMIT, True, retry_after
             if code in (401, 403):
                 return FailureCategory.AUTHENTICATION_ERROR, False, None
+            if code == 413:
+                return FailureCategory.SIZE_LIMIT_EXCEEDED, False, None
             if 500 <= code <= 599:
                 return FailureCategory.SERVER_ERROR, True, None
             return FailureCategory.UNKNOWN, False, None

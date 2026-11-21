@@ -2,6 +2,7 @@ export type AnalysisMode = 'demo' | 'live';
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'informational';
 export type VerificationStatus = 'verified' | 'needs_review' | 'unsupported';
 export type FindingSource = 'static_analysis' | 'ai_candidate' | 'test_evidence' | 'combined' | 'demo';
+export type Attribution = 'introduced' | 'pre_existing' | 'contextual';
 
 export interface PullRequestMetadata {
   repository_owner: string;
@@ -41,6 +42,7 @@ export interface ReviewFinding {
   suggested_fix: string;
   learning_explanation: string;
   limitations: string[];
+  attribution?: Attribution;
   file?: string;
   line?: number | string;
   text?: string;
@@ -103,6 +105,7 @@ export interface CanonicalIssue {
   explanation_status?: 'completed' | 'partial' | 'failed' | 'unavailable' | 'not_requested';
   explanation_failure_reason?: string | null;
   suggested_fixes?: SuggestedFix[];
+  attribution?: Attribution;
 }
 
 export type FixGenerationStatus = 'generated' | 'stale' | 'conflicted';

@@ -425,3 +425,106 @@ def test_generator_fallback_and_topic_isolation():
     assert pass_sub.passed is True
 
 
+def test_learning_defensive_input_verification_precision():
+    """Reproduce and verify the production issue where unguarded .strip() previously passed.
+
+    Verify that:
+    1. Submitting starter code (unguarded return value.strip()) FAILS.
+    2. Submitting strip() called before the guard FAILS.
+    3. Submitting invalid Python syntax FAILS with a clear syntax error.
+    4. Submitting properly guarded code PASSES with structural AST confirmation.
+    5. eval_details accurately conveys static limitations and mandatory checks.
+    """
+    service = LearningSpaceService()
+    review = sample_review("owner", "repo", 42).model_dump(mode="json")
+    review["canonical_issues"] = [
+        {
+            "issue_id": "issue-def-1",
+            "file_path": "util.py",
+            "category": "code_quality",
+            "normalized_description": "Input validation missing",
+        }
+    ]
+    space = service.resolve_or_create_space(review, owner_id="user-prec")
+    exercises = service.list_exercises(space.space_id)
+    assert len(exercises) >= 1
+    ex = exercises[0]
+    assert ex.title == "Defensive Input Validation & Error Handling"
+
+    # 1. Starter code should not contain the answer and MUST fail submission
+    assert "if not value" not in ex.starter_code
+    sub_starter = service.submit_exercise(ex.exercise_id, "user-prec", ex.starter_code)
+    assert sub_starter.passed is False
+    assert sub_starter.status == "failed"
+    assert "Missing defensive input guard" in sub_starter.feedback
+
+    # 2. Retaining unguarded .strip() before guard MUST fail
+    unguarded_strip = """def sanitize_input(value: str | None) -> str:
+    res = value.strip()
+    if not value:
+        return ""
+    return res
+"""
+    sub_unguarded = service.submit_exercise(ex.exercise_id, "user-prec", unguarded_strip)
+    assert sub_unguarded.passed is False
+    assert "Unguarded .strip() called before defensive input check" in sub_unguarded.feedback
+
+    # 3. Invalid syntax MUST fail
+    bad_syntax = """def sanitize_input(value: str | None) -> str:
+    if not value
+        return ""
+    return value.strip()
+"""
+    sub_syntax = service.submit_exercise(ex.exercise_id, "user-prec", bad_syntax)
+    assert sub_syntax.passed is False
+    assert "Syntax error" in sub_syntax.feedback
+
+    # 4. None-only guard MUST fail because empty strings are not handled
+    none_only = """def sanitize_input(value: str | None) -> str:
+    if value is None:
+        return ""
+    return value.strip()
+"""
+    sub_none_only = service.submit_exercise(ex.exercise_id, "user-prec", none_only)
+    assert sub_none_only.passed is False
+    assert sub_none_only.status == "failed"
+    assert "does not safely handle empty string input" in sub_none_only.feedback
+
+    # 5. Empty-string-only guard MUST fail because None is not handled
+    empty_only = """def sanitize_input(value: str | None) -> str:
+    if value == "":
+        return ""
+    return value.strip()
+"""
+    sub_empty_only = service.submit_exercise(ex.exercise_id, "user-prec", empty_only)
+    assert sub_empty_only.passed is False
+    assert sub_empty_only.status == "failed"
+    assert "does not safely handle None/null input" in sub_empty_only.feedback
+
+    # 6. Valid guarded code using 'not value' MUST pass (handles both None and "")
+    good_code = """def sanitize_input(value: str | None) -> str:
+    if not value:
+        return ""
+    return value.strip()
+"""
+    sub_good = service.submit_exercise(ex.exercise_id, "user-prec", good_code)
+    assert sub_good.passed is True
+    assert sub_good.status == "completed"
+    assert "Static verification confirmed" in sub_good.feedback
+    assert "Runtime test sandbox execution is disabled" in sub_good.feedback
+    assert "Valid Python syntax" in sub_good.eval_details["mandatory_checks_passed"]
+    assert any("safely handling both None and empty string" in s for s in sub_good.eval_details["mandatory_checks_passed"])
+
+    # 7. Valid guarded code using explicit disjunction ('value is None or value == ""') MUST pass
+    good_explicit = """def sanitize_input(value: str | None) -> str:
+    if value is None or value == "":
+        return ""
+    return value.strip()
+"""
+    sub_explicit = service.submit_exercise(ex.exercise_id, "user-prec", good_explicit)
+    assert sub_explicit.passed is True
+    assert sub_explicit.status == "completed"
+
+
+
+

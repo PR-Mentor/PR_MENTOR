@@ -69,3 +69,20 @@ def test_malformed_hunk_line_counts_are_rejected():
     }])
     assert changed == {}
     assert "malformed" in limitations["a.py"]
+
+
+def test_maps_multi_language_source_files():
+    changed, limitations = added_lines_by_file([
+        {"filename": "src/main.c", "status": "modified", "patch": "@@ -10,2 +10,3 @@\n existing\n-old\n+new_c_line\n+another_c_line"},
+        {"filename": "include/core.hpp", "status": "modified", "patch": "@@ -140,2 +140,2 @@\n ctx\n-old\n+new_cpp_line"},
+        {"filename": "src/App.java", "status": "added", "patch": "@@ -0,0 +1,2 @@\n+package com.app;\n+class App {}"},
+        {"filename": "script.py", "status": "modified", "patch": "@@ -1 +1 @@\n-old\n+new_py"},
+    ])
+    assert changed == {
+        "src/main.c": {11, 12},
+        "include/core.hpp": {141},
+        "src/App.java": {1, 2},
+        "script.py": {1},
+    }
+    assert limitations == {}
+

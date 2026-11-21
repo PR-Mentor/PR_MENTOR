@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -90,3 +91,244 @@ def build_observation(
         tool_name=tool_name,
         rule_id=rule_id,
     )
+
+
+def mask_c_cpp_comments(content: str) -> str:
+    """Mask C/C++ comments with whitespace, preserving string and character literals.
+
+    Preserves newlines strictly so line numbers and line counts remain identical
+    to the original input. String literals, character literals, and C++ raw string
+    literals are preserved intact, enabling rules that inspect literal arguments
+    (such as format string checks) to operate without interference from comments.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(content)
+    NORMAL = 0
+    LINE_COMMENT = 1
+    BLOCK_COMMENT = 2
+    STRING = 3
+    CHAR = 4
+    RAW_STRING = 5
+    state = NORMAL
+    raw_delim = ""
+
+    while i < n:
+        ch = content[i]
+        nxt = content[i + 1] if i + 1 < n else ""
+
+        if state == NORMAL:
+            if ch == "/" and nxt == "/":
+                state = LINE_COMMENT
+                out.append("  ")
+                i += 2
+            elif ch == "/" and nxt == "*":
+                state = BLOCK_COMMENT
+                out.append("  ")
+                i += 2
+            elif ch == "R" and nxt == '"':
+                match = re.match(r'R"([^()\s\\]{0,16})\(', content[i:])
+                if match:
+                    raw_delim = match.group(1)
+                    raw_header = match.group(0)
+                    out.append(raw_header)
+                    i += len(raw_header)
+                    state = RAW_STRING
+                else:
+                    out.append(ch)
+                    i += 1
+            elif ch == '"':
+                state = STRING
+                out.append(ch)
+                i += 1
+            elif ch == "'":
+                state = CHAR
+                out.append(ch)
+                i += 1
+            else:
+                out.append(ch)
+                i += 1
+
+        elif state == LINE_COMMENT:
+            if ch in ("\n", "\r"):
+                state = NORMAL
+                out.append(ch)
+            else:
+                out.append(" ")
+            i += 1
+
+        elif state == BLOCK_COMMENT:
+            if ch == "*" and nxt == "/":
+                state = NORMAL
+                out.append("  ")
+                i += 2
+            elif ch in ("\n", "\r"):
+                out.append(ch)
+                i += 1
+            else:
+                out.append(" ")
+                i += 1
+
+        elif state == STRING:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(nxt)
+                i += 2
+            elif ch == '"':
+                state = NORMAL
+                i += 1
+            else:
+                i += 1
+
+        elif state == CHAR:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(nxt)
+                i += 2
+            elif ch == "'":
+                state = NORMAL
+                i += 1
+            else:
+                i += 1
+
+        elif state == RAW_STRING:
+            closing = f'){raw_delim}"'
+            if content[i:].startswith(closing):
+                out.append(closing)
+                i += len(closing)
+                state = NORMAL
+            else:
+                out.append(ch)
+                i += 1
+
+    return "".join(out)
+
+
+def mask_c_cpp_comments_and_strings(content: str) -> str:
+    """Mask C/C++ comments and string/character literals with whitespace.
+
+    Preserves newlines strictly so line numbers and line counts remain identical
+    to the original input. Non-comment and non-literal code remains in its exact
+    column position, preventing false positives from keywords/patterns occurring
+    inside comments or string literals.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(content)
+    NORMAL = 0
+    LINE_COMMENT = 1
+    BLOCK_COMMENT = 2
+    STRING = 3
+    CHAR = 4
+    RAW_STRING = 5
+    state = NORMAL
+    raw_delim = ""
+
+    while i < n:
+        ch = content[i]
+        nxt = content[i + 1] if i + 1 < n else ""
+
+        if state == NORMAL:
+            if ch == "/" and nxt == "/":
+                state = LINE_COMMENT
+                out.append("  ")
+                i += 2
+            elif ch == "/" and nxt == "*":
+                state = BLOCK_COMMENT
+                out.append("  ")
+                i += 2
+            elif ch == "R" and nxt == '"':
+                match = re.match(r'R"([^()\s\\]{0,16})\(', content[i:])
+                if match:
+                    raw_delim = match.group(1)
+                    raw_header = match.group(0)
+                    out.append(" " * len(raw_header))
+                    i += len(raw_header)
+                    state = RAW_STRING
+                else:
+                    out.append(ch)
+                    i += 1
+            elif ch == '"':
+                state = STRING
+                out.append(" ")
+                i += 1
+            elif ch == "'":
+                state = CHAR
+                out.append(" ")
+                i += 1
+            else:
+                out.append(ch)
+                i += 1
+
+        elif state == LINE_COMMENT:
+            if ch in ("\n", "\r"):
+                state = NORMAL
+                out.append(ch)
+            else:
+                out.append(" ")
+            i += 1
+
+        elif state == BLOCK_COMMENT:
+            if ch == "*" and nxt == "/":
+                state = NORMAL
+                out.append("  ")
+                i += 2
+            elif ch in ("\n", "\r"):
+                out.append(ch)
+                i += 1
+            else:
+                out.append(" ")
+                i += 1
+
+        elif state == STRING:
+            if ch == "\\" and i + 1 < n:
+                if nxt in ("\n", "\r"):
+                    out.append(" ")
+                    out.append(nxt)
+                else:
+                    out.append("  ")
+                i += 2
+            elif ch == '"':
+                state = NORMAL
+                out.append(" ")
+                i += 1
+            elif ch in ("\n", "\r"):
+                out.append(ch)
+                i += 1
+            else:
+                out.append(" ")
+                i += 1
+
+        elif state == CHAR:
+            if ch == "\\" and i + 1 < n:
+                if nxt in ("\n", "\r"):
+                    out.append(" ")
+                    out.append(nxt)
+                else:
+                    out.append("  ")
+                i += 2
+            elif ch == "'":
+                state = NORMAL
+                out.append(" ")
+                i += 1
+            elif ch in ("\n", "\r"):
+                out.append(ch)
+                i += 1
+            else:
+                out.append(" ")
+                i += 1
+
+        elif state == RAW_STRING:
+            closing = f'){raw_delim}"'
+            if content[i:].startswith(closing):
+                out.append(" " * len(closing))
+                i += len(closing)
+                state = NORMAL
+            elif ch in ("\n", "\r"):
+                out.append(ch)
+                i += 1
+            else:
+                out.append(" ")
+                i += 1
+
+    return "".join(out)

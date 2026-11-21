@@ -17,6 +17,7 @@ from app.languages.base import (
 from app.languages.common import (
     build_observation,
     build_review_finding_from_raw,
+    mask_c_cpp_comments_and_strings,
     write_language_sources,
 )
 from app.schemas.finding import ReviewFinding
@@ -52,7 +53,7 @@ DANGEROUS_CPP_PATTERNS = [
         "Replace 'catch (std::exception e)' with 'catch (const std::exception& e)'.",
     ),
     (
-        re.compile(r'\bnew\s+[a-zA-Z0-9_:]+\s*(?:\[[^\]]*\])?(?:\([^)]*\))?(?!\s*;)'),
+        re.compile(r'(?<!\boperator\s)(?<!\boperator)\bnew\b(?:\s*\([^)]*\))?\s+[a-zA-Z_][a-zA-Z0-9_:]*(?:\s*<[^;>{]+>)?(?:\s*\[[^\]]*\]|\s*\([^)]*\)|\s*\{[^}]*\}|(?=\s*[,;)]))'),
         "CPP-MEM-RAW-NEW",
         "low",
         "maintainability",
@@ -188,13 +189,14 @@ class CppAdapter(LanguageAdapter):
     ) -> list[ReviewFinding]:
         results: list[ReviewFinding] = []
         for file_path, content in source_files:
-            lines = content.splitlines()
-            for line_idx, line in enumerate(lines, start=1):
-                stripped = line.strip()
-                if stripped.startswith("//") or stripped.startswith("/*"):
+            masked = mask_c_cpp_comments_and_strings(content)
+            raw_lines = content.splitlines()
+            masked_lines = masked.splitlines()
+            for line_idx, (raw_line, masked_line) in enumerate(zip(raw_lines, masked_lines), start=1):
+                if not masked_line.strip():
                     continue
                 for pattern, rule_id, sev, cat, msg, why, fix in DANGEROUS_CPP_PATTERNS:
-                    match = pattern.search(line)
+                    match = pattern.search(masked_line)
                     if match:
                         rf = build_review_finding_from_raw(
                             tool_name="cpp_safety_analyzer",
@@ -204,7 +206,7 @@ class CppAdapter(LanguageAdapter):
                             message=msg,
                             severity=sev,
                             category=cat,
-                            evidence=stripped,
+                            evidence=raw_line.strip(),
                             why_it_matters=why,
                             suggested_fix=fix,
                             root=root,

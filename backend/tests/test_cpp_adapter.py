@@ -113,3 +113,79 @@ void run() {
 
     assert any("CPP-DEP-AUTOPTR" in f.title for f in findings)
     assert len(obs) >= 1
+
+
+def test_cpp_comment_and_string_masking_ignores_doxygen_prose(cpp_adapter, tmp_path):
+    cpp_source = """#include <iostream>
+
+/**
+ * @brief Constructs a matrix with new axes.
+ *
+ * This documentation explains how a new shape is calculated:
+ * - new state is initialized
+ * - new coordinate system mapped
+ * Never use gets() in real code.
+ */
+void configure_axes() {
+    std::cout << "new shape inside string literal" << std::endl;
+}
+"""
+    files = [("include/core.hpp", cpp_source)]
+    findings = cpp_adapter._run_builtin_analyzer(files, tmp_path)
+    assert len(findings) == 0
+
+
+def test_cpp_mem_raw_new_detects_allocations_and_ignores_operator_new(cpp_adapter, tmp_path):
+    cpp_source = """#include <cstddef>
+
+class CustomAllocator {
+public:
+    void* operator new(size_t size) {
+        return nullptr;
+    }
+    void* operator new[](size_t size) {
+        return nullptr;
+    }
+};
+
+void allocate_stuff() {
+    int* p1 = new int(42);
+    int* p2 = new int[100];
+    Node* p3 = new Node;
+}
+"""
+    files = [("src/alloc.cpp", cpp_source)]
+    findings = cpp_adapter._run_builtin_analyzer(files, tmp_path)
+    raw_new_findings = [f for f in findings if "CPP-MEM-RAW-NEW" in f.title]
+    assert len(raw_new_findings) == 3
+    lines = [f.line_start for f in raw_new_findings]
+    assert lines == [14, 15, 16]
+
+
+def test_cpp_raw_string_literals_supported(cpp_adapter, tmp_path):
+    cpp_source = """#include <iostream>
+#include <string>
+
+void test_raw_strings() {
+    // 1. Raw string with inner quotes and comment markers
+    auto s1 = R"(string with "inner quotes" and /* comment */ and // markers)";
+
+    // 2. Raw string with custom delimiter containing allocation pattern in text
+    auto s2 = R"tag(
+        Line inside raw string:
+        new int[500];
+        gets(buf);
+    )tag";
+
+    // 3. Genuine allocation after raw strings - line number must be exact!
+    int* genuine = new int(123);
+}
+"""
+    files = [("src/raw_test.cpp", cpp_source)]
+    findings = cpp_adapter._run_builtin_analyzer(files, tmp_path)
+    # The raw string contents must not produce findings, but line 16 genuine allocation must!
+    assert len(findings) == 1
+    assert "CPP-MEM-RAW-NEW" in findings[0].title
+    assert findings[0].line_start == 16
+
+

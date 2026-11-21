@@ -331,3 +331,142 @@ def test_empty_source_fallback_language_aware():
     assert "ruff" in doc_tools
     assert "bandit" in doc_tools
 
+
+def test_diff_attribution_distinguishes_introduced_pre_existing_and_contextual():
+    from app.schemas.finding import ReviewFinding
+    from app.services.review_orchestrator import _determine_finding_attribution
+    from app.services.finding_reconciliation import _build_issue
+    from app.schemas.issue import FindingObservation
+
+    added_lines_map = {
+        "src/compute.cpp": {145, 146, 147},
+        "src/util.c": {20},
+    }
+    changed_files = {"src/compute.cpp", "src/util.c", "src/unmodified_patch.java"}
+
+    # 1. Finding directly in added line -> introduced
+    f_introduced = ReviewFinding(
+        id="f1",
+        title="Cpp_Safety_Analyzer CPP-MEM-RAW-NEW",
+        description="Raw new",
+        file_path="src/compute.cpp",
+        line_start=145,
+        line_end=145,
+        severity="low",
+        category="maintainability",
+        confidence=0.75,
+        source="static_analysis",
+        verification_status="needs_review",
+        why_it_matters="why",
+        suggested_fix="fix",
+    )
+    attr1 = _determine_finding_attribution(f_introduced, added_lines_map, changed_files)
+    assert attr1 == "introduced"
+    f_introduced.attribution = attr1
+
+    # 2. Finding in surrounding unchanged line -> pre_existing
+    f_pre_existing = ReviewFinding(
+        id="f2",
+        title="Cpp_Safety_Analyzer CPP-MEM-RAW-NEW",
+        description="Raw new in surrounding code",
+        file_path="src/compute.cpp",
+        line_start=2548,
+        line_end=2548,
+        severity="low",
+        category="maintainability",
+        confidence=0.75,
+        source="static_analysis",
+        verification_status="needs_review",
+        why_it_matters="why",
+        suggested_fix="fix",
+    )
+    attr2 = _determine_finding_attribution(f_pre_existing, added_lines_map, changed_files)
+    assert attr2 == "pre_existing"
+    f_pre_existing.attribution = attr2
+
+    # 3. File-level finding without line numbers -> contextual
+    f_contextual = ReviewFinding(
+        id="f3",
+        title="Static Diagnostic",
+        description="General warning",
+        file_path="src/other.py",
+        line_start=None,
+        line_end=None,
+        severity="informational",
+        category="code_quality",
+        confidence=0.5,
+        source="static_analysis",
+        verification_status="needs_review",
+        why_it_matters="why",
+        suggested_fix="fix",
+    )
+    attr3 = _determine_finding_attribution(f_contextual, added_lines_map, changed_files)
+    assert attr3 == "contextual"
+    f_contextual.attribution = attr3
+
+    # Check canonical issue aggregation
+    obs1 = FindingObservation(original_finding=f_introduced, tool_name="cpp_safety_analyzer")
+    issue1 = _build_issue([obs1])
+    assert issue1.attribution == "introduced"
+
+    obs2 = FindingObservation(original_finding=f_pre_existing, tool_name="cpp_safety_analyzer")
+    issue2 = _build_issue([obs2])
+    assert issue2.attribution == "pre_existing"
+
+    obs3 = FindingObservation(original_finding=f_contextual, tool_name="static")
+    issue3 = _build_issue([obs3])
+    assert issue3.attribution == "contextual"
+
+    # 4. Modified file with missing/malformed patch must fail safe as CONTEXTUAL, not pre_existing!
+    f_missing_patch = ReviewFinding(
+        id="f4",
+        title="Diagnostic",
+        description="Line in file with missing patch",
+        file_path="src/unmodified_patch.java",
+        line_start=50,
+        line_end=50,
+        severity="low",
+        category="code_quality",
+        confidence=0.5,
+        source="static_analysis",
+        verification_status="needs_review",
+        why_it_matters="why",
+        suggested_fix="fix",
+    )
+    attr4 = _determine_finding_attribution(f_missing_patch, added_lines_map, changed_files)
+    assert attr4 == "contextual", f"Expected contextual for missing patch, got {attr4}"
+
+    # 5. Deserialization of legacy records without attribution field must default to CONTEXTUAL
+    legacy_finding_data = {
+        "id": "legacy-1",
+        "title": "Legacy Finding",
+        "description": "Found long ago",
+        "file_path": "legacy.py",
+        "line_start": 10,
+        "line_end": 10,
+        "severity": "medium",
+        "category": "bug",
+        "confidence": 0.8,
+        "source": "static_analysis",
+        "verification_status": "needs_review",
+        "why_it_matters": "legacy",
+        "suggested_fix": "fix",
+    }
+    deserialized_finding = ReviewFinding.model_validate(legacy_finding_data)
+    assert deserialized_finding.attribution == "contextual"
+
+    from app.schemas.issue import CanonicalIssue
+    legacy_issue_data = {
+        "issue_id": "legacy-issue-1",
+        "file_path": "legacy.py",
+        "line_start": 10,
+        "line_end": 10,
+        "category": "bug",
+        "severity": "medium",
+        "normalized_description": "Legacy issue",
+    }
+    deserialized_issue = CanonicalIssue.model_validate(legacy_issue_data)
+    assert deserialized_issue.attribution == "contextual"
+
+
+
