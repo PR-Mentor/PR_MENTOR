@@ -553,3 +553,76 @@ def test_realistic_frontier_provider_response_without_source_context_drops_code_
     explanation = result.explanations[issue.issue_id]
     assert explanation.code_example is None
     assert result.rejected_explanation_count == 0
+
+
+def test_batch_failure_retries_individually_and_isolates_poison_issue(monkeypatch):
+    issue1 = _issue("issue-good", line=4)
+    issue2 = _issue("issue-poison", line=8)
+
+    call_counts = {"batch": 0, "good": 0, "poison": 0}
+
+    async def complete_validated_json(task, system_prompt, user_prompt, validator, **kwargs):
+        parsed = _decode_prompt(user_prompt)
+        issue_ids = [item["issue_id"] for item in parsed["issues"]]
+        if len(issue_ids) > 1:
+            call_counts["batch"] += 1
+            raise AIReviewUnavailable("Provider returned malformed batch JSON")
+        elif "issue-good" in issue_ids:
+            call_counts["good"] += 1
+            raw = json.dumps({"explanations": [{"issue_id": "issue-good", "explanation": _explanation()}]})
+            return raw, validator(raw)
+        else:
+            call_counts["poison"] += 1
+            raise AIReviewUnavailable("Poison issue cannot be parsed")
+
+    monkeypatch.setattr(service, "complete_validated_json", complete_validated_json)
+
+    result = asyncio.run(service.generate_issue_explanations([issue1, issue2]))
+
+    assert call_counts["batch"] == 1
+    assert call_counts["good"] == 1
+    assert call_counts["poison"] == 1
+    assert "issue-good" in result.explanations
+    assert "issue-poison" not in result.explanations
+    assert result.issue_statuses["issue-good"] == "completed"
+    assert result.issue_statuses["issue-poison"] == "failed"
+    assert "Poison issue cannot be parsed" in result.issue_failure_reasons["issue-poison"]
+
+
+def test_expanded_trusted_documentation_resource_hosts():
+    from app.schemas.issue import TRUSTED_LEARNING_RESOURCE_HOSTS
+    assert "clang.llvm.org" in TRUSTED_LEARNING_RESOURCE_HOSTS
+    assert "cve.org" in TRUSTED_LEARNING_RESOURCE_HOSTS
+    assert "docs.oracle.com" in TRUSTED_LEARNING_RESOURCE_HOSTS
+    assert "en.cppreference.com" in TRUSTED_LEARNING_RESOURCE_HOSTS
+    assert "pypi.org" in TRUSTED_LEARNING_RESOURCE_HOSTS
+
+
+def test_explanation_preserves_expanded_trusted_urls(monkeypatch):
+    issue = _issue("issue-cpp")
+    payload = json.dumps({
+        "explanations": [{
+            "issue_id": "issue-cpp",
+            "explanation": _explanation(learning_resources=[
+                {"title": "CppReference Vector", "url": "https://en.cppreference.com/w/cpp/container/vector"},
+                {"title": "Oracle Java Docs", "url": "https://docs.oracle.com/en/java/javase/17/docs/api/index.html"},
+                {"title": "Clang Tidy", "url": "https://clang.llvm.org/extra/clang-tidy/checks/list.html"},
+                {"title": "CVE", "url": "https://cve.org/CVERecord/CVE-2023-1234"},
+                {"title": "Untrusted Blog", "url": "https://random-hack.example.com/exploit"},
+            ])
+        }]
+    })
+
+    async def complete(_system, _prompt):
+        return payload
+
+    _stub_validated_completion(monkeypatch, complete)
+    result = asyncio.run(service.generate_issue_explanations([issue]))
+    assert "issue-cpp" in result.explanations
+    urls = [r.url for r in result.explanations["issue-cpp"].learning_resources]
+    assert "https://en.cppreference.com/w/cpp/container/vector" in urls
+    assert "https://docs.oracle.com/en/java/javase/17/docs/api/index.html" in urls
+    assert "https://clang.llvm.org/extra/clang-tidy/checks/list.html" in urls
+    assert "https://cve.org/CVERecord/CVE-2023-1234" in urls
+    assert "https://random-hack.example.com/exploit" not in urls
+

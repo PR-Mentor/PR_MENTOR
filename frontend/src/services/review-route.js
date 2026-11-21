@@ -14,7 +14,7 @@ export function resolvePageRoute(pathname) {
   }
 
   const value = pathname.replace(/^\//, '').replace(/\/$/, '');
-  const page = ['review', 'history', 'saved', 'diff', 'learning', 'analytics', 'profile', 'workspaces', 'benchmarks'].includes(value) ? value : 'discover';
+  const page = ['review', 'history', 'saved', 'diff', 'learning', 'analytics', 'profile', 'workspaces'].includes(value) ? value : 'discover';
   return { page, reviewId: null };
 }
 

@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+ codex/phone-otp-login
     "test": "node --test src/services/review-route.test.js src/services/repository-view.test.js src/pages/ReviewWorkspacePage.test.js"
+
+    "test": "node --test src/services/review-route.test.js src/pages/ReviewWorkspacePage.test.js src/pages/LearningLabPage.test.js"
+ main
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.118.0",

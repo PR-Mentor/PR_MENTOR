@@ -8,8 +8,11 @@ from app.database.mongo_connection import close_mongo_client
 from app.database.reviews import get_store
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import legacy_router as legacy_auth_router, router as auth_router
+ codex/phone-otp-login
 from app.routes.benchmarks import router as benchmarks_router
 from app.routes.github import router as github_router
+
+main
 from app.routes.learning import router as learning_router
 from app.routes.review import router as review_router
 from app.routes.workspaces import router as workspaces_router
@@ -23,11 +26,24 @@ async def lifespan(_app: FastAPI):
         close_mongo_client()
 
 
+class DynamicCorsOrigins:
+    """Dynamic collection for CORS origins allowing runtime/environment updates."""
+
+    def __contains__(self, origin: object) -> bool:
+        return origin in cors_origins()
+
+    def __iter__(self):
+        return iter(cors_origins())
+
+    def __len__(self):
+        return len(cors_origins())
+
+
 app = FastAPI(title="PR Mentor API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins(),
+    allow_origins=DynamicCorsOrigins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,5 +86,8 @@ app.include_router(auth_router)
 app.include_router(legacy_auth_router)
 app.include_router(analytics_router)
 app.include_router(workspaces_router)
+ codex/phone-otp-login
 app.include_router(benchmarks_router)
 app.include_router(github_router)
+
+ main

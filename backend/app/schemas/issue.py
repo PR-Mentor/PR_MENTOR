@@ -42,6 +42,9 @@ MAX_VALIDATION_TEXT_CHARS = 1_000
 
 FixGenerationStatus = Literal["generated", "stale", "conflicted"]
 FixDecisionStatus = Literal["pending", "accepted", "rejected"]
+FixLifecycleStatus = Literal[
+    "proposed", "statically_verified", "fully_verified", "verification_failed", "unverified",
+]
 FixValidationStatus = Literal[
     "passed", "failed", "partial", "inconclusive", "unavailable", "not_run",
 ]
@@ -382,20 +385,25 @@ class FixValidationReport(BaseModel):
                 )
         return self
 
-# These domains host the documentation/resources currently relevant to PR
-# Mentor's Python, GitHub, security, and general web findings. Links are
-# validated locally; no request is made to these hosts.
+# These domains host official documentation and standard-library references
+# relevant to PR Mentor's multi-language, security, and web findings.
+# Links are validated locally; no network request is made to these hosts.
 TRUSTED_LEARNING_RESOURCE_HOSTS = frozenset({
     "bandit.readthedocs.io",
     "cheatsheetseries.owasp.org",
+    "clang.llvm.org",
+    "cve.org",
     "cwe.mitre.org",
     "developer.mozilla.org",
     "docs.astral.sh",
     "docs.github.com",
+    "docs.oracle.com",
     "docs.python.org",
+    "en.cppreference.com",
     "fastapi.tiangolo.com",
     "owasp.org",
     "peps.python.org",
+    "pypi.org",
 })
 
 
@@ -518,7 +526,7 @@ class SuggestedFix(BaseModel):
     file_path: str = Field(min_length=1, max_length=1_000)
     start_line: int = Field(ge=1, strict=True)
     end_line: int = Field(ge=1, strict=True)
-    language: Literal["python"]
+    language: Literal["python", "c", "cpp", "java"]
     base_commit_sha: str = Field(min_length=1, max_length=64)
     file_blob_sha: str | None = Field(default=None, min_length=1, max_length=64)
     expected_original_code: str = Field(min_length=1, max_length=MAX_FIX_CODE_CHARS)
@@ -529,6 +537,7 @@ class SuggestedFix(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     generation_status: FixGenerationStatus
     decision_status: FixDecisionStatus = "pending"
+    verification_status: FixLifecycleStatus = "proposed"
     generated_at: datetime
     decided_at: datetime | None = None
     validation_reports: list[FixValidationReport] = Field(
@@ -607,6 +616,8 @@ class CanonicalIssue(BaseModel):
     status: IssueStatus = "open"
     observations: list[FindingObservation] = Field(default_factory=list)
     explanation: IssueExplanation | None = None
+    explanation_status: Literal["completed", "partial", "failed", "unavailable", "not_requested"] = "not_requested"
+    explanation_failure_reason: str | None = None
     suggested_fixes: list[SuggestedFix] = Field(default_factory=list, max_length=MAX_SUGGESTED_FIXES_PER_ISSUE)
 
     @model_validator(mode="after")

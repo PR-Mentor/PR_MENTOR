@@ -129,3 +129,24 @@ def test_workspace_learning_insights_are_limited_to_shared_reviews_and_members(
         client.post("/api/auth/logout")
         client.post("/api/auth/register", json={"email": "outsider-insights@example.com", "password": "correct horse battery staple"})
         assert client.get(f"/api/workspaces/{workspace_id}/learning-insights").status_code == 404
+
+
+def test_ai_orchestration_analytics_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("PR_MENTOR_STORAGE", "sqlite")
+    monkeypatch.setenv("PR_MENTOR_DATABASE_PATH", str(tmp_path / "orchestration.sqlite3"))
+    monkeypatch.setenv("PR_MENTOR_COOKIE_SECURE", "false")
+    with TestClient(app) as client:
+        # 401 unauthenticated
+        assert client.get("/api/analytics/ai-orchestration").status_code == 401
+        client.post(
+            "/api/auth/register",
+            json={"email": "orch@example.com", "password": "correct horse battery staple"},
+        )
+        resp = client.get("/api/analytics/ai-orchestration")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "tasks" in data
+        assert "models" in data
+        assert "routing" in data
+        assert data["status"] == "operational"
+        assert any(t["task_id"] == "code_review" for t in data["tasks"])

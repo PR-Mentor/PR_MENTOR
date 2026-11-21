@@ -45,6 +45,10 @@ def create_indexes(database: Database | Any) -> None:
     database["learning_attempts"].create_index([("created_at", -1)], name="attempt_created_at_desc")
     database["learning_attempts"].create_index("exercise_id", name="attempt_exercise_id")
 
+    from app.database.mongo_learning import create_learning_indexes
+
+    create_learning_indexes(database)
+
 
 class MongoReviewStore:
     """Synchronous PyMongo adapter; FastAPI runs sync routes in its threadpool."""

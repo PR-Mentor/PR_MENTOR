@@ -21,6 +21,11 @@ class LearningExercise(BaseModel):
     hints: list[str]
     options: list[str]
     learning_objectives: list[str]
+    real_world_analogy: str | None = None
+    problem_explanation: str | None = None
+    mission: str | None = None
+    example_input: str | None = None
+    example_output: str | None = None
 
 
 class LearningHistory(BaseModel):

@@ -271,6 +271,123 @@ def test_mongo_client_is_process_scoped_bounded_and_closed(monkeypatch):
     assert first.closed is True
 
 
+def test_get_mongo_database_lifecycle_sequence_a(monkeypatch):
+    """Sequence A: ensure_indexes=False followed by ensure_indexes=True creates indexes on 2nd call."""
+    mock_client = mongomock.MongoClient(tz_aware=True)
+    monkeypatch.setattr(mongo_connection, "MongoClient", lambda *a, **kw: mock_client)
+    monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017")
+    monkeypatch.setenv("MONGODB_DATABASE", "test_lifecycle_seq_a")
+    mongo_connection.close_mongo_client()
+
+    # Step 1: Call with ensure_indexes=False
+    db1 = mongo_connection.get_mongo_database(ensure_indexes=False)
+    assert db1.list_collection_names() == []
+    key = ("mongodb://localhost:27017", "test_lifecycle_seq_a")
+    assert key not in mongo_connection._indexed_databases
+
+    # Step 2: Call with ensure_indexes=True
+    db2 = mongo_connection.get_mongo_database(ensure_indexes=True)
+
+    # Step 3: Verify the second call creates the required indexes exactly as expected
+    assert key in mongo_connection._indexed_databases
+    assert "reviews" in db2.list_collection_names()
+    review_indexes = [idx["name"] for idx in db2["reviews"].list_indexes()]
+    assert "review_id_unique" in review_indexes
+    assert "review_created_at_desc" in review_indexes
+    assert "review_user_created_desc" in review_indexes
+    mongo_connection.close_mongo_client()
+
+
+def test_get_mongo_database_lifecycle_sequence_b(monkeypatch):
+    """Sequence B: ensure_indexes=True followed by ensure_indexes=True does not recreate indexes."""
+    mock_client = mongomock.MongoClient(tz_aware=True)
+    monkeypatch.setattr(mongo_connection, "MongoClient", lambda *a, **kw: mock_client)
+    monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017")
+    monkeypatch.setenv("MONGODB_DATABASE", "test_lifecycle_seq_b")
+    mongo_connection.close_mongo_client()
+
+    from app.database import mongo_reviews
+    calls = []
+    orig_create_indexes = mongo_reviews.create_indexes
+    monkeypatch.setattr(
+        mongo_reviews,
+        "create_indexes",
+        lambda db: (calls.append(db.name), orig_create_indexes(db)),
+    )
+
+    # Step 1: Call with ensure_indexes=True
+    db1 = mongo_connection.get_mongo_database(ensure_indexes=True)
+    assert len(calls) == 1
+    assert "reviews" in db1.list_collection_names()
+
+    # Step 2: Call again with ensure_indexes=True
+    db2 = mongo_connection.get_mongo_database(ensure_indexes=True)
+
+    # Step 3: Verify indexes are not unnecessarily recreated
+    assert len(calls) == 1
+    mongo_connection.close_mongo_client()
+
+
+def test_get_mongo_database_lifecycle_sequence_c(monkeypatch):
+    """Sequence C: ensure_indexes=False multiple times performs zero index initialization."""
+    mock_client = mongomock.MongoClient(tz_aware=True)
+    monkeypatch.setattr(mongo_connection, "MongoClient", lambda *a, **kw: mock_client)
+    monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017")
+    monkeypatch.setenv("MONGODB_DATABASE", "test_lifecycle_seq_c")
+    mongo_connection.close_mongo_client()
+
+    from app.database import mongo_reviews
+    calls = []
+    orig_create_indexes = mongo_reviews.create_indexes
+    monkeypatch.setattr(
+        mongo_reviews,
+        "create_indexes",
+        lambda db: (calls.append(db.name), orig_create_indexes(db)),
+    )
+
+    # Call with ensure_indexes=False multiple times
+    db1 = mongo_connection.get_mongo_database(ensure_indexes=False)
+    db2 = mongo_connection.get_mongo_database(ensure_indexes=False)
+    db3 = mongo_connection.get_mongo_database(ensure_indexes=False)
+
+    # Verify no index initialization occurs
+    assert len(calls) == 0
+    assert db1.list_collection_names() == []
+    assert len(mongo_connection._indexed_databases) == 0
+    mongo_connection.close_mongo_client()
+
+
+def test_get_mongo_database_lifecycle_thread_safety(monkeypatch):
+    """Ensure concurrent calls to get_mongo_database initialize indexes exactly once."""
+    import concurrent.futures
+
+    mock_client = mongomock.MongoClient(tz_aware=True)
+    monkeypatch.setattr(mongo_connection, "MongoClient", lambda *a, **kw: mock_client)
+    monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017")
+    monkeypatch.setenv("MONGODB_DATABASE", "test_lifecycle_threads")
+    mongo_connection.close_mongo_client()
+
+    from app.database import mongo_reviews
+    calls = []
+    orig_create_indexes = mongo_reviews.create_indexes
+    monkeypatch.setattr(
+        mongo_reviews,
+        "create_indexes",
+        lambda db: (calls.append(db.name), orig_create_indexes(db)),
+    )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(mongo_connection.get_mongo_database, ensure_indexes=True)
+            for _ in range(30)
+        ]
+        results = [f.result() for f in futures]
+
+    assert len(calls) == 1
+    assert len(results) == 30
+    mongo_connection.close_mongo_client()
+
+
 @pytest.mark.parametrize("uri", [
     "https://example.com",
     "mongodb+srv://cluster.example.net/?tls=false",
@@ -321,8 +438,8 @@ def test_sqlite_migration_is_repeatable_and_preserves_source(tmp_path, monkeypat
 
     mongo_client = mongomock.MongoClient(tz_aware=True)
     target = MongoReviewStore(mongo_client["migration_test"])
-    first = migrate(sqlite_path, target)
-    second = migrate(sqlite_path, target)
+    first = migrate(sqlite_path, target, expected_database="migration_test")
+    second = migrate(sqlite_path, target, expected_database="migration_test")
 
     assert first == second == {"reviews": 1, "saved_pull_requests": 1, "learning_attempts": 1}
     assert target.get_review("legacy-review", "legacy:unassigned")["review_id"] == "legacy-review"
