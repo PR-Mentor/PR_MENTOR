@@ -72,16 +72,6 @@ def get_mongo_database(*, ensure_indexes: bool = True):
     client = get_mongo_client()
     name = mongodb_database()
     database = client[name]
-codex/phone-otp-login
-    key = (_client_uri or "", name)
-    with _lock:
-        if key not in _indexed_databases:
-            from app.database.mongo_reviews import create_indexes
-
-            create_indexes(database)
-            database["github_oauth_flows"].create_index("expires_at", expireAfterSeconds=0)
-            _indexed_databases.add(key)
-
     if ensure_indexes:
         key = (_client_uri or "", name)
         with _lock:
@@ -89,8 +79,8 @@ codex/phone-otp-login
                 from app.database.mongo_reviews import create_indexes
 
                 create_indexes(database)
+                database["github_oauth_flows"].create_index("expires_at", expireAfterSeconds=0)
                 _indexed_databases.add(key)
- main
     return database
 
 
