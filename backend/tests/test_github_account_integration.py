@@ -7,7 +7,10 @@ import httpx
 import mongomock
 import pytest
 from cryptography.fernet import Fernet
+ codex/phone-otp-login
 from fastapi import HTTPException
+
+ main
 from fastapi.testclient import TestClient
 
 from app.database import github as store
@@ -264,6 +267,7 @@ def test_oauth_return_url_must_match_a_configured_frontend(integration, monkeypa
     )
 
 
+codex/phone-otp-login
 def test_oauth_return_url_can_use_an_allowed_origin_when_exact_url_is_unset(monkeypatch):
     monkeypatch.delenv("PR_MENTOR_GITHUB_RETURN_URL", raising=False)
     monkeypatch.setenv("PR_MENTOR_CORS_ORIGINS", "https://example.com")
@@ -275,7 +279,7 @@ def test_oauth_return_url_can_use_an_allowed_origin_when_exact_url_is_unset(monk
     with pytest.raises(HTTPException, match="return URL is not configured"):
         github._return_url("https://unlisted.example/", "https://unlisted.example")
 
-
+main
 def test_login_state_is_single_use_and_provider_token_stays_server_side(integration):
     http, _, exchanges, _ = integration
     payload, code_challenge = begin(http)
