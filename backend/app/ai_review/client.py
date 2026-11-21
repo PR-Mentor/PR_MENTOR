@@ -72,6 +72,8 @@ async def _request_provider(
     user_prompt: str,
     timeout: float,
     max_response_bytes: int,
+    *,
+    allow_top_level_array: bool = False,
 ) -> tuple[str, dict, int]:
     if not provider.supports_json:
         raise AIReviewUnavailable("Configured provider does not support structured JSON responses.")
@@ -112,17 +114,31 @@ async def _request_provider(
             raise AIReviewUnavailable("AI provider returned malformed JSON.") from exc
     try:
         content = body["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
+        if not isinstance(content, str):
+            raise AIReviewUnavailable("AI provider returned a malformed structured response.")
+        cleaned_content = content.strip()
+        if cleaned_content.startswith("```"):
+            lines = cleaned_content.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned_content = "\n".join(lines).strip()
+        parsed = json.loads(cleaned_content)
     except (ValueError, TypeError, KeyError, IndexError) as exc:
         raise AIReviewUnavailable("AI provider returned a malformed structured response.") from exc
-    if not isinstance(content, str) or not isinstance(parsed, dict):
-        raise AIReviewUnavailable("AI provider response must contain one JSON object.")
+    if allow_top_level_array:
+        if not isinstance(parsed, (dict, list)):
+            raise AIReviewUnavailable("AI provider response must contain one JSON object or array.")
+    else:
+        if not isinstance(parsed, dict):
+            raise AIReviewUnavailable("AI provider response must contain one JSON object.")
     usage = body.get("usage") if isinstance(body, dict) else None
     usage_data = {
         key: usage.get(key) for key in ("prompt_tokens", "completion_tokens", "total_tokens")
         if isinstance(usage, dict) and isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool) and usage[key] >= 0
     }
-    return content, usage_data, latency_ms
+    return cleaned_content, usage_data, latency_ms
 
 
 async def complete_json(
@@ -133,8 +149,10 @@ async def complete_json(
     timeout: float | None = None,
     max_response_bytes: int | None = None,
     exclude_providers: list[str] | None = None,
+    allow_top_level_array: bool = False,
 ) -> str:
     selected_task = task or _current_task.get()
+    effective_allow_array = allow_top_level_array or (selected_task == "issue_explanation")
     if timeout is not None and (
         isinstance(timeout, bool) or not isinstance(timeout, (int, float))
         or not math.isfinite(timeout) or timeout <= 0
@@ -178,6 +196,7 @@ async def complete_json(
             try:
                 content, usage, latency_ms = await _request_provider(
                     provider, system_prompt, user_prompt, timeout or http_timeout(), response_limit,
+                    allow_top_level_array=effective_allow_array,
                 )
                 health_tracker.record_success(provider.name)
                 prompt_toks = int(usage.get("prompt_tokens", 0) or 0)
@@ -221,18 +240,30 @@ async def complete_for_task(task: str, function, system_prompt: str, user_prompt
 
 
 async def complete_validated_json(
-    task: str, system_prompt: str, user_prompt: str, validator, *, completion_function=None, **kwargs
+    task: str, system_prompt: str, user_prompt: str, validator, *, completion_function=None, allow_top_level_array: bool = False, **kwargs
 ):
     """Validate each provider response and try an untried fallback on schema failure."""
+    import inspect
+
     excluded: list[str] = []
     cumulative_attempts = 0
     cumulative_providers: list[str] = []
     configured = provider_registry(task)
+    target_fn = completion_function or complete_json
+    sig = inspect.signature(target_fn)
+    has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
     for _ in range(max(1, len(configured))):
         clear_last_call_metadata()
+        call_kwargs = dict(kwargs)
+        if allow_top_level_array:
+            call_kwargs["allow_top_level_array"] = True
+        if excluded:
+            call_kwargs["exclude_providers"] = excluded
+        filtered_kwargs = call_kwargs if has_var_keyword else {k: v for k, v in call_kwargs.items() if k in sig.parameters}
         raw = await complete_for_task(
-            task, completion_function or complete_json, system_prompt, user_prompt,
-            **kwargs, **({"exclude_providers": excluded} if excluded else {}),
+            task, target_fn, system_prompt, user_prompt,
+            **filtered_kwargs,
         )
         metadata = last_call_metadata() or {}
         cumulative_attempts += int(metadata.get("attempt_count", 0) or 0)
