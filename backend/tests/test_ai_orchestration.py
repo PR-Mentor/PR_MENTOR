@@ -238,6 +238,38 @@ def test_orchestrator_permanent_auth_failure_advances_immediately_without_retryi
     assert call_counts["p2"] == 1
 
 
+def test_orchestrator_http_413_advances_immediately_without_retrying_and_uses_fallback(monkeypatch):
+    p1 = ProviderConfig("oversized_primary", "k1", "model-1", "https://p1.test/chat", True, 1)
+    p2 = ProviderConfig("working_fallback", "k2", "model-2", "https://p2.test/chat", True, 1)
+    monkeypatch.setattr(client, "provider_registry", lambda task=None: [p1, p2])
+    monkeypatch.setenv("LLM_PROVIDER_RETRIES", "2")
+
+    call_counts = {"p1": 0, "p2": 0}
+
+    def mock_handler(request: httpx.Request):
+        if "p1.test" in str(request.url):
+            call_counts["p1"] += 1
+            return httpx.Response(413, content=b"Payload Too Large")
+        call_counts["p2"] += 1
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"fallback": "ok"}'}}]})
+
+    transport = httpx.MockTransport(mock_handler)
+    _patch_client_transport(monkeypatch, transport)
+
+    orchestrator = get_ai_orchestrator()
+    res = asyncio.run(orchestrator.complete("system", "user", task="code_review"))
+    assert res == '{"fallback": "ok"}'
+    # p1 must only have been attempted once (0 wasted retries on 413!)
+    assert call_counts["p1"] == 1
+    assert call_counts["p2"] == 1
+
+    # Verify health tracker recorded SIZE_LIMIT_EXCEEDED
+    ht = get_health_tracker()
+    state = ht.get_state("oversized_primary")
+    assert state.last_failure_category == FailureCategory.SIZE_LIMIT_EXCEEDED
+
+
+
 # ==============================================================================
 # 5. STRUCTURED-OUTPUT & EVIDENCE GROUNDING TESTS
 # ==============================================================================
@@ -354,3 +386,17 @@ def test_telemetry_captures_tokens_and_redacts_credentials(monkeypatch):
     dumped = json.dumps(record)
     assert "super-secret-api-key-12345" not in dumped
     assert "api_key" not in dumped
+
+
+def test_health_tracker_classifies_http_413_as_non_retryable_size_limit():
+    tracker = get_health_tracker()
+    resp = httpx.Response(413, request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"))
+    http_err = httpx.HTTPStatusError("Payload Too Large", request=resp.request, response=resp)
+    exc = AIReviewUnavailable("AI provider request payload exceeded size limit (HTTP 413).")
+    exc.__cause__ = http_err
+
+    category, retryable, retry_after = tracker.classify_exception(exc)
+    assert category == FailureCategory.SIZE_LIMIT_EXCEEDED
+    assert retryable is False
+    assert retry_after is None
+

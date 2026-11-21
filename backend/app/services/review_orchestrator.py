@@ -6,7 +6,7 @@ import tempfile
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from app.ai_review.client import AIReviewUnavailable, is_configured, last_call_metadata
@@ -40,6 +40,7 @@ from app.services.repository_intelligence import (
     summarize_python_sources,
 )
 from app.verification.bandit_runner import run_bandit
+from app.verification.diff_mapping import added_lines_by_file
 from app.verification.normalizer import normalize_bandit, normalize_ruff
 from app.verification.path_validation import PathValidationError
 from app.verification.ruff_runner import ToolExecutionError, run_ruff
@@ -275,6 +276,15 @@ async def analyze(
 
     test_result = run_tests()
     tool_results.append({"tool": "tests", **test_result})
+
+    added_lines_map, _ = added_lines_by_file([item.model_dump() for item in bundle.files])
+    changed_paths = {_normalize_review_path(item.filename) or item.filename.replace("\\", "/") for item in bundle.files}
+
+    for finding in normalized_static:
+        finding.attribution = _determine_finding_attribution(finding, added_lines_map, changed_paths)
+
+    for finding in ai_findings:
+        finding.attribution = _determine_finding_attribution(finding, added_lines_map, changed_paths)
 
     findings = normalized_static + ai_findings
     if not request.include_learning:
@@ -530,6 +540,31 @@ def _code_evidence_matches(evidence: str, changed_lines: list[str]) -> bool:
     if len(excerpt) < 4:
         return False
     return any(excerpt in "".join(line.split()) for line in changed_lines)
+
+
+def _determine_finding_attribution(
+    finding: ReviewFinding,
+    added_lines_by_path: dict[str, set[int]],
+    changed_file_paths: set[str],
+) -> Literal["introduced", "pre_existing", "contextual"]:
+    """Map finding to PR diff hunks.
+
+    Attribution rules:
+    - 'introduced': valid diff mapping exists and finding line range overlaps added/modified lines.
+    - 'pre_existing': valid diff mapping exists, finding line is known, and line is outside added lines.
+    - 'contextual': line is unknown, diff mapping is missing/malformed/unavailable, or file is unmapped.
+    """
+    path = _normalize_review_path(finding.file_path) or finding.file_path.replace("\\", "/")
+    if path in added_lines_by_path:
+        added_lines = added_lines_by_path[path]
+        start = finding.line_start
+        end = finding.line_end if finding.line_end is not None else start
+        if start is not None and end is not None:
+            if any(line_num in added_lines for line_num in range(start, end + 1)):
+                return "introduced"
+            return "pre_existing"
+        return "contextual"
+    return "contextual"
 
 
 def _write_sources(root: Path, files: list[tuple[str, str]]) -> list[str]:

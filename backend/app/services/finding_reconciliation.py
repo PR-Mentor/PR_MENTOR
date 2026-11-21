@@ -256,6 +256,13 @@ def _build_issue(group: list[FindingObservation]) -> CanonicalIssue:
     normalized_description = _normalize_display_text(anchor_finding.description)
     category = "security" if any(item.original_finding.category == "security" for item in group) else anchor_finding.category
     issue_id = _stable_issue_id(anchor, path, normalized_description, category=category)
+    attributions = {getattr(item.original_finding, "attribution", "contextual") for item in group}
+    if "introduced" in attributions:
+        issue_attribution = "introduced"
+    elif "pre_existing" in attributions:
+        issue_attribution = "pre_existing"
+    else:
+        issue_attribution = "contextual"
     return CanonicalIssue(
         issue_id=issue_id,
         file_path=path,
@@ -265,6 +272,7 @@ def _build_issue(group: list[FindingObservation]) -> CanonicalIssue:
         severity=severity,
         normalized_description=normalized_description,
         observations=group,
+        attribution=issue_attribution,
     )
 
 

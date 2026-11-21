@@ -105,6 +105,8 @@ async def _request_provider(
         except httpx.RequestError as exc:
             raise AIReviewUnavailable("AI provider is temporarily unavailable.") from exc
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 413:
+                raise AIReviewUnavailable("AI provider request payload exceeded size limit (HTTP 413).") from exc
             raise AIReviewUnavailable(f"AI provider returned HTTP {exc.response.status_code}.") from exc
         except ValueError as exc:
             raise AIReviewUnavailable("AI provider returned malformed JSON.") from exc

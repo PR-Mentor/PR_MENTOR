@@ -8,6 +8,13 @@ _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$")
 _MAX_PATCH_CHARS = 200_000
 _MAX_LINES_PER_FILE = 4_000
 
+SUPPORTED_DIFF_EXTENSIONS = {
+    ".py", ".pyi",
+    ".c", ".h",
+    ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++",
+    ".java",
+}
+
 
 def added_lines_by_file(files: list[dict[str, Any]]) -> tuple[dict[str, set[int]], dict[str, str]]:
     """Return reliably mapped new-side added lines and per-file coverage gaps.
@@ -27,7 +34,7 @@ def added_lines_by_file(files: list[dict[str, Any]]) -> tuple[dict[str, set[int]
         if not path:
             limitations[filename] = "The changed file path was invalid; static findings could not be mapped."
             continue
-        if PurePosixPath(path).suffix.lower() != ".py":
+        if PurePosixPath(path).suffix.lower() not in SUPPORTED_DIFF_EXTENSIONS:
             continue
         status = item.get("status")
         if status == "removed":

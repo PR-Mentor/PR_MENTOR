@@ -132,3 +132,127 @@ def test_reviewer_schema_failure_falls_back_and_records_actual_provider(monkeypa
     assert metadata["prompt_version"] == "code_review_v1"
     assert len(metadata["system_prompt_sha256"]) == 64
     assert len(metadata["user_prompt_sha256"]) == 64
+
+
+def test_user_prompt_strictly_bounded_to_28k_chars_and_produces_valid_json():
+    # Simulate a huge PR payload similar to OpenCV PR #31028
+    massive_description = "### Checklist\n- [x] Tested\n- [ ] Unfinished\n" + ("| Col 1 | Col 2 |\n| --- | --- |\n| val | val |\n" * 50) + ("Long text paragraph.\n" * 200)
+    massive_diff_files = [
+        {
+            "path": f"src/file_{i}.cpp",
+            "status": "modified",
+            "hunks": [
+                {
+                    "header": "@@ -1,50 +1,50 @@",
+                    "lines": [{"kind": "added", "line": j, "text": f"line {j} content " + ("x" * 100)} for j in range(1, 51)],
+                }
+            ],
+        }
+        for i in range(50)
+    ]
+    massive_static_findings = [
+        {
+            "file_path": f"src/file_{i}.cpp",
+            "line_start": i,
+            "title": f"RULE-{i}",
+            "description": f"Diagnostic description for issue {i}",
+            "severity": "medium",
+            "why_it_matters": "Extremely verbose explanation string " * 20,
+            "suggested_fix": "Extremely verbose suggested fix string " * 20,
+            "evidence": ["line of evidence " * 10],
+            "limitations": ["analyzer limitation " * 10],
+        }
+        for i in range(100)
+    ]
+
+    prompt = build_user_prompt(
+        {"title": "Massive PR", "description": massive_description},
+        massive_diff_files,
+        massive_static_findings,
+    )
+
+    assert len(prompt) <= 28_000
+    # Must contain valid, uncorrupted JSON inside <untrusted_pr_json>
+    start_tag = "<untrusted_pr_json>\n"
+    end_tag = "\n</untrusted_pr_json>"
+    assert start_tag in prompt
+    assert end_tag in prompt
+    json_text = prompt[prompt.index(start_tag) + len(start_tag) : prompt.rindex(end_tag)]
+    parsed = json.loads(json_text)
+    assert isinstance(parsed, dict)
+    assert "pull_request" in parsed
+    assert "diff_files" in parsed
+    assert "static_findings" in parsed
+    assert len(parsed["diff_files"]) > 0
+    # Confirm markdown table boilerplate was stripped
+    desc = parsed["pull_request"].get("description", "")
+    assert "| Col 1 |" not in desc
+    assert "- [x]" not in desc
+
+
+def test_user_prompt_guarantees_byte_budget_for_single_oversized_diff():
+    from app.ai_review.prompts import estimate_request_body_bytes, MAX_REQUEST_BODY_BYTES
+
+    # 1 file with 1 massive hunk of 500 lines
+    massive_file = [
+        {
+            "path": "src/massive_single_file.cpp",
+            "status": "modified",
+            "hunks": [
+                {
+                    "header": "@@ -1,500 +1,500 @@",
+                    "lines": [
+                        {"kind": "added" if i % 2 == 0 else "context", "line": i, "text": f"code statement {i} " + ("x" * 150)}
+                        for i in range(1, 501)
+                    ],
+                }
+            ],
+        }
+    ]
+
+    prompt = build_user_prompt({"title": "Single Huge Diff"}, massive_file, [])
+    body_bytes = estimate_request_body_bytes(prompt)
+    assert body_bytes <= MAX_REQUEST_BODY_BYTES, f"Body bytes {body_bytes} exceeds {MAX_REQUEST_BODY_BYTES}"
+
+    # Verify JSON parsed properly and added lines survived compaction
+    start_tag = "<untrusted_pr_json>\n"
+    end_tag = "\n</untrusted_pr_json>"
+    parsed = json.loads(prompt[prompt.index(start_tag) + len(start_tag) : prompt.rindex(end_tag)])
+    assert len(parsed["diff_files"]) == 1
+    hunk = parsed["diff_files"][0]["hunks"][0]
+    # Check that added lines were prioritized
+    kinds = [l["kind"] for l in hunk["lines"]]
+    assert "added" in kinds
+
+
+def test_user_prompt_multibyte_utf8_budget_enforced():
+    from app.ai_review.prompts import estimate_request_body_bytes, MAX_REQUEST_BODY_BYTES
+
+    # Multi-byte UTF-8 string: emojis and CJK characters (3-4 bytes each)
+    multibyte_description = "### 説明\n" + ("✨ 特徴: 行列変換の修正 🚀\n" * 500)
+    files = [
+        {
+            "path": "src/intl.cpp",
+            "status": "modified",
+            "hunks": [
+                {
+                    "header": "@@ -1,10 +1,10 @@",
+                    "lines": [{"kind": "added", "line": i, "text": "/* 多言語サポート */ auto x = 1;"} for i in range(1, 11)],
+                }
+            ],
+        }
+    ]
+
+    prompt = build_user_prompt({"title": "Multibyte UTF-8 PR", "description": multibyte_description}, files, [])
+    body_bytes = estimate_request_body_bytes(prompt)
+    assert body_bytes <= MAX_REQUEST_BODY_BYTES, f"Multibyte UTF-8 body bytes {body_bytes} exceeds {MAX_REQUEST_BODY_BYTES}"
+    parsed = json.loads(prompt[prompt.index("<untrusted_pr_json>\n") + len("<untrusted_pr_json>\n") : prompt.rindex("\n</untrusted_pr_json>")])
+    assert parsed["pull_request"]["title"] == "Multibyte UTF-8 PR"
+
+
+def test_user_prompt_unachievable_budget_raises_explicit_value_error():
+    # Setting an impossibly low budget must raise an explicit ValueError rather than returning an oversized body
+    with pytest.raises(ValueError, match="exceeds the configured AI request byte budget"):
+        build_user_prompt({"title": "Test"}, [{"path": "a.py", "status": "added"}], [], max_request_bytes=500)
+
+

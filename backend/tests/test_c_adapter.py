@@ -152,3 +152,96 @@ void test() {
     assert any("C-SEC-GETS" in f.title for f in findings)
     assert len(obs) >= 1
     assert any(o.tool_name == "c_safety_analyzer" for o in obs)
+
+
+def test_c_comment_and_string_masking_ignores_prose_and_literals(c_adapter, tmp_path):
+    c_source = """#include <stdio.h>
+
+/**
+ * Notice: do not use gets() or strcpy() here.
+ * The gets function was removed in C11.
+ */
+void safe_func(void) {
+    // gets(buf);
+    /* strcpy(a, b); */
+    const char* warning = "never use gets(str) or strcpy(a, b);";
+    char buf[10];
+    gets(buf); // Real vulnerability on line 12
+}
+"""
+    files = [("src/masked.c", c_source)]
+    findings = c_adapter._run_builtin_analyzer(files, tmp_path)
+    # Only the real vulnerability on line 12 should be detected
+    assert len(findings) == 1
+    assert "C-SEC-GETS" in findings[0].title
+    assert findings[0].line_start == 12
+    assert any("gets(buf)" in ev for ev in findings[0].evidence)
+
+
+def test_c_sprintf_format_distinguishes_literal_from_variable(c_adapter, tmp_path):
+    c_source = """#include <stdio.h>
+
+void test_sprintf(char* user_fmt, char* val) {
+    char buf[128];
+    // 1. Safe literal format calls - must NOT trigger C-SEC-SPRINTF-FORMAT
+    sprintf(buf, "%s", "data");
+    sprintf(buf, "constant format string %d", 42);
+    sprintf(buf, "%s %s", "hello", "world");
+
+    // 2. Unsafe non-literal format calls - MUST trigger C-SEC-SPRINTF-FORMAT
+    sprintf(buf, user_fmt, val);
+    sprintf(buf, user_fmt);
+
+    // 3. Comments with unsafe sprintf calls - must NOT trigger findings
+    // sprintf(buf, commented_fmt, val);
+    /* sprintf(buf, block_commented_fmt); */
+
+    // 4. String literals with comment markers - must not corrupt scanner state
+    const char* pattern = "literal with /* and // symbols";
+}
+"""
+    files = [("src/sprintf_test.c", c_source)]
+    findings = c_adapter._run_builtin_analyzer(files, tmp_path)
+    sprintf_findings = [f for f in findings if "C-SEC-SPRINTF-FORMAT" in f.title]
+    # Only lines 11 and 12 should trigger
+    assert len(sprintf_findings) == 2, f"Expected 2 sprintf findings, got {len(sprintf_findings)}: {sprintf_findings}"
+    lines = [f.line_start for f in sprintf_findings]
+    assert lines == [11, 12]
+
+
+def test_c_multiline_sprintf_format_detected(c_adapter, tmp_path):
+    c_source = """#include <stdio.h>
+
+void test_multiline(char* user_fmt, char* val) {
+    char buf[128];
+    // 1. Safe multiline literal format call - must NOT trigger finding
+    sprintf(
+        buf,
+        "%s %d",
+        "value",
+        42
+    );
+
+    // 2. Unsafe multiline format call - MUST trigger finding on line 14
+    sprintf(
+        buf,
+        user_fmt,
+        val
+    );
+
+    // 3. Unsafe multiline 2-argument format call - MUST trigger finding on line 21
+    sprintf(
+        buf,
+        user_fmt
+    );
+}
+"""
+    files = [("src/multiline_sprintf.c", c_source)]
+    findings = c_adapter._run_builtin_analyzer(files, tmp_path)
+    sprintf_findings = [f for f in findings if "C-SEC-SPRINTF-FORMAT" in f.title]
+    assert len(sprintf_findings) == 2, f"Expected 2 sprintf findings, got {len(sprintf_findings)}: {sprintf_findings}"
+    lines = [f.line_start for f in sprintf_findings]
+    assert lines == [14, 21]
+
+
+

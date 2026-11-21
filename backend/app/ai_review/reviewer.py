@@ -79,7 +79,10 @@ async def generate_candidates(
     verification: list[dict[str, Any]],
     repository_structure: dict[str, Any] | None = None,
 ) -> list[ReviewFinding]:
-    prompt = build_user_prompt(metadata, files, verification, repository_structure)
+    try:
+        prompt = build_user_prompt(metadata, files, verification, repository_structure)
+    except ValueError as exc:
+        raise AIReviewUnavailable(str(exc)) from exc
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     system_prompt_sha256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
     providers = provider_registry("code_review")

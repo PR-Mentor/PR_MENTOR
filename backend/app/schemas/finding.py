@@ -37,5 +37,6 @@ class ReviewFinding(BaseModel):
     suggested_fix: str
     learning_explanation: str = ""
     limitations: list[str] = Field(default_factory=list)
+    attribution: Literal["introduced", "pre_existing", "contextual"] = "contextual"
 
     model_config = {"extra": "forbid"}

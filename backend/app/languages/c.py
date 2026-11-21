@@ -17,6 +17,8 @@ from app.languages.base import (
 from app.languages.common import (
     build_observation,
     build_review_finding_from_raw,
+    mask_c_cpp_comments,
+    mask_c_cpp_comments_and_strings,
     write_language_sources,
 )
 from app.schemas.finding import ReviewFinding
@@ -32,6 +34,11 @@ FUNCTION_DEF_PATTERN = re.compile(
 STRUCT_DEF_PATTERN = re.compile(r'\bstruct\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\{', re.MULTILINE)
 
 # Built-in static checks for C security & correctness
+SPRINTF_FORMAT_PATTERN = re.compile(
+    r'\bsprintf\s*\(\s*([^,]+?)\s*,\s*([^"\s,][^,)]*?(?:,|\)))',
+    re.DOTALL,
+)
+
 DANGEROUS_C_PATTERNS = [
     (
         re.compile(r'\bgets\s*\('),
@@ -52,7 +59,7 @@ DANGEROUS_C_PATTERNS = [
         "Use strncpy(dest, src, sizeof(dest) - 1) or snprintf(dest, sizeof(dest), \"%s\", src).",
     ),
     (
-        re.compile(r'\bsprintf\s*\(\s*[^,]+,\s*[^"][^,]*\)'),
+        re.compile(r'\bsprintf\s*\(\s*[^,]+,\s*[^"\s][^,)]*(?:,|\))'),
         "C-SEC-SPRINTF-FORMAT",
         "high",
         "security",
@@ -186,24 +193,54 @@ class CAdapter(LanguageAdapter):
     ) -> list[ReviewFinding]:
         results: list[ReviewFinding] = []
         for file_path, content in source_files:
-            lines = content.splitlines()
-            for line_idx, line in enumerate(lines, start=1):
-                # Skip comments
-                stripped = line.strip()
-                if stripped.startswith("//") or stripped.startswith("/*"):
+            raw_lines = content.splitlines()
+            comment_masked_content = mask_c_cpp_comments(content)
+            fully_masked_lines = mask_c_cpp_comments_and_strings(content).splitlines()
+
+            # 1. Format string safety check: supports both single-line and multiline sprintf
+            # calls over comment-masked source (string literal contents and quotes preserved).
+            reported_sprintf_lines: set[int] = set()
+            for match in SPRINTF_FORMAT_PATTERN.finditer(comment_masked_content):
+                line_idx = comment_masked_content[:match.start()].count("\n")
+                line_num = line_idx + 1
+                if line_num in reported_sprintf_lines:
+                    continue
+                reported_sprintf_lines.add(line_num)
+                raw_line = raw_lines[line_idx] if line_idx < len(raw_lines) else match.group(0).splitlines()[0]
+                results.append(build_review_finding_from_raw(
+                    tool_name="c_safety_analyzer",
+                    file_path=file_path,
+                    line=line_num,
+                    rule_id="C-SEC-SPRINTF-FORMAT",
+                    message="sprintf() called with non-literal format string or unbounded destination (CWE-134). Use snprintf().",
+                    severity="high",
+                    category="security",
+                    evidence=raw_line.strip(),
+                    why_it_matters="Format string vulnerabilities can lead to arbitrary code execution or memory disclosure.",
+                    suggested_fix="Replace sprintf(buf, fmt, ...) with snprintf(buf, sizeof(buf), \"%s\", ...).",
+                    root=root,
+                ))
+
+            # 2. Line-by-line dangerous patterns evaluated over fully-masked source
+            for line_idx in range(len(raw_lines)):
+                raw_line = raw_lines[line_idx]
+                f_line = fully_masked_lines[line_idx] if line_idx < len(fully_masked_lines) else ""
+                if not f_line.strip():
                     continue
                 for pattern, rule_id, sev, cat, msg, why, fix in DANGEROUS_C_PATTERNS:
-                    match = pattern.search(line)
+                    if rule_id == "C-SEC-SPRINTF-FORMAT":
+                        continue  # Handled with multiline support above
+                    match = pattern.search(f_line)
                     if match:
                         rf = build_review_finding_from_raw(
                             tool_name="c_safety_analyzer",
                             file_path=file_path,
-                            line=line_idx,
+                            line=line_idx + 1,
                             rule_id=rule_id,
                             message=msg,
                             severity=sev,
                             category=cat,
-                            evidence=stripped,
+                            evidence=raw_line.strip(),
                             why_it_matters=why,
                             suggested_fix=fix,
                             root=root,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -9,6 +10,7 @@ from uuid import uuid4
 
 from app.database.sqlite_learning import LearningStore, get_learning_store
 from app.github_service.parser import parse_pull_request_url
+from app.languages.common import mask_c_cpp_comments
 from app.schemas.learning_lab import (
     CodingExercise,
     ConceptStatus,
@@ -746,12 +748,10 @@ def run_tool(safe_file_path: str) -> None:
             )
             problem = f"Based on finding in {file_path or 'codebase'}: {desc or 'Code reliability or maintainability finding identified in code review.'} Functions should validate incoming data to prevent unexpected runtime errors."
             mission = "Refactor the function to validate incoming input defensively and return a valid result without raising uncaught exceptions."
-            instructions = "Add defensive input checks to handle None or empty input safely before processing."
-            expected = "Input checked defensively, handling edge cases without throwing unhandled exceptions."
+            instructions = "Add defensive input checks to handle both None and empty string inputs safely before processing."
+            expected = "Input checked defensively, safely handling both None and empty strings without throwing unhandled exceptions."
             starter = """def sanitize_input(value: str | None) -> str:
-    # TODO: Defensively guard against None or empty input.
-    if not value:
-        return ""
+    # TODO: Defensively guard against None or empty input before processing.
     return value.strip()
 """
             buggy = "return value.strip()  # Raises AttributeError if value is None"
@@ -762,9 +762,28 @@ def run_tool(safe_file_path: str) -> None:
                 "Hint 2: Implement an explicit guard clause at the start of the function.",
                 "Hint 3: Check `if not value: return \"\"` before calling methods like `.strip()`.",
             ]
-            rules = {"forbidden": ["pass"], "required_any": ["if not value", "if value is None", "return \"\""]}
+            rules = {
+                "check_type": "defensive_input_guard",
+                "forbidden": ["pass"],
+                "mandatory_requirements": [
+                    "Ensure valid Python syntax",
+                    "Implement a defensive guard clause checking value before calling .strip()",
+                    "Safely handle None/null input",
+                    "Safely handle empty string input",
+                ],
+                "optional_suggestions": [
+                    "Consider 'if not value: return \"\"' as a standard Pythonic guard clause",
+                    "Or 'if value is None or value == \"\": return \"\"' to explicitly check both cases",
+                ],
+                "required_any": ["if not value", "if value is None", "if value == None"],
+            }
             explanation = "Defensive programming guards against unexpected or malformed inputs at function boundaries, preventing unhandled exceptions and improving system stability."
-            criteria = ["Implement defensive input validation guard", "Handle null and empty inputs safely", "Ensure valid syntax"]
+            criteria = [
+                "Implement defensive input validation guard",
+                "Safely handle None/null input",
+                "Safely handle empty string input",
+                "Ensure valid Python syntax",
+            ]
             difficulty = "beginner"
             effective_cat = cat if cat in ("bug", "security", "performance", "maintainability") else "code_quality"
 
@@ -827,43 +846,170 @@ def run_tool(safe_file_path: str) -> None:
     def get_draft(self, exercise_id: str, user_id: str) -> ExerciseDraft | None:
         return self.store.get_draft(exercise_id, user_id)
 
+    @staticmethod
+    def _inspect_defensive_guard_coverage(func: ast.FunctionDef) -> tuple[bool, bool, list[str]]:
+        """Inspect AST to determine whether both None and empty string inputs are guarded."""
+        guards = [stmt for stmt in func.body if isinstance(stmt, ast.If)]
+        if not guards:
+            return False, False, ["Missing defensive input guard clause before processing"]
+
+        handles_none = False
+        handles_empty = False
+
+        def is_val(node: ast.AST) -> bool:
+            return isinstance(node, ast.Name) and node.id in ("value", "val", "input_str", "s", "text")
+
+        def check_expr(expr: ast.AST | None) -> None:
+            nonlocal handles_none, handles_empty
+            if expr is None:
+                return
+
+            # 1. 'not value' handles BOTH None and empty string in Python
+            if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
+                if is_val(expr.operand):
+                    handles_none = True
+                    handles_empty = True
+                    return
+
+            # 2. Comparisons: value is None, value == "", len(value) == 0, etc.
+            if isinstance(expr, ast.Compare):
+                left = expr.left
+                for op, comp in zip(expr.ops, expr.comparators):
+                    if is_val(left) and isinstance(op, (ast.Is, ast.Eq)):
+                        if isinstance(comp, ast.Constant) and comp.value is None:
+                            handles_none = True
+                        elif isinstance(comp, ast.Constant) and comp.value == "":
+                            handles_empty = True
+                    elif is_val(comp) and isinstance(op, (ast.Is, ast.Eq)):
+                        if isinstance(left, ast.Constant) and left.value is None:
+                            handles_none = True
+                        elif isinstance(left, ast.Constant) and left.value == "":
+                            handles_empty = True
+                    elif isinstance(left, ast.Call) and isinstance(left.func, ast.Name) and left.func.id == "len":
+                        if left.args and is_val(left.args[0]):
+                            if isinstance(op, ast.Eq) and isinstance(comp, ast.Constant) and comp.value == 0:
+                                handles_empty = True
+                            elif isinstance(op, (ast.Lt, ast.LtE)) and isinstance(comp, ast.Constant) and comp.value <= 1:
+                                handles_empty = True
+                    elif is_val(left) and isinstance(op, ast.In):
+                        if isinstance(comp, (ast.Tuple, ast.List, ast.Set)):
+                            consts = {c.value for c in comp.elts if isinstance(c, ast.Constant)}
+                            if None in consts:
+                                handles_none = True
+                            if "" in consts:
+                                handles_empty = True
+
+            # 3. Disjunction 'or'
+            if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.Or):
+                for val in expr.values:
+                    check_expr(val)
+
+        for guard in guards:
+            returns = [node for node in ast.walk(guard) if isinstance(node, (ast.Return, ast.Raise))]
+            if returns:
+                check_expr(guard.test)
+
+        errors: list[str] = []
+        if not handles_none:
+            errors.append("Guard clause does not safely handle None/null input")
+        if not handles_empty:
+            errors.append("Guard clause does not safely handle empty string input")
+
+        return handles_none, handles_empty, errors
+
     def submit_exercise(self, exercise_id: str, user_id: str, code: str) -> ExerciseSubmission:
         exercise = self.get_exercise(exercise_id)
         if not exercise:
             raise ValueError("Exercise not found.")
 
         rules = exercise.validation_rules
+        check_type = rules.get("check_type")
         forbidden = rules.get("forbidden", [])
         required = rules.get("required", [])
         required_any = rules.get("required_any", [])
 
-        violations = [pat for pat in forbidden if pat in code]
-        missing = [pat for pat in required if not any(r in code for r in (pat if isinstance(pat, list) else [pat]))]
-        if required_any and not any(r in code for r in required_any):
+        mandatory_passed: list[str] = []
+        mandatory_failed: list[str] = []
+        violations: list[str] = []
+        missing: list[str] = []
+
+        # 1. Python Syntax & Structural AST Verification
+        if exercise.language == "python":
+            try:
+                tree = ast.parse(code)
+                mandatory_passed.append("Valid Python syntax")
+            except SyntaxError as err:
+                mandatory_failed.append(f"Syntax error on line {err.lineno}: {err.msg}")
+                tree = None
+
+            if tree is not None and check_type == "defensive_input_guard":
+                func = next((node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)), None)
+                if not func:
+                    mandatory_failed.append("Function definition 'sanitize_input' is missing")
+                else:
+                    guards = [stmt for stmt in func.body if isinstance(stmt, ast.If)]
+                    if not guards:
+                        mandatory_failed.append("Missing defensive input guard clause before processing")
+                    else:
+                        first_guard = guards[0]
+                        guard_idx = func.body.index(first_guard)
+                        prior_strip = any(
+                            isinstance(node, ast.Attribute) and node.attr == "strip"
+                            for stmt in func.body[:guard_idx]
+                            for node in ast.walk(stmt)
+                        )
+                        if prior_strip:
+                            mandatory_failed.append("Unguarded .strip() called before defensive input check")
+                        else:
+                            handles_none, handles_empty, guard_errs = self._inspect_defensive_guard_coverage(func)
+                            if guard_errs:
+                                mandatory_failed.extend(guard_errs)
+                            else:
+                                mandatory_passed.append("Defensive input guard safely handling both None and empty string verified")
+        else:
+            tree = None
+
+        # 2. Pattern Verification (using comment-masked code for C/C++ so comments cannot spoof or violate)
+        clean_code = code
+        if exercise.language in ("c", "cpp"):
+            clean_code = mask_c_cpp_comments(code)
+
+        violations = [pat for pat in forbidden if pat in clean_code]
+        missing = [pat for pat in required if not any(r in clean_code for r in (pat if isinstance(pat, list) else [pat]))]
+        if required_any and not any(r in clean_code for r in required_any):
             missing.append(f"one of {required_any}")
 
-        passed = len(violations) == 0 and len(missing) == 0
+        passed = len(violations) == 0 and len(missing) == 0 and len(mandatory_failed) == 0
         status = "completed" if passed else "failed"
 
         feedback_parts = []
         if passed:
             feedback_parts.append(
-                "Excellent! Static verification confirmed the vulnerable patterns were removed and defensive patterns were implemented."
+                "Excellent! Static verification confirmed the mandatory requirements were met: "
+                "defensive patterns were structurally verified and syntax is valid."
             )
             feedback_parts.append("Note: Runtime test sandbox execution is disabled in this tier for security.")
         else:
+            if mandatory_failed:
+                feedback_parts.append(f"Mandatory requirement not met: {'; '.join(mandatory_failed)}.")
             if violations:
                 feedback_parts.append(f"Vulnerable pattern still present: {', '.join(violations)}.")
             if missing:
                 feedback_parts.append(f"Expected safe pattern missing: {', '.join(str(m) for m in missing)}.")
-            feedback_parts.append("Review the hints and instructions to align with the expected defense.")
+            feedback_parts.append("Review the instructions and criteria to align with the expected defense.")
 
         feedback = " ".join(feedback_parts)
         eval_details = {
             "static_checks": "passed" if passed else "failed",
+            "mandatory_checks_passed": mandatory_passed,
+            "mandatory_checks_failed": mandatory_failed,
             "violations_detected": violations,
             "missing_defenses": missing,
             "runtime_execution": "disabled_by_policy",
+            "limitations": [
+                "Static verification checks syntax and structural AST properties without executing submitted code.",
+                "Runtime execution is disabled by policy for security.",
+            ],
         }
 
         submission = ExerciseSubmission(

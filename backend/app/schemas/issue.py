@@ -619,6 +619,7 @@ class CanonicalIssue(BaseModel):
     explanation_status: Literal["completed", "partial", "failed", "unavailable", "not_requested"] = "not_requested"
     explanation_failure_reason: str | None = None
     suggested_fixes: list[SuggestedFix] = Field(default_factory=list, max_length=MAX_SUGGESTED_FIXES_PER_ISSUE)
+    attribution: Literal["introduced", "pre_existing", "contextual"] = "contextual"
 
     @model_validator(mode="after")
     def line_end_not_before_start(self):
