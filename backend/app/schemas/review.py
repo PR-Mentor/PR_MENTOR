@@ -16,6 +16,7 @@ class AnalyzeRequest(BaseModel):
     mode: Literal["demo", "live"] = "demo"
     include_learning: bool = True
     include_suggested_fixes: bool = False
+    use_github_connection: bool = False
     workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
@@ -24,6 +25,8 @@ class AnalyzeRequest(BaseModel):
             raise ValueError("A pull request URL is required.")
         if self.workspace_id and self.mode != "live":
             raise ValueError("Only live reviews can be created in a workspace.")
+        if self.use_github_connection and self.mode != "live":
+            raise ValueError("Only live reviews can use a GitHub account connection.")
         return self
 
 
@@ -51,6 +54,7 @@ class ReviewResponse(BaseModel):
 
     review_id: str
     workspace_id: str | None = None
+    repository_private: bool = False
     status: Literal["completed", "partial"]
     analysis_mode: Literal["demo", "live"]
     is_demo: bool

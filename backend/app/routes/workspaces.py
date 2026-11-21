@@ -124,8 +124,11 @@ def share_review(workspace_id: str, review_id: str, user: dict = Depends(current
     own_review = store.get_review(review_id, owner_id=user["user_id"])
     if own_review is None and workspaces.review_role(user["user_id"], review_id) not in {"owner", "admin", "editor"}:
         raise HTTPException(status_code=404, detail="Review not found or not shareable by this account.")
-    if own_review is None and store.get_review(review_id) is None:
+    review = own_review if own_review is not None else store.get_review(review_id)
+    if review is None:
         raise HTTPException(status_code=404, detail="Review not found.")
+    if review.get("repository_private"):
+        raise HTTPException(status_code=403, detail="Private repository reviews cannot be shared to a workspace.")
     workspaces.link_review(workspace_id, review_id, user["user_id"])
     return {"workspace_id": workspace_id, "review_id": review_id, "shared": True}
 
@@ -143,7 +146,7 @@ def list_workspace_reviews(workspace_id: str, user: dict = Depends(current_user)
     _require_workspace_role(workspace_id, user["user_id"], {"owner", "admin", "editor", "viewer"})
     store = get_store()
     reviews = [store.get_review(review_id) for review_id in workspaces.list_shared_review_ids(workspace_id)]
-    return [item for item in reviews if item is not None]
+    return [item for item in reviews if item is not None and not item.get("repository_private")]
 
 
 @router.get("/{workspace_id}/reviews/{review_id}", response_model=ReviewResponse)
@@ -152,7 +155,7 @@ def get_workspace_review(workspace_id: str, review_id: str, user: dict = Depends
     if review_id not in workspaces.list_shared_review_ids(workspace_id):
         raise HTTPException(status_code=404, detail="Review not found in this workspace.")
     review = get_store().get_review(review_id)
-    if review is None:
+    if review is None or review.get("repository_private"):
         raise HTTPException(status_code=404, detail="Review not found in this workspace.")
     return review
 

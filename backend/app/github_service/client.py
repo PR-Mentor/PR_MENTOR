@@ -125,7 +125,9 @@ def headers(token: str | None = None) -> dict[str, str]:
 
 
 def async_client(token: str | None = None) -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=API_ROOT, timeout=http_timeout(), headers=headers(token))
+    client = httpx.AsyncClient(base_url=API_ROOT, timeout=http_timeout(), headers=headers(token))
+    client._prm_personal = token is not None
+    return client
 
 
 async def request_json(
@@ -137,7 +139,7 @@ async def request_json(
 ) -> Any:
     if (
         not isinstance(path, str)
-        or not path.startswith("/repos/")
+        or (not path.startswith("/repos/") and path not in {"/user", "/user/emails", "/user/repos"})
         or path.startswith("//")
         or "\\" in path
         or "\x00" in path
@@ -145,9 +147,10 @@ async def request_json(
         or "?" in path
         or "#" in path
     ):
-        raise ValueError("GitHub API requests must use a fixed relative repository path.")
+        raise ValueError("GitHub API requests must use a fixed relative repository path or a supported account path.")
     cache_key: tuple[str, tuple[tuple[str, str], ...]] | None = None
-    if use_cache:
+    # Only explicitly shared/public requests may use the process-wide cache.
+    if use_cache and path.startswith("/repos/") and not getattr(client, "_prm_personal", False):
         normalized_params = tuple(sorted((str(k), str(v)) for k, v in (params or {}).items()))
         cache_key = (path, normalized_params)
         cached = _response_cache.get(cache_key)
@@ -226,6 +229,8 @@ async def _execute_request(
                         friendly += f" Try again after {retry_at}."
                 raise GitHubAPIError(friendly, 429, rate_limit=details, kind=kind)
             raise GitHubAPIError(message, response.status_code, rate_limit=details)
+        if not response.is_success:
+            raise GitHubAPIError("GitHub API could not complete the request.", response.status_code)
         content_length = response.headers.get("content-length")
         if content_length is not None:
             try:

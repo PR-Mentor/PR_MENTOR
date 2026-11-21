@@ -79,6 +79,7 @@ def workspace_learning_insights(workspace_id: str, user: dict = Depends(current_
         reviews = [
             review for review_id in workspaces.list_shared_review_ids(workspace_id, limit=ANALYSIS_WINDOW)
             if (review := store.get_review(review_id)) is not None
+            and not review.get("repository_private")
         ]
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Workspace insights are unavailable.") from exc

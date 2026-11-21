@@ -56,6 +56,19 @@ def _init_db(db: sqlite3.Connection, path_str: str) -> None:
             window_start INTEGER NOT NULL,
             hit_count INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS github_oauth_flows (
+            state_hash TEXT PRIMARY KEY,
+            challenge TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            verifier TEXT NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS github_oauth_flows_expiry_idx ON github_oauth_flows(expires_at);
+        CREATE TABLE IF NOT EXISTS github_connections (
+            user_id TEXT PRIMARY KEY,
+            version TEXT NOT NULL,
+            payload TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS workspaces (
             workspace_id TEXT PRIMARY KEY,
             name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 100),

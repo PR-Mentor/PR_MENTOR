@@ -10,3 +10,4 @@ pymongo>=4.6,<5
 dnspython>=2.6,<3
 mongomock>=4,<5
 firebase-admin>=6.5,<8
+cryptography>=43,<52

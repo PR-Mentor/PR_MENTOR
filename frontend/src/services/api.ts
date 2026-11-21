@@ -16,7 +16,7 @@ import type {
   GeneratedTestCase,
   TestExecutionJob,
 } from '../types/review';
-import { authenticatedFetch, getGitHubProviderToken } from './auth';
+import { authenticatedFetch } from './auth';
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'https://pr-mentor.onrender.com').replace(/\/$/, '');
 
@@ -34,7 +34,7 @@ export class ApiRequestError extends Error {
     this.name = 'ApiRequestError';
   }
 }
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
     response = await authenticatedFetch(`${API_BASE}${path}`, {
@@ -105,16 +105,15 @@ export function listBenchmarkRuns(datasetId: string): Promise<BenchmarkRun[]> {
   return request<BenchmarkRun[]>(`/api/benchmarks/${encodeURIComponent(datasetId)}/runs`);
 }
 
-export async function analyzePullRequest(url: string, mode: AnalysisMode): Promise<ReviewResponse> {
-  const githubToken = mode === 'live' ? await getGitHubProviderToken() : undefined;
+export function analyzePullRequest(url: string, mode: AnalysisMode, useGithubConnection = false): Promise<ReviewResponse> {
   return request<ReviewResponse>('/api/reviews/analyze', {
     method: 'POST',
-    headers: githubToken ? { 'X-GitHub-Token': githubToken } : undefined,
     body: JSON.stringify({
       url,
       mode,
       include_learning: true,
       include_suggested_fixes: true,
+      use_github_connection: useGithubConnection,
     }),
   });
 }

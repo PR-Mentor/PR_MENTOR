@@ -25,7 +25,10 @@ def resolve_review_access(
         return None, None
     if write and role not in WRITE_ROLES:
         return None, "forbidden"
-    return store.get_review(review_id), role
+    shared = store.get_review(review_id)
+    if shared is not None and shared.get("repository_private"):
+        return None, None
+    return shared, role
 
 
 def require_review_access(review_id: str, user_id: str, *, write: bool = False) -> dict[str, Any]:

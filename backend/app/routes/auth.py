@@ -73,10 +73,10 @@ def verify_firebase_token(authorization: str | None) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="The Firebase ID token is invalid, expired, or revoked.", headers={"WWW-Authenticate": "Bearer"}) from exc
 
 
-def verify_supabase_token(authorization: str | None) -> dict[str, Any]:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="A bearer token is required.", headers={"WWW-Authenticate": "Bearer"})
-    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+def supabase_settings() -> tuple[str, str]:
+    url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    if url.lower().endswith("/rest/v1"):
+        url = url[:-len("/rest/v1")]
     api_key = (
         os.getenv("SUPABASE_PUBLISHABLE_KEY")
         or os.getenv("SUPABASE_PUBLIC_KEY")
@@ -85,6 +85,13 @@ def verify_supabase_token(authorization: str | None) -> dict[str, Any]:
     ).strip()
     if not url or not api_key:
         raise HTTPException(status_code=503, detail="Supabase token verification is not configured on the API.")
+    return url, api_key
+
+
+def verify_supabase_token(authorization: str | None) -> dict[str, Any]:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="A bearer token is required.", headers={"WWW-Authenticate": "Bearer"})
+    url, api_key = supabase_settings()
     token = authorization[7:].strip()
     try:
         response = httpx.get(

@@ -78,6 +78,7 @@ def get_mongo_database():
             from app.database.mongo_reviews import create_indexes
 
             create_indexes(database)
+            database["github_oauth_flows"].create_index("expires_at", expireAfterSeconds=0)
             _indexed_databases.add(key)
     return database
 

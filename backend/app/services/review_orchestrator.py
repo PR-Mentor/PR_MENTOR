@@ -55,6 +55,7 @@ async def analyze(
     github_token: str | None = None,
     *,
     owner_id: str | None = None,
+    repository_private: bool = False,
 ) -> ReviewResponse:
     effective_id = user_id or owner_id
     if request.workspace_id:
@@ -191,9 +192,12 @@ async def analyze(
     if is_configured():
         try:
             try:
-                if not isinstance(head_sha, str):
+                if repository_private:
+                    repository_structure = summarize_python_sources(source_files)
+                elif not isinstance(head_sha, str):
                     raise TypeError("Pull request source identity is unavailable.")
-                repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
+                else:
+                    repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
             except Exception:  # noqa: BLE001 - full-repository context is optional; changed-file context remains available.
                 repository_structure = summarize_python_sources(source_files)
                 warnings.append("Full repository context was unavailable; AI review used changed-file structure only.")
@@ -325,6 +329,9 @@ async def analyze(
             }
             warnings.append("AI issue explanations were unavailable; canonical issues are preserved without explanations.")
     tool_results.append(explanation_tool)
+    if repository_private and request.include_suggested_fixes:
+        warnings.append("Suggested fix generation is unavailable for private repository reviews.")
+        request = request.model_copy(update={"include_suggested_fixes": False})
     fix_generation_tool = await _run_fix_generation(
         request,
         bundle.metadata.repository_owner,
@@ -368,7 +375,7 @@ async def analyze(
     elapsed = max(0, int((datetime.now(UTC) - started).total_seconds() * 1000))
     ai_review_result = next((item for item in tool_results if item.get("tool") == "ai_review" and item.get("status") == "completed" and item.get("executed") is True), None)
     response = ReviewResponse(
-        review_id=uuid4().hex, workspace_id=request.workspace_id,
+        review_id=uuid4().hex, workspace_id=request.workspace_id, repository_private=repository_private,
         status="partial" if partial else "completed", analysis_mode="live", is_demo=False,
         model_provider=ai_review_result.get("provider_name") if ai_review_result else None,
         model_name=ai_review_result.get("model_name") if ai_review_result else None,
@@ -532,7 +539,7 @@ def _static_finding(tool: str, item: Finding, root: Path) -> ReviewFinding:
 def _persist(response: ReviewResponse, user_id: str | None = None, *, owner_id: str | None = None) -> None:
     effective_id = user_id or owner_id
     get_store().save_review(response.model_dump(mode="json"), effective_id)
-    if response.workspace_id and effective_id:
+    if response.workspace_id and effective_id and not response.repository_private:
         from app.database import workspaces
 
         if workspaces.get_role(response.workspace_id, effective_id) in {"owner", "admin", "editor"}:
