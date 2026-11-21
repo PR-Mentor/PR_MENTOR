@@ -60,7 +60,7 @@ from app.schemas.github import ChangedFile, PullRequestBundle, PullRequestMetada
 MAX_FILE_PAGES = 10
 FILES_PER_PAGE = 100
 MAX_FILES = MAX_FILE_PAGES * FILES_PER_PAGE
-MAX_SOURCE_BYTES = 100_000
+MAX_SOURCE_BYTES = 1_000_000
 MAX_REPOSITORY_PATH_DEPTH = 64
 
 
