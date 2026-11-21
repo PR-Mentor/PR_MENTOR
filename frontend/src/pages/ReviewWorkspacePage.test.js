@@ -135,7 +135,7 @@ test('handles missing optional counts, findings, tools, warnings and diff metada
   const html = render(data, { diffFiles: [] });
   assert.ok(html.includes('No issues returned'));
   assert.ok(html.includes('No explanation-generation status was recorded'));
-  assert.ok(html.includes('No Ruff or Bandit status was returned.'));
+  assert.ok(html.includes('No static analysis status was returned.'));
   assert.ok(html.includes('Diff details unavailable'));
   assert.ok(html.includes('No counts available.'));
 });
@@ -273,4 +273,128 @@ test('displays explicit overflow indicator when repository reviews exceed five',
   }));
   const html = render(review(), { history: sevenReviews });
   assert.ok(html.includes('Showing 5 of 7 repository reviews. View all reviews for complete history.'));
+});
+
+test('renders multi-language static analysis tools dynamically using explicit allowlist', () => {
+  const allSupportedStaticTools = [
+    'ruff', 'bandit', 'mypy',
+    'clang_tidy', 'cppcheck', 'flawfinder', 'c_safety_analyzer', 'cpp_safety_analyzer',
+    'checkstyle', 'pmd', 'spotbugs', 'javac', 'java_safety_analyzer',
+  ];
+  const data = review({
+    tool_results: [
+      ...allSupportedStaticTools.map((tool) => ({
+        tool,
+        status: 'completed',
+        executed: true,
+        findings: [],
+      })),
+      // Known non-static tools that must NOT appear in static analysis section
+      { tool: 'semantic_review', status: 'completed', executed: true, findings: [] },
+      { tool: 'github_rest_api', status: 'completed', executed: true, files_received: 5 },
+      { tool: 'issue_explanations', status: 'completed', executed: true },
+      { tool: 'fix_analysis', status: 'completed', executed: true },
+      { tool: 'fix_generation', status: 'completed', executed: true },
+      // Unknown future tool that must NOT appear in static analysis section
+      { tool: 'unknown_future_tool', status: 'completed', executed: true, findings: [] },
+    ],
+  });
+  const html = render(data);
+  // Extract Static Analysis section
+  const staticStart = html.indexOf('<h3>Static analysis</h3>');
+  const staticEnd = html.indexOf('<h3>AI review</h3>', staticStart);
+  const staticSection = html.slice(staticStart, staticEnd);
+
+  // Every supported static tool MUST be in static analysis
+  for (const tool of allSupportedStaticTools) {
+    const formatted = tool.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    assert.ok(staticSection.includes(formatted), `Expected ${formatted} to appear in static analysis section`);
+  }
+
+  // Non-static tools and unknown future tools MUST NOT appear in static analysis
+  assert.ok(!staticSection.includes('Semantic Review'), 'semantic_review must not appear in static analysis');
+  assert.ok(!staticSection.includes('Github Rest Api'), 'github_rest_api must not appear in static analysis');
+  assert.ok(!staticSection.includes('Issue Explanations'), 'issue_explanations must not appear in static analysis');
+  assert.ok(!staticSection.includes('Fix Analysis'), 'fix_analysis must not appear in static analysis');
+  assert.ok(!staticSection.includes('Fix Generation'), 'fix_generation must not appear in static analysis');
+  assert.ok(!staticSection.includes('Unknown Future Tool'), 'unknown future tools must not appear in static analysis');
+});
+
+test('requires affirmative execution confirmation before displaying clean status', () => {
+  const data = review({
+    tool_results: [
+      // 1. executed: true, completed, zero findings -> Executed (clean)
+      { tool: 'ruff', status: 'completed', executed: true, findings: [] },
+      // 2. executed: false, completed -> Not executed (NEVER Executed (clean))
+      { tool: 'bandit', status: 'completed', executed: false, findings: [] },
+      // 3. missing executed, completed -> Completed (NEVER Executed (clean))
+      { tool: 'mypy', status: 'completed', findings: [] },
+      // 4. executed: true with findings -> Executed (2 findings)
+      { tool: 'clang_tidy', status: 'completed', executed: true, findings: [{ title: 'warning 1' }, { title: 'warning 2' }] },
+      // 5. unavailable -> Unavailable
+      { tool: 'cppcheck', status: 'unavailable', executed: false, reason: 'cppcheck binary not found' },
+      // 6. failed -> Failed
+      { tool: 'flawfinder', status: 'failed', executed: false, reason: 'Command exited with error' },
+      // 7. not_configured -> Not configured
+      { tool: 'checkstyle', status: 'not_configured', executed: false, reason: 'No checkstyle.xml' },
+      // 8. skipped -> Skipped
+      { tool: 'javac', status: 'skipped', executed: false, reason: 'No Java source in PR' },
+    ],
+  });
+  const html = render(data);
+  const staticStart = html.indexOf('<h3>Static analysis</h3>');
+  const staticEnd = html.indexOf('<h3>AI review</h3>', staticStart);
+  const staticSection = html.slice(staticStart, staticEnd);
+
+  // 1. Confirmed execution clean
+  assert.ok(staticSection.includes('Ruff</strong><span class="workspace-tool-status status-completed status-executed-clean">Executed (clean)</span>'));
+  // 2. Unconfirmed: executed: false, completed
+  assert.ok(staticSection.includes('Bandit</strong><span class="workspace-tool-status status-completed">Not executed</span>'));
+  assert.ok(!staticSection.includes('Bandit</strong><span class="workspace-tool-status status-completed status-executed-clean">Executed (clean)</span>'));
+  // 3. Unconfirmed: missing executed, completed
+  assert.ok(staticSection.includes('Mypy</strong><span class="workspace-tool-status status-completed">Completed</span>'));
+  assert.ok(!staticSection.includes('Mypy</strong><span class="workspace-tool-status status-completed status-executed-clean">Executed (clean)</span>'));
+  // 4. Executed with findings
+  assert.ok(staticSection.includes('Clang Tidy</strong><span class="workspace-tool-status status-completed status-findings-detected">Executed (2 findings)</span>'));
+  // 5. Unavailable
+  assert.ok(staticSection.includes('Cppcheck</strong><span class="workspace-tool-status status-unavailable">Unavailable</span>'));
+  assert.ok(staticSection.includes('cppcheck binary not found'));
+  // 6. Failed
+  assert.ok(staticSection.includes('Flawfinder</strong><span class="workspace-tool-status status-failed">Failed</span>'));
+  assert.ok(staticSection.includes('Command exited with error'));
+  // 7. Not configured
+  assert.ok(staticSection.includes('Checkstyle</strong><span class="workspace-tool-status status-not-configured">Not configured</span>'));
+  assert.ok(staticSection.includes('No checkstyle.xml'));
+  // 8. Skipped
+  assert.ok(staticSection.includes('Javac</strong><span class="workspace-tool-status status-skipped">Skipped</span>'));
+  assert.ok(staticSection.includes('No Java source in PR'));
+});
+
+test('presents accurate six-state validation statuses and never marks unavailable as clean', () => {
+  const data = review({
+    tool_results: [
+      { tool: 'clang_tidy', status: 'unavailable', executed: false, reason: 'clang-tidy binary not found in PATH' },
+      { tool: 'cppcheck', status: 'failed', executed: false, reason: 'Syntax error during execution' },
+      { tool: 'cpp_safety_analyzer', status: 'completed', executed: true, findings: [] },
+      { tool: 'javac', status: 'completed', executed: true, findings: [{ title: 'Deprecated API' }] },
+      { tool: 'checkstyle', status: 'not_configured', executed: false, reason: 'Not configured for repository' },
+      { tool: 'bandit', status: 'skipped', executed: false, reason: 'No eligible Python source was available' },
+    ],
+  });
+  const html = render(data);
+  // Verify 6 states are represented accurately:
+  assert.ok(html.includes('Unavailable'));
+  assert.ok(html.includes('clang-tidy binary not found in PATH'));
+  assert.ok(html.includes('Failed'));
+  assert.ok(html.includes('Syntax error during execution'));
+  assert.ok(html.includes('Executed (clean)'));
+  assert.ok(html.includes('No findings detected by this tool.'));
+  assert.ok(html.includes('Executed (1 findings)'));
+  assert.ok(html.includes('1 diagnostic reported.'));
+  assert.ok(html.includes('Not configured'));
+  assert.ok(html.includes('Not configured for repository'));
+  assert.ok(html.includes('Skipped'));
+  assert.ok(html.includes('No eligible Python source was available'));
+  // Ensure unavailable tools are NOT marked as clean:
+  assert.ok(!html.includes('clang-tidy binary not found in PATH</span>'));
 });

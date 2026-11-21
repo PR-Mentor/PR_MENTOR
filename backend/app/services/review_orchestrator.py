@@ -172,7 +172,14 @@ async def analyze(
         temp_root = Path(temp_name)
         registry = get_registry()
         partitioned = registry.partition_files_by_language(source_files)
-        if not source_files:
+        pr_languages: set[str] = set()
+        for item in bundle.files:
+            adapter = registry.detect_adapter_for_path(item.filename)
+            if adapter and item.status != "removed":
+                pr_languages.add(adapter.language_id)
+
+        target_languages = sorted(pr_languages | set(partitioned.keys()))
+        if not target_languages:
             tool_results.append({
                 "tool": "ruff", "status": "skipped", "executed": False,
                 "reason": "No eligible Python source was available.",
@@ -182,18 +189,29 @@ async def analyze(
                 "reason": "No eligible Python source was available.",
             })
         else:
-            for lang_id, lang_files in partitioned.items():
+            for lang_id in target_languages:
                 adapter = registry.get_adapter(lang_id)
                 if adapter is None:
                     continue
-                lang_findings, lang_obs, lang_results = await adapter.run_static_analysis(lang_files, temp_root)
-                normalized_static.extend(lang_findings)
-                static_observations.extend(lang_obs)
-                tool_results.extend(lang_results)
-                for tr in lang_results:
-                    if tr.get("status") == "unavailable":
-                        tool_label = str(tr.get("tool", "")).replace("_", " ").title()
-                        warnings.append(f"{tool_label} was unavailable; no {tool_label} findings are claimed.")
+                if lang_id in partitioned:
+                    lang_files = partitioned[lang_id]
+                    lang_findings, lang_obs, lang_results = await adapter.run_static_analysis(lang_files, temp_root)
+                    normalized_static.extend(lang_findings)
+                    static_observations.extend(lang_obs)
+                    tool_results.extend(lang_results)
+                    for tr in lang_results:
+                        if tr.get("status") == "unavailable":
+                            tool_label = str(tr.get("tool", "")).replace("_", " ").title()
+                            warnings.append(f"{tool_label} was unavailable; no {tool_label} findings are claimed.")
+                else:
+                    caps = adapter.detect_capabilities()
+                    for tool_name in caps:
+                        tool_results.append({
+                            "tool": tool_name,
+                            "status": "skipped",
+                            "executed": False,
+                            "reason": f"No eligible {adapter.display_name} source was available for analysis.",
+                        })
 
     ai_findings: list[ReviewFinding] = []
     if is_configured():

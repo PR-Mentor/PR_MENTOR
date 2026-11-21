@@ -47,6 +47,25 @@ export default function ReviewWorkspacePage({
   const uniqueCount = review.unique_issue_count ?? (issueData.mode === 'canonical' ? issueData.issues.length : null);
   const observationCount = review.raw_observation_count ?? review.findings?.length ?? 0;
   const tools = review.tool_results ?? [];
+  const STATIC_ANALYSIS_TOOLS = new Set([
+    // Python
+    'ruff',
+    'bandit',
+    'mypy',
+    // C / C++
+    'clang_tidy',
+    'cppcheck',
+    'flawfinder',
+    'c_safety_analyzer',
+    'cpp_safety_analyzer',
+    // Java
+    'checkstyle',
+    'pmd',
+    'spotbugs',
+    'javac',
+    'java_safety_analyzer',
+  ]);
+  const staticTools = tools.filter((tool) => STATIC_ANALYSIS_TOOLS.has(tool.tool));
   const visibleWarnings = review.warnings?.filter((warning) => !isPRTestWarning(warning)) ?? [];
 
   return <section className="content-page review-workspace">
@@ -122,7 +141,7 @@ export default function ReviewWorkspacePage({
     <section className="workspace-section" id="validation" aria-labelledby="validation-title">
       <div className="workspace-section-heading"><div><span className="section-index">03</span><div><h2 id="validation-title">Validation & analysis</h2><p>Reported tool status and execution evidence from this review.</p></div></div></div>
       <div className="workspace-validation-grid">
-        <ToolGroup title="Static analysis" tools={tools.filter((tool) => ['ruff', 'bandit'].includes(tool.tool))} empty="No Ruff or Bandit status was returned."/>
+        <ToolGroup title="Static analysis" tools={staticTools} empty="No static analysis status was returned."/>
         <ToolGroup title="AI review" tools={tools.filter((tool) => tool.tool === 'ai_review')} empty="No AI review status was returned."/>
       </div>
       <p className="workspace-validation-note"><ShieldCheck size={14}/> Tool status is shown as reported by the enabled review tools.</p>
@@ -505,12 +524,85 @@ function hasLegacyExplanation(finding: ReviewFinding) {
   return Boolean(finding.why_it_matters || finding.learning_explanation || finding.suggested_fix);
 }
 
+interface ToolStatusPresentation {
+  label: string;
+  badgeClass: string;
+  detail: string;
+}
+
+function resolveToolStatus(tool: ToolResult): ToolStatusPresentation {
+  const statusLower = (tool.status || '').toLowerCase();
+  const diagnostics = Array.isArray(tool.findings) ? tool.findings : [];
+
+  // 1. Failed
+  if (statusLower === 'failed' || statusLower === 'error') {
+    return {
+      label: 'Failed',
+      badgeClass: 'status-failed',
+      detail: tool.reason || tool.message || 'Tool execution failed with an error.',
+    };
+  }
+
+  // 2. Unavailable
+  if (statusLower === 'unavailable') {
+    return {
+      label: 'Unavailable',
+      badgeClass: 'status-unavailable',
+      detail: tool.reason || tool.message || 'Tool binary is not installed or available in PATH.',
+    };
+  }
+
+  // 3. Not configured
+  if (statusLower === 'not_configured' || statusLower === 'not_requested') {
+    return {
+      label: 'Not configured',
+      badgeClass: 'status-not-configured',
+      detail: tool.reason || tool.message || 'Tool is not configured for this review.',
+    };
+  }
+
+  // 4. Skipped
+  if (statusLower === 'skipped' || statusLower === 'not_needed') {
+    return {
+      label: 'Skipped',
+      badgeClass: 'status-skipped',
+      detail: tool.reason || tool.message || 'Skipped (no matching source files available).',
+    };
+  }
+
+  // 5. Executed with findings
+  if (diagnostics.length > 0) {
+    return {
+      label: `Executed (${diagnostics.length} findings)`,
+      badgeClass: 'status-completed status-findings-detected',
+      detail: `${diagnostics.length} diagnostic${diagnostics.length === 1 ? '' : 's'} reported.`,
+    };
+  }
+
+  // 6. Executed clean (no findings) - requires confirmed execution
+  if (tool.executed === true) {
+    return {
+      label: 'Executed (clean)',
+      badgeClass: 'status-completed status-executed-clean',
+      detail: tool.reason || tool.message || 'No findings detected by this tool.',
+    };
+  }
+
+  // Fallback for unexpected status or unconfirmed execution
+  return {
+    label: tool.executed === false ? 'Not executed' : pretty(tool.status),
+    badgeClass: `status-${statusLower.replace(/[^a-z]/gi, '-')}`,
+    detail: tool.reason || tool.message || (tool.executed === false ? 'Tool was not executed.' : 'Status returned by the backend.'),
+  };
+}
+
 function ToolGroup({ title, tools, empty }: { title: string; tools: ToolResult[]; empty: string }) {
   return <section className="workspace-tool-group"><h3>{title}</h3>{tools.length ? tools.map((tool, index) => {
     const diagnostics = Array.isArray(tool.findings) ? tool.findings : [];
+    const presentation = resolveToolStatus(tool);
     return <article className="workspace-tool" key={`${tool.tool}-${index}`}>
-      <div><strong>{pretty(tool.tool)}</strong><span className={`workspace-tool-status status-${tool.status.replace(/[^a-z]/gi, '-').toLowerCase()}`}>{tool.executed === false ? 'Not executed' : pretty(tool.status)}</span></div>
-      <p>{tool.reason || tool.message || (tool.findings ? `${diagnostics.length} diagnostics reported` : tool.executed === false ? 'The backend reports that this stage did not execute.' : 'Status returned by the backend.')}</p>
+      <div><strong>{pretty(tool.tool)}</strong><span className={`workspace-tool-status ${presentation.badgeClass}`}>{presentation.label}</span></div>
+      <p>{presentation.detail}</p>
       {tool.tool === 'ai_review' && diagnostics.length > 0 && <div className="workspace-tool-diagnostics" aria-label="AI review findings">
         <strong>AI findings</strong>
         <ol>{diagnostics.map((diagnostic, diagnosticIndex) => {

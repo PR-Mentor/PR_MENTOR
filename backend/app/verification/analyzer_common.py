@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from app.github_service.pull_requests import (
-    MAX_SOURCE_BYTES,
     validate_repository_python_path,
 )
 from app.verification.bounded_process import (
@@ -21,6 +20,7 @@ from app.verification.bounded_process import (
     run_bounded_process,
 )
 
+MAX_SOURCE_BYTES = 100_000
 MAX_ANALYZER_TIMEOUT_SECONDS = 20.0
 MAX_TOOL_OUTPUT_BYTES = 1_000_000
 MAX_TOOL_FINDINGS = 2_000
