@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -179,14 +180,33 @@ def _normalize_candidate_payload(item: dict[str, Any]) -> dict[str, Any]:
     # 9. confidence
     conf = normalized.get("confidence")
     if isinstance(conf, str):
-        try:
+        c_str = conf.strip()
+        if c_str.endswith("%"):
+            try:
+                pct_val = float(c_str[:-1].strip())
+                if not (math.isnan(pct_val) or math.isinf(pct_val)):
+                    conf = pct_val / 100.0
+            except ValueError:
+                pass
+        else:
+            try:
+                num_val = float(c_str)
+                if not (math.isnan(num_val) or math.isinf(num_val)):
+                    if c_str.isdigit() and 1 < int(c_str) <= 100:
+                        conf = int(c_str) / 100.0
+                    else:
+                        conf = num_val
+            except ValueError:
+                pass
+    elif isinstance(conf, int) and not isinstance(conf, bool):
+        if 1 < conf <= 100:
+            conf = conf / 100.0
+        else:
             conf = float(conf)
-        except ValueError:
-            pass
-    if isinstance(conf, (int, float)):
-        if 1.0 < conf <= 100.0:
-            conf = float(conf) / 100.0
-        normalized["confidence"] = float(conf)
+    elif isinstance(conf, float):
+        pass
+
+    normalized["confidence"] = conf
 
     # 10. severity normalization
     sev = normalized.get("severity")

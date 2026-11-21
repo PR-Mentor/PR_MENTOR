@@ -358,7 +358,7 @@ def _sanitize_explanation_payload(
                 break
 
     if not sanitized.get("why_it_matters"):
-        for k in ("impact", "importance", "consequences"):
+        for k in ("impact", "importance", "consequences", "impact_scope"):
             if sanitized.get(k):
                 sanitized["why_it_matters"] = str(sanitized[k])
                 break
@@ -376,7 +376,7 @@ def _sanitize_explanation_payload(
                 break
 
     if not sanitized.get("concept"):
-        for k in ("topic", "category", "theme"):
+        for k in ("topic", "category", "theme", "learning_topic"):
             if sanitized.get(k):
                 sanitized["concept"] = str(sanitized[k])
                 break
@@ -448,15 +448,35 @@ def _validate_batch_response(
         if isinstance(body.get("explanations"), list):
             entries = body["explanations"]
         elif isinstance(body.get("explanations"), dict):
-            entries = [{"issue_id": k, "explanation": v} for k, v in body["explanations"].items()]
+            entries = []
+            for k, v in body["explanations"].items():
+                if isinstance(v, dict):
+                    inner_id = v.get("issue_id") or v.get("id") or v.get("canonical_issue_id")
+                    if inner_id and inner_id != k:
+                        continue
+                entries.append({"issue_id": k, "explanation": v})
         elif isinstance(body.get("explanation"), dict):
             # Single-issue explanation response without an 'explanations' wrapper
-            if isinstance(body.get("issue_id"), str):
-                entries = [{"issue_id": body["issue_id"], "explanation": body["explanation"]}]
+            body_id = body.get("issue_id") or body.get("id") or body.get("canonical_issue_id")
+            if isinstance(body_id, str):
+                entries = [{"issue_id": body_id, "explanation": body["explanation"]}]
             elif len(expected_ids) == 1:
                 entries = [{"issue_id": next(iter(expected_ids)), "explanation": body["explanation"]}]
         elif any(k in expected_ids for k in body.keys()):
-            entries = [{"issue_id": k, "explanation": v} for k, v in body.items() if k in expected_ids]
+            entries = []
+            for k, v in body.items():
+                if k in expected_ids:
+                    if isinstance(v, dict):
+                        inner_id = v.get("issue_id") or v.get("id") or v.get("canonical_issue_id")
+                        if inner_id and inner_id != k:
+                            continue
+                    entries.append({"issue_id": k, "explanation": v})
+        elif isinstance(body.get("summary"), str) or isinstance(body.get("root_cause"), str):
+            body_id = body.get("issue_id") or body.get("id") or body.get("canonical_issue_id")
+            if isinstance(body_id, str):
+                entries = [body]
+            elif len(expected_ids) == 1:
+                entries = [body]
     elif isinstance(body, list):
         entries = body
 
@@ -478,7 +498,7 @@ def _validate_batch_response(
             rejected += 1
             continue
         issue_id = entry.get("issue_id") or entry.get("id") or entry.get("canonical_issue_id")
-        if not issue_id and len(expected_ids) == 1:
+        if not issue_id and len(expected_ids) == 1 and len(entries) == 1:
             issue_id = next(iter(expected_ids))
         if not isinstance(issue_id, str) or issue_id not in expected_ids or issue_id in duplicates:
             rejected += 1
@@ -487,6 +507,10 @@ def _validate_batch_response(
         if raw_expl is None:
             raw_expl = {k: v for k, v in entry.items() if k not in ("issue_id", "id", "canonical_issue_id")}
         if not isinstance(raw_expl, dict):
+            rejected += 1
+            continue
+        inner_id = raw_expl.get("issue_id") or raw_expl.get("id") or raw_expl.get("canonical_issue_id")
+        if inner_id and inner_id != issue_id:
             rejected += 1
             continue
         try:

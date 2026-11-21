@@ -29,7 +29,7 @@ class ReviewFinding(BaseModel):
     line_end: int | None = None
     severity: Literal["critical", "high", "medium", "low", "informational"]
     category: Literal["bug", "security", "performance", "maintainability", "code_quality", "testing", "documentation", "learning"]
-    confidence: float
+    confidence: float = Field(..., ge=0.0, le=1.0)
     source: Literal["static_analysis", "ai_candidate", "test_evidence", "combined", "demo"]
     verification_status: Literal["verified", "needs_review", "unsupported"]
     evidence: list[str] = Field(default_factory=list)
