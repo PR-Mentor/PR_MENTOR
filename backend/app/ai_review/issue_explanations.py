@@ -292,7 +292,10 @@ def _code_context(
                 return excerpt, "current_source"
 
     for diff in diff_files:
-        if not isinstance(diff, dict) or str(diff.get("path", "")).replace("\\", "/") != path:
+        if not isinstance(diff, dict):
+            continue
+        diff_path = (diff.get("path") or diff.get("filename") or "").replace("\\", "/")
+        if diff_path != path:
             continue
         selected: list[tuple[int, str, str]] = []
         start = max(1, focus - 3)
@@ -340,12 +343,43 @@ def _bounded(value: str | None, limit: int) -> str | None:
 def _sanitize_explanation_payload(
     raw_explanation: dict[str, Any], has_code_context: bool
 ) -> dict[str, Any]:
-    """Sanitize optional fields (code_example, learning_resources, caveats).
+    """Sanitize and normalize explanation fields (code_example, learning_resources, caveats, synonyms).
 
     Optional content that fails validation or lacks source grounding is dropped
     or stripped rather than failing an otherwise valid canonical explanation.
     """
     sanitized = dict(raw_explanation)
+
+    # Core explanation field synonyms
+    if not sanitized.get("summary"):
+        for k in ("description", "overview", "explanation", "message"):
+            if sanitized.get(k):
+                sanitized["summary"] = str(sanitized[k])
+                break
+
+    if not sanitized.get("why_it_matters"):
+        for k in ("impact", "importance", "consequences", "impact_scope"):
+            if sanitized.get(k):
+                sanitized["why_it_matters"] = str(sanitized[k])
+                break
+
+    if not sanitized.get("root_cause"):
+        for k in ("cause", "reason", "issue", "problem"):
+            if sanitized.get(k):
+                sanitized["root_cause"] = str(sanitized[k])
+                break
+
+    if not sanitized.get("correction"):
+        for k in ("how_to_fix", "fix", "solution", "recommendation", "suggested_fix"):
+            if sanitized.get(k):
+                sanitized["correction"] = str(sanitized[k])
+                break
+
+    if not sanitized.get("concept"):
+        for k in ("topic", "category", "theme", "learning_topic"):
+            if sanitized.get(k):
+                sanitized["concept"] = str(sanitized[k])
+                break
 
     # 1. Code example:
     # If the issue lacked code context in the prompt, ungrounded code examples are dropped.
@@ -413,12 +447,36 @@ def _validate_batch_response(
     if isinstance(body, dict):
         if isinstance(body.get("explanations"), list):
             entries = body["explanations"]
+        elif isinstance(body.get("explanations"), dict):
+            entries = []
+            for k, v in body["explanations"].items():
+                if isinstance(v, dict):
+                    inner_id = v.get("issue_id") or v.get("id") or v.get("canonical_issue_id")
+                    if inner_id and inner_id != k:
+                        continue
+                entries.append({"issue_id": k, "explanation": v})
         elif isinstance(body.get("explanation"), dict):
             # Single-issue explanation response without an 'explanations' wrapper
-            if isinstance(body.get("issue_id"), str):
-                entries = [{"issue_id": body["issue_id"], "explanation": body["explanation"]}]
+            body_id = body.get("issue_id") or body.get("id") or body.get("canonical_issue_id")
+            if isinstance(body_id, str):
+                entries = [{"issue_id": body_id, "explanation": body["explanation"]}]
             elif len(expected_ids) == 1:
                 entries = [{"issue_id": next(iter(expected_ids)), "explanation": body["explanation"]}]
+        elif any(k in expected_ids for k in body.keys()):
+            entries = []
+            for k, v in body.items():
+                if k in expected_ids:
+                    if isinstance(v, dict):
+                        inner_id = v.get("issue_id") or v.get("id") or v.get("canonical_issue_id")
+                        if inner_id and inner_id != k:
+                            continue
+                    entries.append({"issue_id": k, "explanation": v})
+        elif isinstance(body.get("summary"), str) or isinstance(body.get("root_cause"), str):
+            body_id = body.get("issue_id") or body.get("id") or body.get("canonical_issue_id")
+            if isinstance(body_id, str):
+                entries = [body]
+            elif len(expected_ids) == 1:
+                entries = [body]
     elif isinstance(body, list):
         entries = body
 
@@ -427,20 +485,32 @@ def _validate_batch_response(
     if len(entries) > MAX_RESPONSE_ENTRIES:
         raise AIReviewUnavailable("AI provider returned too many explanations.")
 
-    ids = [entry.get("issue_id") for entry in entries if isinstance(entry, dict) and isinstance(entry.get("issue_id"), str)]
-    duplicates = {issue_id for issue_id, count in Counter(ids).items() if count > 1}
+    ids = [
+        entry.get("issue_id") or entry.get("id") or entry.get("canonical_issue_id")
+        for entry in entries
+        if isinstance(entry, dict)
+    ]
+    duplicates = {issue_id for issue_id, count in Counter(ids).items() if issue_id and count > 1}
     explanations: dict[str, IssueExplanation] = {}
     rejected = 0
     for entry in entries:
-        if not isinstance(entry, dict) or "issue_id" not in entry or "explanation" not in entry:
+        if not isinstance(entry, dict):
             rejected += 1
             continue
-        issue_id = entry["issue_id"]
+        issue_id = entry.get("issue_id") or entry.get("id") or entry.get("canonical_issue_id")
+        if not issue_id and len(expected_ids) == 1 and len(entries) == 1:
+            issue_id = next(iter(expected_ids))
         if not isinstance(issue_id, str) or issue_id not in expected_ids or issue_id in duplicates:
             rejected += 1
             continue
-        raw_expl = entry["explanation"]
+        raw_expl = entry.get("explanation")
+        if raw_expl is None:
+            raw_expl = {k: v for k, v in entry.items() if k not in ("issue_id", "id", "canonical_issue_id")}
         if not isinstance(raw_expl, dict):
+            rejected += 1
+            continue
+        inner_id = raw_expl.get("issue_id") or raw_expl.get("id") or raw_expl.get("canonical_issue_id")
+        if inner_id and inner_id != issue_id:
             rejected += 1
             continue
         try:

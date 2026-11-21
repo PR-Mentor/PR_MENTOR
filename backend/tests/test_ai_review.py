@@ -256,3 +256,209 @@ def test_user_prompt_unachievable_budget_raises_explicit_value_error():
         build_user_prompt({"title": "Test"}, [{"path": "a.py", "status": "added"}], [], max_request_bytes=500)
 
 
+def test_reviewer_normalizes_representative_valid_provider_responses(monkeypatch):
+    """Verify that common provider quirks (field synonyms, extra metadata, markdown fences,
+
+    severity/category casing, wrapper keys) are normalized while preserving strict schema validation.
+    """
+    diff_files = [
+        {
+            "path": "modules/core/include/opencv2/core.hpp",
+            "hunks": [
+                {
+                    "lines": [
+                        {"kind": "added", "line": 150, "text": "void* p = new_call();"},
+                        {"kind": "added", "line": 151, "text": "int count = 42;"},
+                    ]
+                }
+            ],
+        }
+    ]
+
+    # Markdown-wrapped response with field synonyms and extra metadata (rule_id, code, etc.)
+    provider_raw = """```json
+    {
+        "findings": [
+            {
+                "title": "Use of raw pointer allocation",
+                "message": "Prefer modern smart pointers over manual memory management",
+                "file": "modules/core/include/opencv2/core.hpp",
+                "line": "150",
+                "rule_id": "CPP-RAW-NEW",
+                "severity": "WARNING",
+                "category": "STYLE",
+                "confidence": "0.85",
+                "evidence": ["new_call()"],
+                "explanation": "Raw pointer allocation risks leaks if exceptions occur",
+                "fix": "std::make_unique<T>()",
+                "code": "void* p = new_call();"
+            }
+        ]
+    }
+    ```"""
+
+    async def complete_json(*_args, **_kwargs):
+        return provider_raw
+
+    monkeypatch.setattr(reviewer, "complete_json", complete_json)
+
+    findings = asyncio.run(reviewer.generate_candidates({}, diff_files, []))
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.file_path == "modules/core/include/opencv2/core.hpp"
+    assert f.line_start == 150
+    assert f.line_end == 150
+    assert f.severity == "medium"  # WARNING mapped to medium
+    assert f.category == "code_quality"  # STYLE mapped to code_quality
+    assert f.confidence == 0.85
+    assert f.suggested_fix == "std::make_unique<T>()"
+    assert f.why_it_matters == "Raw pointer allocation risks leaks if exceptions occur"
+    assert f.source == "ai_candidate"
+    assert f.verification_status == "needs_review"
+
+
+def test_reviewer_unwraps_top_level_list_and_candidate_keys(monkeypatch):
+    """Verify that provider outputs wrapped in a top-level list or 'candidates' key are unwrapped."""
+    diff_files = [
+        {
+            "path": "src/algo.cpp",
+            "hunks": [
+                {
+                    "lines": [
+                        {"kind": "added", "line": 20, "text": "int* buffer = (int*)malloc(100);"}
+                    ]
+                }
+            ],
+        }
+    ]
+
+    # 1. Wrapped in 'candidates'
+    async def complete_candidates(*_args, **_kwargs):
+        return json.dumps({
+            "candidates": [
+                {
+                    "title": "C-style malloc",
+                    "description": "Use new or vector",
+                    "file_path": "src/algo.cpp",
+                    "line_start": 20,
+                    "line_end": 20,
+                    "severity": "info",  # mapped to informational
+                    "category": "performance",
+                    "confidence": 90,  # 90% mapped to 0.9
+                    "evidence": ["malloc(100)"],
+                    "why_it_matters": "Type safety",
+                    "suggested_fix": "std::vector<int>",
+                }
+            ]
+        })
+
+    monkeypatch.setattr(reviewer, "complete_json", complete_candidates)
+    findings = asyncio.run(reviewer.generate_candidates({}, diff_files, []))
+    assert len(findings) == 1
+    assert findings[0].severity == "informational"
+    assert findings[0].confidence == 0.9
+
+    # 2. Top-level list
+    async def complete_list(*_args, **_kwargs):
+        return json.dumps([
+            {
+                "title": "C-style malloc",
+                "description": "Use new or vector",
+                "file_path": "src/algo.cpp",
+                "line_start": 20,
+                "line_end": 20,
+                "severity": "low",
+                "category": "performance",
+                "confidence": 0.9,
+                "evidence": ["malloc(100)"],
+                "why_it_matters": "Type safety",
+                "suggested_fix": "std::vector<int>",
+            }
+        ])
+
+    monkeypatch.setattr(reviewer, "complete_json", complete_list)
+    findings2 = asyncio.run(reviewer.generate_candidates({}, diff_files, []))
+    assert len(findings2) == 1
+    assert findings2[0].title == "C-style malloc"
+
+
+def test_confidence_normalization_and_validation(monkeypatch):
+    """Verify that confidence normalization accepts valid formats and rejects invalid scores via schema validation."""
+    diff_files = [
+        {
+            "path": "src/algo.cpp",
+            "hunks": [
+                {
+                    "lines": [
+                        {"kind": "added", "line": 20, "text": "int* buffer = (int*)malloc(100);"}
+                    ]
+                }
+            ],
+        }
+    ]
+
+    base_finding = {
+        "title": "C-style malloc",
+        "description": "Use new or vector",
+        "file_path": "src/algo.cpp",
+        "line_start": 20,
+        "line_end": 20,
+        "severity": "medium",
+        "category": "performance",
+        "evidence": ["malloc(100)"],
+        "why_it_matters": "Type safety",
+        "suggested_fix": "std::vector<int>",
+    }
+
+    # 1. Valid confidence representations
+    valid_test_cases = [
+        (0.85, 0.85),
+        ("85%", 0.85),
+        (" 85 % ", 0.85),
+        ("0.85", 0.85),
+        (85, 0.85),
+        (0.0, 0.0),
+        (1.0, 1.0),
+        ("0%", 0.0),
+        ("100%", 1.0),
+        (100, 1.0),
+    ]
+
+    for raw_conf, expected_conf in valid_test_cases:
+        candidate = dict(base_finding, confidence=raw_conf)
+        async def complete_valid(*_args, **_kwargs):
+            return json.dumps([candidate])
+        monkeypatch.setattr(reviewer, "complete_json", complete_valid)
+        findings = asyncio.run(reviewer.generate_candidates({}, diff_files, []))
+        assert len(findings) == 1, f"Failed for raw_conf={raw_conf}"
+        assert abs(findings[0].confidence - expected_conf) < 1e-5
+
+    # 2. Invalid confidence representations must fail schema validation and trigger safe degradation
+    invalid_test_cases = [
+        -0.5,
+        -5,
+        "-10%",
+        150,
+        1.5,
+        "150%",
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        "nan",
+        "inf",
+        "invalid",
+        "high",
+    ]
+
+    for raw_conf in invalid_test_cases:
+        candidate = dict(base_finding, confidence=raw_conf)
+        async def complete_invalid(*_args, **_kwargs):
+            return json.dumps([candidate])
+        monkeypatch.setattr(reviewer, "complete_json", complete_invalid)
+        with pytest.raises(reviewer.AIReviewUnavailable) as exc_info:
+            asyncio.run(reviewer.generate_candidates({}, diff_files, []))
+        assert "did not match the review schema" in str(exc_info.value)
+
+
+
+

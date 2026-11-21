@@ -626,3 +626,188 @@ def test_explanation_preserves_expanded_trusted_urls(monkeypatch):
     assert "https://cve.org/CVERecord/CVE-2023-1234" in urls
     assert "https://random-hack.example.com/exploit" not in urls
 
+
+def test_explanation_supports_flat_entries_and_field_synonyms(monkeypatch):
+    """Verify that un-nested explanation entries and field synonyms (impact, cause, fix, topic)
+
+    are normalized and successfully validate into IssueExplanation.
+    """
+    issue1 = _issue("issue-flat-1")
+    issue2 = _issue("issue-dict-2")
+
+    # 1. Flat entries directly in explanations array
+    flat_payload = json.dumps({
+        "explanations": [
+            {
+                "issue_id": "issue-flat-1",
+                "summary": "Direct shell command execution",
+                "impact": "Can allow arbitrary command execution",
+                "cause": "Shell parser invoked on untrusted string",
+                "fix": "Use subprocess.run with argument sequence",
+                "topic": "Command Injection",
+            }
+        ]
+    })
+
+    async def complete_flat(_system, _prompt):
+        return flat_payload
+
+    _stub_validated_completion(monkeypatch, complete_flat)
+    res_flat = asyncio.run(service.generate_issue_explanations([issue1]))
+    assert "issue-flat-1" in res_flat.explanations
+    expl1 = res_flat.explanations["issue-flat-1"]
+    assert expl1.summary == "Direct shell command execution"
+    assert expl1.why_it_matters == "Can allow arbitrary command execution"
+    assert expl1.root_cause == "Shell parser invoked on untrusted string"
+    assert expl1.correction == "Use subprocess.run with argument sequence"
+    assert expl1.concept == "Command Injection"
+
+    # 2. Dictionary mapping issue_id -> explanation
+    dict_payload = json.dumps({
+        "explanations": {
+            "issue-dict-2": {
+                "description": "SQL injection in query string",
+                "importance": "Data exfiltration risk",
+                "reason": "String concatenation in raw SQL query",
+                "recommendation": "Use parameterized queries",
+                "category": "SQL Injection",
+            }
+        }
+    })
+
+    async def complete_dict(_system, _prompt):
+        return dict_payload
+
+    _stub_validated_completion(monkeypatch, complete_dict)
+    res_dict = asyncio.run(service.generate_issue_explanations([issue2]))
+    assert "issue-dict-2" in res_dict.explanations
+    expl2 = res_dict.explanations["issue-dict-2"]
+    assert expl2.summary == "SQL injection in query string"
+    assert expl2.why_it_matters == "Data exfiltration risk"
+    assert expl2.root_cause == "String concatenation in raw SQL query"
+    assert expl2.correction == "Use parameterized queries"
+    assert expl2.concept == "SQL Injection"
+
+
+def test_explanation_id_association_aliases_and_top_level_dict(monkeypatch):
+    """Verify that canonical issue ID aliases (id, canonical_issue_id) and top-level dict mappings work."""
+    issue1 = _issue("issue-alias-1")
+    issue2 = _issue("issue-alias-2")
+
+    # 1. Top-level dict mapped by canonical IDs with aliases
+    payload = json.dumps({
+        "issue-alias-1": {
+            "id": "issue-alias-1",
+            "summary": "Alias test 1",
+            "root_cause": "Cause 1",
+            "impact_scope": "Scope 1",
+            "suggested_fix": "Fix 1",
+            "learning_topic": "Topic 1",
+        },
+        "issue-alias-2": {
+            "canonical_issue_id": "issue-alias-2",
+            "summary": "Alias test 2",
+            "root_cause": "Cause 2",
+            "impact_scope": "Scope 2",
+            "suggested_fix": "Fix 2",
+            "learning_topic": "Topic 2",
+        },
+    })
+
+    async def complete_alias(_system, _prompt):
+        return payload
+
+    _stub_validated_completion(monkeypatch, complete_alias)
+    res = asyncio.run(service.generate_issue_explanations([issue1, issue2]))
+    assert "issue-alias-1" in res.explanations
+    assert "issue-alias-2" in res.explanations
+    assert res.explanations["issue-alias-1"].summary == "Alias test 1"
+    assert res.explanations["issue-alias-2"].summary == "Alias test 2"
+
+
+def test_explanation_id_association_ambiguous_and_conflicting_rejected(monkeypatch):
+    """Verify that stringified indices, conflicting IDs, and ambiguous multi-entry responses are rejected."""
+    issue1 = _issue("issue-target-1")
+    issue2 = _issue("issue-target-2")
+
+    # 1. Stringified indices ("0", "1") must NOT map to issues in multi-issue batch
+    index_payload = json.dumps({
+        "explanations": {
+            "0": {
+                "summary": "Indexed explanation 0",
+                "root_cause": "Cause 0",
+                "impact_scope": "Scope 0",
+                "suggested_fix": "Fix 0",
+                "learning_topic": "Topic 0",
+            },
+            "1": {
+                "summary": "Indexed explanation 1",
+                "root_cause": "Cause 1",
+                "impact_scope": "Scope 1",
+                "suggested_fix": "Fix 1",
+                "learning_topic": "Topic 1",
+            },
+        }
+    })
+
+    async def complete_index(_system, _prompt):
+        return index_payload
+
+    _stub_validated_completion(monkeypatch, complete_index)
+    res_index = asyncio.run(service.generate_issue_explanations([issue1, issue2]))
+    assert "issue-target-1" not in res_index.explanations
+    assert "issue-target-2" not in res_index.explanations
+    assert res_index.rejected_explanation_count == 2
+
+    # 2. Conflicting inner ID with dictionary key must be rejected to prevent misattribution
+    conflict_payload = json.dumps({
+        "explanations": {
+            "issue-target-1": {
+                "issue_id": "issue-target-2",  # Conflict! Key is target-1, payload claims target-2
+                "summary": "Conflicting payload",
+                "root_cause": "Cause",
+                "impact_scope": "Scope",
+                "suggested_fix": "Fix",
+                "learning_topic": "Topic",
+            }
+        }
+    })
+
+    async def complete_conflict(_system, _prompt):
+        return conflict_payload
+
+    _stub_validated_completion(monkeypatch, complete_conflict)
+    res_conflict = asyncio.run(service.generate_issue_explanations([issue1, issue2]))
+    assert "issue-target-1" not in res_conflict.explanations
+    assert "issue-target-2" not in res_conflict.explanations
+
+    # 3. Ambiguous multi-entry response without IDs when only 1 issue is expected must be rejected
+    multi_no_id_payload = json.dumps({
+        "explanations": [
+            {
+                "summary": "Candidate A",
+                "root_cause": "Cause A",
+                "impact_scope": "Scope A",
+                "suggested_fix": "Fix A",
+                "learning_topic": "Topic A",
+            },
+            {
+                "summary": "Candidate B",
+                "root_cause": "Cause B",
+                "impact_scope": "Scope B",
+                "suggested_fix": "Fix B",
+                "learning_topic": "Topic B",
+            },
+        ]
+    })
+
+    async def complete_ambiguous(_system, _prompt):
+        return multi_no_id_payload
+
+    _stub_validated_completion(monkeypatch, complete_ambiguous)
+    res_ambiguous = asyncio.run(service.generate_issue_explanations([issue1]))
+    assert "issue-target-1" not in res_ambiguous.explanations
+    assert res_ambiguous.rejected_explanation_count == 2
+
+
+

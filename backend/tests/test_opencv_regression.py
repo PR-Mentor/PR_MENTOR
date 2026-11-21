@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import pytest
 
 from app.ai_review.prompts import build_user_prompt
 from app.languages.cpp import CppAdapter
@@ -220,3 +221,166 @@ def test_opencv_ai_review_prompt_within_budget_and_valid_json():
     parsed = json.loads(json_str)
     assert parsed["pull_request"]["repository_name"] == "opencv"
     assert len(parsed["diff_files"]) == 2
+
+
+def test_opencv_ai_review_candidate_normalization_and_diff_grounding(monkeypatch):
+    """Verify that candidate findings for OpenCV PR #31028 with provider quirks
+
+    (markdown fences, synonyms, extra metadata) normalize and ground correctly in added lines.
+    """
+    import asyncio
+    from app.ai_review import reviewer
+
+    diff_files = [
+        {
+            "path": "modules/core/include/opencv2/core.hpp",
+            "hunks": [
+                {
+                    "lines": [
+                        {"kind": "added", "line": 150, "text": "void* ptr = cv::fastMalloc(sz);"},
+                        {"kind": "added", "line": 151, "text": "CV_Assert(ptr != NULL);"},
+                    ]
+                }
+            ],
+        }
+    ]
+
+    provider_output = """```json
+    {
+        "findings": [
+            {
+                "title": "Use of raw C allocation function",
+                "message": "fastMalloc is a low-level allocator; prefer std::vector where possible",
+                "file": "modules/core/include/opencv2/core.hpp",
+                "line": 150,
+                "severity": "WARNING",
+                "category": "MAINTAINABILITY",
+                "confidence": 0.8,
+                "evidence": ["fastMalloc(sz)"],
+                "explanation": "Manual memory management risks leaks",
+                "fix": "std::vector<uchar> buffer(sz);",
+                "rule_id": "OPENCV-MEM-ALLOC"
+            }
+        ]
+    }
+    ```"""
+
+    async def mock_complete(*_args, **_kwargs):
+        return provider_output
+
+    monkeypatch.setattr(reviewer, "complete_json", mock_complete)
+    findings = asyncio.run(reviewer.generate_candidates({}, diff_files, []))
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.file_path == "modules/core/include/opencv2/core.hpp"
+    assert f.line_start == 150
+    assert f.severity == "medium"
+    assert f.category == "maintainability"
+    assert f.suggested_fix == "std::vector<uchar> buffer(sz);"
+
+
+def test_opencv_ai_failure_preserves_static_findings_and_explains_both_canonical_issues(monkeypatch):
+    """Verify that when AI candidate review fails, all canonical static findings are preserved,
+
+    and issue explanations succeed for both canonical issues.
+    """
+    import asyncio
+    from app.ai_review import reviewer, issue_explanations
+    from app.ai_review.client import AIReviewUnavailable
+    from app.schemas.finding import ReviewFinding
+    from app.schemas.issue import CanonicalIssue, FindingObservation
+    from app.services.finding_reconciliation import reconcile_observations
+
+    # 1. Static findings: 2 Ruff findings from OpenCV PR #31028
+    ruff_finding_1 = ReviewFinding(
+        id="ruff-f1",
+        title="Ruff F401",
+        description="`os` imported but unused",
+        file_path="modules/python/test/test_core.py",
+        line_start=12,
+        line_end=12,
+        severity="low",
+        category="code_quality",
+        confidence=0.9,
+        source="static_analysis",
+        verification_status="verified",
+        why_it_matters="Unused imports slow down startup",
+        suggested_fix="Remove `import os`",
+    )
+    ruff_finding_2 = ReviewFinding(
+        id="ruff-f2",
+        title="Ruff E711",
+        description="Comparison to `None` should be `cond is None`",
+        file_path="modules/python/test/test_core.py",
+        line_start=45,
+        line_end=45,
+        severity="low",
+        category="code_quality",
+        confidence=0.95,
+        source="static_analysis",
+        verification_status="verified",
+        why_it_matters="Identity comparison is faster and avoids custom __eq__ bugs",
+        suggested_fix="Use `is None`",
+    )
+
+    static_findings = [ruff_finding_1, ruff_finding_2]
+    observations = [
+        FindingObservation(original_finding=ruff_finding_1, tool_name="ruff", rule_id="F401"),
+        FindingObservation(original_finding=ruff_finding_2, tool_name="ruff", rule_id="E711"),
+    ]
+
+    # Reconcile into 2 CanonicalIssues
+    reconciliation = reconcile_observations(observations)
+    assert len(reconciliation.issues) == 2
+    issue_ids = [issue.issue_id for issue in reconciliation.issues]
+
+    # 2. When AI candidate generation fails with schema error, verify static findings are preserved
+    async def mock_fail_candidates(*_args, **_kwargs):
+        raise AIReviewUnavailable("AI provider returned a finding that did not match the review schema.")
+
+    monkeypatch.setattr(reviewer, "complete_json", mock_fail_candidates)
+    with pytest.raises(AIReviewUnavailable, match="did not match the review schema"):
+        asyncio.run(reviewer.generate_candidates({}, [], []))
+
+    # Static findings remain intact (preserving all findings when AI fails)
+    assert len(static_findings) == 2
+
+    # 3. Verify explanation generation for both canonical issues succeeds even with provider quirks
+    explanation_response = json.dumps({
+        "explanations": [
+            {
+                "issue_id": issue_ids[0],
+                "summary": "Unused `os` import in test module",
+                "impact": "Increases module load time and clutters namespace",
+                "cause": "Import statement was retained after refactoring",
+                "fix": "Remove `import os` statement",
+                "topic": "Clean Python Code",
+            },
+            {
+                "issue_id": issue_ids[1],
+                "summary": "Equality comparison to None using `==` instead of `is`",
+                "impact": "May invoke arbitrary overloaded `__eq__` methods",
+                "cause": "Using `== None` rather than singleton identity check",
+                "fix": "Change `x == None` to `x is None`",
+                "topic": "Python Idiomatic Comparison",
+            },
+        ]
+    })
+
+    async def mock_complete_explanations(task, guidance, prompt, parse_func, **_kwargs):
+        return explanation_response, parse_func(explanation_response)
+
+    monkeypatch.setattr(issue_explanations, "complete_validated_json", mock_complete_explanations)
+
+    result = asyncio.run(
+        issue_explanations.generate_issue_explanations(reconciliation.issues)
+    )
+
+    assert result.failed_batch_count == 0
+    assert result.rejected_explanation_count == 0
+    assert len(result.explanations) == 2
+    assert issue_ids[0] in result.explanations
+    assert issue_ids[1] in result.explanations
+    assert result.issue_statuses[issue_ids[0]] == "completed"
+    assert result.issue_statuses[issue_ids[1]] == "completed"
+
