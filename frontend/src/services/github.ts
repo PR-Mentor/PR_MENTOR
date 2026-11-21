@@ -50,6 +50,78 @@ type OAuthIntent = 'login' | 'connect';
 const GITHUB_API = '/api/github';
 const PROOF_KEY = 'pr-mentor-github-oauth-proof';
 const STATE_PARAM = 'prm_github_state';
+const PROOF_MAX_AGE_MS = 10 * 60 * 1000;
+
+type PendingOAuth = { proof: string; intent: OAuthIntent; createdAt: number };
+
+function pendingProofKey(state: string) {
+  return `${PROOF_KEY}:${state}`;
+}
+
+function savePendingProof(state: string, proof: string, intent: OAuthIntent) {
+  const serialized = JSON.stringify({ proof, intent, createdAt: Date.now() } satisfies PendingOAuth);
+  const key = pendingProofKey(state);
+  let saved = false;
+
+  try {
+    localStorage.setItem(key, serialized);
+    saved = true;
+  } catch {
+    // Some browsers restrict persistent storage. Try tab storage as a fallback.
+  }
+
+  try {
+    sessionStorage.setItem(key, serialized);
+    saved = true;
+  } catch {
+    // Report a useful error below if both browser storage options are blocked.
+  }
+
+  if (!saved) throw new Error('Your browser blocked sign-in storage. Allow site storage and try again.');
+}
+
+function takePendingProof(state: string): { proof: string; intent: OAuthIntent } | null {
+  const key = pendingProofKey(state);
+  let serialized: string | null = null;
+
+  try {
+    serialized = localStorage.getItem(key);
+    localStorage.removeItem(key);
+  } catch {
+    // Continue with tab storage for browsers that block local storage.
+  }
+
+  try {
+    serialized ??= sessionStorage.getItem(key);
+    sessionStorage.removeItem(key);
+    // Consume credentials created by the previous, tab-only flow during rollout.
+    if (!serialized) {
+      serialized = sessionStorage.getItem(PROOF_KEY);
+      sessionStorage.removeItem(PROOF_KEY);
+    }
+  } catch {
+    return null;
+  }
+
+  if (!serialized) return null;
+
+  try {
+    const pending = JSON.parse(serialized) as Partial<PendingOAuth>;
+    const createdAt = pending.createdAt === undefined ? Date.now() : Number(pending.createdAt);
+    const age = Date.now() - createdAt;
+    if (
+      typeof pending.proof !== 'string'
+      || !/^[A-Za-z0-9_-]{43}$/.test(pending.proof)
+      || (pending.intent !== 'login' && pending.intent !== 'connect')
+      || !Number.isFinite(age)
+      || age < 0
+      || age > PROOF_MAX_AGE_MS
+    ) return null;
+    return { proof: pending.proof, intent: pending.intent };
+  } catch {
+    return null;
+  }
+}
 
 function base64url(bytes: Uint8Array) {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -67,7 +139,10 @@ export async function startGitHubOAuth(intent: OAuthIntent) {
   if (!expected || authorization.origin !== expected.origin || authorization.pathname !== expected.pathname || authorization.username || authorization.password) {
     throw new Error('The frontend and API must use the same Supabase project for GitHub sign-in.');
   }
-  sessionStorage.setItem(PROOF_KEY, JSON.stringify({ proof, intent }));
+  const redirectTo = authorization.searchParams.get('redirect_to');
+  const state = redirectTo && new URL(redirectTo).searchParams.get(STATE_PARAM);
+  if (!state) throw new Error('GitHub sign-in could not be started. Please try again.');
+  savePendingProof(state, proof, intent);
   window.location.assign(authorization.href);
 }
 
@@ -95,10 +170,10 @@ export const hasGitHubCallback = Boolean(callback);
 export function finishGitHubOAuth() {
   callbackPromise ??= (async () => {
     if (!callback) return;
-    const pending = sessionStorage.getItem(PROOF_KEY);
-    sessionStorage.removeItem(PROOF_KEY);
-    if (!callback.code || !pending) throw new Error('GitHub authorization was canceled or expired. Start the connection again.');
-    const { proof, intent } = JSON.parse(pending) as { proof: string; intent: OAuthIntent };
+    if (!callback.code) throw new Error('GitHub authorization was canceled or expired. Start the connection again.');
+    const pending = takePendingProof(callback.state);
+    if (!pending) throw new Error('The sign-in session could not be restored in this browser. Start GitHub sign-in again.');
+    const { proof, intent } = pending;
     const { session } = await request<{ session: { access_token: string; refresh_token: string } | null }>(`${GITHUB_API}/oauth/callback`, {
       method: 'POST', body: JSON.stringify({ ...callback, proof, intent }),
     });

@@ -15,6 +15,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 from pymongo.errors import PyMongoError
 
+from app.config import cors_origins
 from app.database import github as store
 from app.database.auth import allow_attempt
 from app.database.mongo_connection import StorageUnavailable
@@ -92,7 +93,19 @@ def _return_url(requested: str | None, origin: str | None) -> str:
         if value.strip()
     }
     if not allowed:
-        raise HTTPException(503, "The GitHub OAuth return URL is not configured.")
+        # The exact URL setting is optional when the browser supplies its
+        # callback URL and the request origin is already in the API CORS allowlist.
+        # This keeps the redirect tied to an operator-approved frontend origin.
+        if not requested or not origin:
+            raise HTTPException(503, "The GitHub OAuth return URL is not configured.")
+        try:
+            requested_parts = urlsplit(requested)
+        except ValueError as exc:
+            raise HTTPException(503, "The GitHub OAuth return URL is invalid.") from exc
+        requested_origin = f"{requested_parts.scheme}://{requested_parts.netloc}"
+        if origin != requested_origin or origin not in cors_origins():
+            raise HTTPException(503, "The GitHub OAuth return URL is not configured.")
+        allowed = {requested}
     url = requested or (next(iter(allowed)) if len(allowed) == 1 else "")
     if url not in allowed:
         raise HTTPException(
