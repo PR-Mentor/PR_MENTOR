@@ -626,3 +626,66 @@ def test_explanation_preserves_expanded_trusted_urls(monkeypatch):
     assert "https://cve.org/CVERecord/CVE-2023-1234" in urls
     assert "https://random-hack.example.com/exploit" not in urls
 
+
+def test_explanation_supports_flat_entries_and_field_synonyms(monkeypatch):
+    """Verify that un-nested explanation entries and field synonyms (impact, cause, fix, topic)
+
+    are normalized and successfully validate into IssueExplanation.
+    """
+    issue1 = _issue("issue-flat-1")
+    issue2 = _issue("issue-dict-2")
+
+    # 1. Flat entries directly in explanations array
+    flat_payload = json.dumps({
+        "explanations": [
+            {
+                "issue_id": "issue-flat-1",
+                "summary": "Direct shell command execution",
+                "impact": "Can allow arbitrary command execution",
+                "cause": "Shell parser invoked on untrusted string",
+                "fix": "Use subprocess.run with argument sequence",
+                "topic": "Command Injection",
+            }
+        ]
+    })
+
+    async def complete_flat(_system, _prompt):
+        return flat_payload
+
+    _stub_validated_completion(monkeypatch, complete_flat)
+    res_flat = asyncio.run(service.generate_issue_explanations([issue1]))
+    assert "issue-flat-1" in res_flat.explanations
+    expl1 = res_flat.explanations["issue-flat-1"]
+    assert expl1.summary == "Direct shell command execution"
+    assert expl1.why_it_matters == "Can allow arbitrary command execution"
+    assert expl1.root_cause == "Shell parser invoked on untrusted string"
+    assert expl1.correction == "Use subprocess.run with argument sequence"
+    assert expl1.concept == "Command Injection"
+
+    # 2. Dictionary mapping issue_id -> explanation
+    dict_payload = json.dumps({
+        "explanations": {
+            "issue-dict-2": {
+                "description": "SQL injection in query string",
+                "importance": "Data exfiltration risk",
+                "reason": "String concatenation in raw SQL query",
+                "recommendation": "Use parameterized queries",
+                "category": "SQL Injection",
+            }
+        }
+    })
+
+    async def complete_dict(_system, _prompt):
+        return dict_payload
+
+    _stub_validated_completion(monkeypatch, complete_dict)
+    res_dict = asyncio.run(service.generate_issue_explanations([issue2]))
+    assert "issue-dict-2" in res_dict.explanations
+    expl2 = res_dict.explanations["issue-dict-2"]
+    assert expl2.summary == "SQL injection in query string"
+    assert expl2.why_it_matters == "Data exfiltration risk"
+    assert expl2.root_cause == "String concatenation in raw SQL query"
+    assert expl2.correction == "Use parameterized queries"
+    assert expl2.concept == "SQL Injection"
+
+

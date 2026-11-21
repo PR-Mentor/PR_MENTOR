@@ -73,6 +73,169 @@ def _finding_supported_by_diff(finding: ReviewFinding, files: list[dict[str, Any
     )
 
 
+def _extract_findings_array(body: Any) -> list[dict[str, Any]]:
+    """Extract findings list from provider JSON, supporting standard and wrapped structures."""
+    if isinstance(body, list):
+        return [item for item in body if isinstance(item, dict)]
+    if isinstance(body, dict):
+        if isinstance(body.get("findings"), list):
+            return [item for item in body["findings"] if isinstance(item, dict)]
+        if isinstance(body.get("candidates"), list):
+            return [item for item in body["candidates"] if isinstance(item, dict)]
+        for key in ("review", "result", "response", "data"):
+            val = body.get(key)
+            if isinstance(val, dict) and isinstance(val.get("findings"), list):
+                return [item for item in val["findings"] if isinstance(item, dict)]
+            if isinstance(val, list):
+                return [item for item in val if isinstance(item, dict)]
+    raise TypeError("findings array is missing")
+
+
+def _normalize_candidate_payload(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize common provider synonyms, types, and formatting into ReviewFinding schema."""
+    normalized = dict(item)
+
+    # 1. file_path synonym
+    if not normalized.get("file_path"):
+        for k in ("file", "path", "filename"):
+            if normalized.get(k):
+                normalized["file_path"] = str(normalized[k])
+                break
+
+    # 2. line numbers
+    if normalized.get("line_start") is None:
+        for k in ("line", "line_number", "start_line"):
+            if normalized.get(k) is not None:
+                try:
+                    normalized["line_start"] = int(normalized[k])
+                except (ValueError, TypeError):
+                    pass
+                break
+    elif isinstance(normalized.get("line_start"), str):
+        try:
+            normalized["line_start"] = int(normalized["line_start"])
+        except ValueError:
+            normalized["line_start"] = None
+
+    if normalized.get("line_end") is None:
+        if normalized.get("line_start") is not None:
+            normalized["line_end"] = normalized["line_start"]
+    elif isinstance(normalized.get("line_end"), str):
+        try:
+            normalized["line_end"] = int(normalized["line_end"])
+        except ValueError:
+            normalized["line_end"] = None
+
+    # 3. description synonyms
+    if not normalized.get("description"):
+        for k in ("message", "details", "summary"):
+            if normalized.get(k):
+                normalized["description"] = str(normalized[k])
+                break
+
+    # 4. why_it_matters synonyms
+    if not normalized.get("why_it_matters"):
+        for k in ("explanation", "impact", "reason"):
+            if normalized.get(k):
+                normalized["why_it_matters"] = str(normalized[k])
+                break
+        if not normalized.get("why_it_matters") and normalized.get("description"):
+            normalized["why_it_matters"] = str(normalized["description"])
+
+    # 5. suggested_fix synonyms
+    if not normalized.get("suggested_fix"):
+        for k in ("fix", "recommendation", "solution", "proposed_code"):
+            if normalized.get(k):
+                normalized["suggested_fix"] = str(normalized[k])
+                break
+        if normalized.get("suggested_fix") is None:
+            normalized["suggested_fix"] = ""
+
+    # 6. learning_explanation
+    if not normalized.get("learning_explanation"):
+        if normalized.get("learning"):
+            normalized["learning_explanation"] = str(normalized["learning"])
+        else:
+            normalized["learning_explanation"] = ""
+
+    # 7. evidence
+    ev = normalized.get("evidence")
+    if isinstance(ev, str):
+        normalized["evidence"] = [ev] if ev.strip() else []
+    elif not isinstance(ev, list):
+        normalized["evidence"] = []
+    else:
+        normalized["evidence"] = [str(x) for x in ev if x is not None]
+
+    # 8. limitations
+    lim = normalized.get("limitations")
+    if isinstance(lim, str):
+        normalized["limitations"] = [lim] if lim.strip() else []
+    elif not isinstance(lim, list):
+        normalized["limitations"] = []
+    else:
+        normalized["limitations"] = [str(x) for x in lim if x is not None]
+
+    # 9. confidence
+    conf = normalized.get("confidence")
+    if isinstance(conf, str):
+        try:
+            conf = float(conf)
+        except ValueError:
+            pass
+    if isinstance(conf, (int, float)):
+        if 1.0 < conf <= 100.0:
+            conf = float(conf) / 100.0
+        normalized["confidence"] = float(conf)
+
+    # 10. severity normalization
+    sev = normalized.get("severity")
+    if isinstance(sev, str):
+        sev_clean = sev.strip().lower()
+        sev_mapping = {
+            "info": "informational",
+            "information": "informational",
+            "warn": "medium",
+            "warning": "medium",
+            "error": "high",
+        }
+        normalized["severity"] = sev_mapping.get(sev_clean, sev_clean)
+
+    # 11. category normalization
+    cat = normalized.get("category")
+    if isinstance(cat, str):
+        cat_clean = cat.strip().lower()
+        cat_mapping = {
+            "style": "code_quality",
+            "best_practice": "code_quality",
+            "best_practices": "code_quality",
+            "syntax": "bug",
+            "correctness": "bug",
+            "vulnerability": "security",
+            "security_vulnerability": "security",
+            "performance_issue": "performance",
+            "optimization": "performance",
+            "maintainability_issue": "maintainability",
+            "doc": "documentation",
+            "docs": "documentation",
+        }
+        normalized["category"] = cat_mapping.get(cat_clean, cat_clean)
+
+    normalized["id"] = str(normalized.get("id") or uuid4().hex)
+    normalized["source"] = "ai_candidate"
+    normalized["verification_status"] = "needs_review"
+    if "attribution" not in normalized:
+        normalized["attribution"] = "contextual"
+
+    allowed_fields = {
+        "id", "title", "description", "file_path", "line_start", "line_end",
+        "severity", "category", "confidence", "source", "verification_status",
+        "evidence", "why_it_matters", "suggested_fix", "learning_explanation",
+        "limitations", "attribution"
+    }
+    return {k: v for k, v in normalized.items() if k in allowed_fields}
+
+
 async def generate_candidates(
     metadata: dict[str, Any],
     files: list[dict[str, Any]],
@@ -92,15 +255,21 @@ async def generate_candidates(
         raw = await complete_for_task("code_review", complete_json, SYSTEM_PROMPT, prompt, **kwargs)
         cause: Exception | None = None
         try:
-            body = json.loads(raw)
-            if not isinstance(body, dict) or not isinstance(body.get("findings"), list):
-                raise TypeError("findings array is missing")
+            cleaned_raw = raw.strip()
+            if cleaned_raw.startswith("```"):
+                lines = cleaned_raw.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                cleaned_raw = "\n".join(lines).strip()
+            body = json.loads(cleaned_raw)
+            items = _extract_findings_array(body)
             findings: list[ReviewFinding] = []
-            for item in body["findings"][:100]:
+            for item in items[:100]:
                 if not isinstance(item, dict):
                     continue
-                candidate = dict(item)
-                candidate.update({"id": str(candidate.get("id") or uuid4().hex), "source": "ai_candidate", "verification_status": "needs_review"})
+                candidate = _normalize_candidate_payload(item)
                 finding = ReviewFinding.model_validate(candidate)
                 if _finding_supported_by_diff(finding, files):
                     findings.append(finding)
