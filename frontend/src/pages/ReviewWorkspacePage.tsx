@@ -47,8 +47,6 @@ export default function ReviewWorkspacePage({
   const uniqueCount = review.unique_issue_count ?? (issueData.mode === 'canonical' ? issueData.issues.length : null);
   const observationCount = review.raw_observation_count ?? review.findings?.length ?? 0;
   const tools = review.tool_results ?? [];
- codex/phone-otp-login
-
   const STATIC_ANALYSIS_TOOLS = new Set([
     // Python
     'ruff',
@@ -68,7 +66,6 @@ export default function ReviewWorkspacePage({
     'java_safety_analyzer',
   ]);
   const staticTools = tools.filter((tool) => STATIC_ANALYSIS_TOOLS.has(tool.tool));
-main
   const visibleWarnings = review.warnings?.filter((warning) => !isPRTestWarning(warning)) ?? [];
 
   return <section className="content-page review-workspace">

@@ -95,26 +95,7 @@ export function getWorkspaceLearningInsights(workspaceId: string): Promise<Learn
   return request<LearningInsights>(`/api/workspaces/${encodeURIComponent(workspaceId)}/learning-insights`);
 }
 
- codex/phone-otp-login
-export function listBenchmarkDatasets(): Promise<BenchmarkDataset[]> { return request<BenchmarkDataset[]>('/api/benchmarks'); }
-export function createBenchmarkDataset(name: string, cases: Array<Record<string, unknown>>): Promise<BenchmarkDataset> {
-  return request<BenchmarkDataset>('/api/benchmarks', { method: 'POST', body: JSON.stringify({ name, cases }) });
-}
-export function updateBenchmarkLabels(datasetId: string, cases: Array<Record<string, unknown>>): Promise<BenchmarkDataset> {
-  return request<BenchmarkDataset>(`/api/benchmarks/${encodeURIComponent(datasetId)}/labels`, { method: 'PUT', body: JSON.stringify({ cases }) });
-}
-export function runBenchmark(datasetId: string): Promise<BenchmarkRun> {
-  return request<BenchmarkRun>(`/api/benchmarks/${encodeURIComponent(datasetId)}/runs`, { method: 'POST' });
-}
-export function listBenchmarkRuns(datasetId: string): Promise<BenchmarkRun[]> {
-  return request<BenchmarkRun[]>(`/api/benchmarks/${encodeURIComponent(datasetId)}/runs`);
-}
-
 export function analyzePullRequest(url: string, mode: AnalysisMode, useGithubConnection = false): Promise<ReviewResponse> {
-
-export async function analyzePullRequest(url: string, mode: AnalysisMode): Promise<ReviewResponse> {
-  const githubToken = mode === 'live' ? await getGitHubProviderToken() : undefined;
- main
   return request<ReviewResponse>('/api/reviews/analyze', {
     method: 'POST',
     body: JSON.stringify({
@@ -233,8 +214,6 @@ export function getTestExecutionJob(executionId: string): Promise<TestExecutionJ
 export function cancelTestExecution(executionId: string): Promise<{ status: string }> {
   return request(`/api/reviews/execution-jobs/${encodeURIComponent(executionId)}`, { method: 'DELETE' });
 }
- codex/phone-otp-login
-
 
 // Learning Lab API Endpoints
 export function getLearningDashboard(): Promise<LearningLabDashboard> {
@@ -294,4 +273,3 @@ export function submitCodingExercise(exerciseId: string, code: string): Promise<
 export function getExerciseSubmissions(exerciseId: string): Promise<ExerciseSubmission[]> {
   return request<ExerciseSubmission[]>(`/api/learning/coding-exercises/${encodeURIComponent(exerciseId)}/submissions`);
 }
- main

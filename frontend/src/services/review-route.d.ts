@@ -1,10 +1,6 @@
 import type { ReviewResponse } from '../types/review';
 
- codex/phone-otp-login
 export type ReviewRoutePage = 'discover' | 'repositories' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces' | 'benchmarks';
-
-export type ReviewRoutePage = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces';
- main
 export type ReviewRouteState =
   | { status: 'loading' }
   | { status: 'success'; review: ReviewResponse }

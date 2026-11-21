@@ -18,12 +18,10 @@ import { getReviewRouteView, loadReviewRoute, resolvePageRoute } from './service
 import ReviewWorkspacePage from './pages/ReviewWorkspacePage';
 import WorkspacesPage from './pages/WorkspacesPage';
 import DeveloperProfilePage from './pages/DeveloperProfilePage';
-codex/phone-otp-login
 import RepositoriesPage from './pages/RepositoriesPage';
 import { disconnectGitHub, getGitHubConnection, startGitHubOAuth, type GitHubConnection } from './services/github';
 
 import LearningLabPage from './pages/LearningLabPage';
- main
 import type {
   AnalysisMode, DiffFile, LearningExercise, LearningHistory, LearningProgress,
   LearningInsights, LearningResult, PersonalAnalytics, ReviewFinding, ReviewResponse, SavedPullRequest, Severity, SuggestedFix,
@@ -32,11 +30,7 @@ import { useAuth } from './auth/AuthContext';
 import LoginPage from './pages/LoginPage';
 import LandingPage from './components/LandingPage';
 
- codex/phone-otp-login
 type Page = 'discover' | 'repositories' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces' | 'benchmarks';
-
-type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces';
- main
 type Theme = 'light' | 'dark';
 
 function setDocumentTheme(theme: Theme) {
@@ -415,13 +409,9 @@ function Workspace() {
   };
 
   const activeExerciseData = exercises.find((item) => item.id === activeExercise);
- codex/phone-otp-login
   const activeTitle = useMemo(() => ({ discover: 'Discover', repositories: 'My Repositories', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab', analytics: 'Insights & analytics', profile: 'Developer profile', workspaces: 'Workspaces', benchmarks: 'Benchmarks' }[page]), [page]);
   const avatar = connection?.profile?.avatar_url ?? auth.user?.avatar_url;
   const accountName = connection?.profile?.login ?? auth.user?.display_name ?? 'Your profile';
-
-  const activeTitle = useMemo(() => ({ discover: 'Discover', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab', analytics: 'Insights & analytics', profile: 'Developer profile', workspaces: 'Workspaces' }[page]), [page]);
- main
   const reviewRouteView = getReviewRouteView(route.reviewId, review, reviewBusy, reviewError, reviewNotFound);
 
   const toggleTheme = () => {
