@@ -33,7 +33,8 @@ from app.database.test_execution_jobs import (
     get_job as get_execution_job,
 )
 from app.github_service.access import ensure_public_repository
-from app.github_service.client import GitHubAPIError
+from app.github_service import account as github_account
+from app.github_service.client import GitHubAPIError, async_client, request_json
 from app.github_service.actions_status import get_pr_test_status
 from app.github_service.pull_requests import fetch_current_pull_request_head_sha
 from app.github_service.parser import InvalidPullRequestURL, parse_pull_request_url
@@ -219,6 +220,8 @@ async def enqueue_review(
     claims: Annotated[dict[str, Any], Depends(current_claims)],
 ):
     uid = claims["uid"]
+    if payload.use_github_connection:
+        raise HTTPException(422, "Start a connected GitHub review from its repository workspace.")
     if payload.workspace_id and workspaces.get_role(
         payload.workspace_id, uid
     ) not in {"owner", "admin", "editor"}:
@@ -403,21 +406,35 @@ async def validate_suggested_fix(
 async def analyze_review(
     payload: AnalyzeRequest,
     claims: Annotated[dict[str, Any], Depends(current_claims)],
-    github_token: Annotated[str | None, Header(alias="X-GitHub-Token", max_length=512)] = None,
 ):
-    if github_token and any(ord(char) < 32 or ord(char) == 127 for char in github_token):
-        raise HTTPException(status_code=400, detail="The GitHub provider token is malformed.")
     uid = claims["uid"]
+    record = None
     try:
         if payload.mode == "live":
             owner, repo, _number = parse_pull_request_url(
                 payload.pull_request_url or payload.url or ""
             )
+            record = github_account.connection(uid)
+            if payload.use_github_connection and record is None:
+                raise HTTPException(409, "Connect your GitHub account to analyze this pull request.")
+            if record is not None:
+                token = github_account.access_token(record)
+                async with async_client(token=token) as client:
+                    visible = await request_json(client, github_account.repository_path(owner, repo), use_cache=False)
+                if not isinstance(visible, dict) or not isinstance(visible.get("private"), bool):
+                    raise GitHubAPIError("GitHub returned invalid repository visibility metadata.", 502)
+                private = visible["private"] or visible.get("visibility", "public") != "public"
+                if private and payload.workspace_id:
+                    raise HTTPException(403, "Private repository reviews can only be created in your personal review history.")
+                github_account.require_current_connection(record)
+                return await analyze(payload, user_id=uid, github_token=token, repository_private=private)
             await ensure_public_repository(owner, repo)
-        return await analyze(payload, user_id=uid, github_token=github_token)
+        return await analyze(payload, user_id=uid)
     except InvalidPullRequestURL as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GitHubAPIError as exc:
+        if record is not None:
+            raise github_account.api_error(exc, record) from exc
         status = exc.status_code
         detail = str(exc)
         if status is None:
@@ -428,7 +445,7 @@ async def analyze_review(
             status = 429
         elif status == 401:
             status = 502
-            detail = "GitHub rejected its access token. Sign out and back in to reconnect GitHub, or update the backend GITHUB_TOKEN."
+            detail = "GitHub rejected the API credential used for public reviews."
         elif status == 403:
             status = 403
         elif status >= 500:
@@ -548,6 +565,8 @@ async def read_pr_test_status(review_id: str, claims: Annotated[dict[str, Any], 
     owner, repo, number, sha = pr.get("repository_owner"), pr.get("repository_name"), pr.get("pull_request_number"), pr.get("head_sha")
     if not isinstance(owner, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,39}", owner) or not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", repo) or not isinstance(number, int) or isinstance(number, bool) or number < 1 or not isinstance(sha, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", sha):
         raise HTTPException(status_code=422, detail="Review is missing canonical pull request identity.")
+    if review.get("repository_private"):
+        return {"status": "unavailable", "executed": False, "head_sha": sha.lower(), "workflow": "PR Tests", "conclusion": None, "summary": "PR Tests status is available for public repository reviews.", "html_url": None, "updated_at": None}
     try:
         current_sha = await fetch_current_pull_request_head_sha(owner, repo, number)
     except GitHubAPIError:

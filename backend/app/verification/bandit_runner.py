@@ -131,7 +131,8 @@ def run_bandit_source(
         target = write_analysis_source(temp_name, source_bytes)
         config_path = Path(temp_name) / "bandit.yaml"
         config_path.write_text("{}\n", encoding="utf-8")
-        version = tool_version("bandit", "bandit", timeout=timeout, python=executable)
+        # Bandit includes interpreter details after its own version line.
+        version = tool_version("bandit", "bandit", timeout=timeout, python=executable).splitlines()[0]
         stdout, stderr, returncode, elapsed = run_tool_process(
             [
                 executable,

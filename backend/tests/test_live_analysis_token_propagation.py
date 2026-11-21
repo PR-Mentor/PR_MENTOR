@@ -246,7 +246,7 @@ def auth_client(tmp_path, monkeypatch):
         yield instance
 
 
-def test_live_review_endpoint_with_x_github_token_header(monkeypatch, auth_client):
+def test_live_review_endpoint_ignores_browser_supplied_github_token(monkeypatch, auth_client):
     from app.routes import review as review_route
 
     captured_tokens = []
@@ -271,7 +271,7 @@ def test_live_review_endpoint_with_x_github_token_header(monkeypatch, auth_clien
     )
 
     assert response.status_code == 200, response.text
-    assert captured_tokens == ["gho_live_e2e_token_456"]
+    assert captured_tokens == [None]
     body = response.json()
     assert body["analysis_mode"] == "live"
 

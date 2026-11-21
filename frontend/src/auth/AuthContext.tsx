@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase, supabaseConfigured, supabaseConfigurationError } from '../services/supabase';
 import { syncSupabaseUser } from '../services/auth';
+import { finishGitHubOAuth, hasGitHubCallback, startGitHubOAuth } from '../services/github';
 
 export type UserProfile = {
   firebase_uid: string;
@@ -36,7 +37,7 @@ function profileFromSupabaseUser(user: User): UserProfile {
     display_name: String(metadata.full_name ?? metadata.name ?? username).slice(0, 100),
     email: user.email ?? null,
     avatar_url: typeof metadata.avatar_url === 'string' ? metadata.avatar_url : null,
-    providers: ['github'],
+    providers: Array.isArray(user.app_metadata.providers) ? user.app_metadata.providers : [],
     preferences: DEFAULT_PREFERENCES,
   };
 }
@@ -46,6 +47,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [finishingGithub, setFinishingGithub] = useState(hasGitHubCallback);
+  const [githubError, setGithubError] = useState('');
 
   useEffect(() => {
     if (!supabase) {
@@ -54,23 +57,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     let active = true;
-    let providerTokenUserId = window.sessionStorage.getItem('pr-mentor-github-provider-user');
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       if (!active) return;
-      const nextUserId = nextSession?.user.id ?? null;
-      if (providerTokenUserId && nextUserId && providerTokenUserId !== nextUserId) {
-        window.sessionStorage.removeItem('pr-mentor-github-provider-token');
-        window.sessionStorage.removeItem('pr-mentor-github-provider-user');
-      }
-      providerTokenUserId = nextUserId;
-      if (nextUserId) window.sessionStorage.setItem('pr-mentor-github-provider-user', nextUserId);
-      if (nextSession?.provider_token) {
-        window.sessionStorage.setItem('pr-mentor-github-provider-token', nextSession.provider_token);
-      } else if (event === 'SIGNED_OUT') {
-        window.sessionStorage.removeItem('pr-mentor-github-provider-token');
-        window.sessionStorage.removeItem('pr-mentor-github-provider-user');
-        providerTokenUserId = null;
-      }
       setSession(nextSession);
       setUser(nextSession?.user ? profileFromSupabaseUser(nextSession.user) : null);
       setError('');
@@ -92,6 +80,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (!hasGitHubCallback) return;
+    let active = true;
+    void finishGitHubOAuth()
+      .catch((reason: unknown) => {
+        if (active) setGithubError(reason instanceof Error ? reason.message : 'GitHub authorization could not be completed.');
+      })
+      .finally(() => { if (active) setFinishingGithub(false); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
     if (!session?.access_token) return;
     let active = true;
     void syncSupabaseUser(session.access_token)
@@ -104,12 +103,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithGithub = useCallback(async () => {
     if (!supabase) throw new Error('Add the Supabase project URL and anon key to the frontend environment before signing in.');
-    const redirectTo = new URL(import.meta.env.BASE_URL, window.location.origin).toString();
-    const { error: signInError } = await supabase.auth.signInWithOAuth({
-      provider: 'github',
-      options: { redirectTo, scopes: 'read:user user:email' },
-    });
-    if (signInError) throw signInError;
+    setGithubError('');
+    await startGitHubOAuth('login');
   }, []);
 
   const logout = useCallback(async () => {
@@ -118,11 +113,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (signOutError) throw signOutError;
     setSession(null);
     setUser(null);
+    setGithubError('');
   }, []);
 
   const value = useMemo<AuthValue>(() => ({
-    user, loading, error, configured: supabaseConfigured, configurationError: supabaseConfigurationError, signInWithGithub, logout,
-  }), [user, loading, error, signInWithGithub, logout]);
+    user, loading: loading || finishingGithub, error: githubError || error,
+    configured: supabaseConfigured, configurationError: supabaseConfigurationError, signInWithGithub, logout,
+  }), [user, loading, finishingGithub, githubError, error, signInWithGithub, logout]);
 
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

@@ -3,7 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import {
   Activity, ArrowRight, BarChart3, Bookmark, BookOpen, CheckCircle2, ChevronRight, ChevronDown, CircleAlert,
-  Code2, ExternalLink, FileCode2,
+  Code2, ExternalLink, FileCode2, FolderGit2,
   GitPullRequest, GraduationCap, History, LoaderCircle, LogOut, Menu, Moon, Search,
   ShieldCheck, Sparkles, Sun, UserRound, Users, X,
 } from 'lucide-react';
@@ -18,6 +18,9 @@ import { getReviewRouteView, loadReviewRoute, resolvePageRoute } from './service
 import ReviewWorkspacePage from './pages/ReviewWorkspacePage';
 import WorkspacesPage from './pages/WorkspacesPage';
 import DeveloperProfilePage from './pages/DeveloperProfilePage';
+import RepositoriesPage from './pages/RepositoriesPage';
+import { disconnectGitHub, getGitHubConnection, startGitHubOAuth, type GitHubConnection } from './services/github';
+
 import LearningLabPage from './pages/LearningLabPage';
 import type {
   AnalysisMode, DiffFile, LearningExercise, LearningHistory, LearningProgress,
@@ -27,7 +30,7 @@ import { useAuth } from './auth/AuthContext';
 import LoginPage from './pages/LoginPage';
 import LandingPage from './components/LandingPage';
 
-type Page = 'discover' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces';
+type Page = 'discover' | 'repositories' | 'review' | 'history' | 'saved' | 'diff' | 'learning' | 'analytics' | 'profile' | 'workspaces' | 'benchmarks';
 type Theme = 'light' | 'dark';
 
 function setDocumentTheme(theme: Theme) {
@@ -38,6 +41,7 @@ function setDocumentTheme(theme: Theme) {
 
 const nav: Array<{ id: Page; label: string; icon: typeof Search }> = [
   { id: 'discover', label: 'Discover', icon: Search },
+  { id: 'repositories', label: 'My Repositories', icon: FolderGit2 },
   { id: 'history', label: 'Recent reviews', icon: History },
   { id: 'saved', label: 'Saved pull requests', icon: Bookmark },
   { id: 'learning', label: 'Learning lab', icon: GraduationCap },
@@ -74,6 +78,13 @@ function Workspace() {
   const page = route.page as Page;
   const [mobileNav, setMobileNav] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [connection, setConnection] = useState<GitHubConnection | null>(null);
+  const [connectionLoading, setConnectionLoading] = useState(true);
+  const [connectionError, setConnectionError] = useState('');
+  const connectionRequest = useRef<AbortController | null>(null);
+  const manageConnection = new URLSearchParams(location.search).get('connection') === 'manage';
+  const repoMatch = location.pathname.match(/^\/repositories\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/?$/);
+  const coordinates = repoMatch ? { owner: repoMatch[1], repo: repoMatch[2] } : null;
   const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light');
   const [mobileViewport, setMobileViewport] = useState(() => window.matchMedia('(max-width: 760px)').matches);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
@@ -116,6 +127,33 @@ function Workspace() {
   const [insights, setInsights] = useState<LearningInsights | null>(null);
   const [analyticsState, setAnalyticsState] = useState<'idle' | 'loading' | 'error' | 'ready'>('idle');
   const [analyticsError, setAnalyticsError] = useState('');
+
+  const reloadConnection = useCallback(() => {
+    connectionRequest.current?.abort();
+    const controller = new AbortController();
+    connectionRequest.current = controller;
+    setConnectionLoading(true);
+    setConnectionError('');
+    void getGitHubConnection(controller.signal)
+      .then((value) => { if (!controller.signal.aborted) setConnection(value); })
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) setConnectionError(reason instanceof Error ? reason.message : 'Could not check your GitHub connection.');
+      })
+      .finally(() => { if (!controller.signal.aborted) setConnectionLoading(false); });
+  }, []);
+
+  useEffect(() => {
+    reloadConnection();
+    return () => connectionRequest.current?.abort();
+  }, [reloadConnection]);
+
+  const disconnectConnection = async () => {
+    const result = await disconnectGitHub();
+    connectionRequest.current?.abort();
+    setConnectionLoading(false);
+    setConnection({ connected: false, profile: null });
+    if (result.revoked === false) setConnectionError('Disconnected from PR Mentor. To remove the authorization on GitHub, open Settings → Applications → Authorized OAuth Apps.');
+  };
 
   useEffect(() => {
     let active = true;
@@ -371,7 +409,9 @@ function Workspace() {
   };
 
   const activeExerciseData = exercises.find((item) => item.id === activeExercise);
-  const activeTitle = useMemo(() => ({ discover: 'Discover', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab', analytics: 'Insights & analytics', profile: 'Developer profile', workspaces: 'Workspaces' }[page]), [page]);
+  const activeTitle = useMemo(() => ({ discover: 'Discover', repositories: 'My Repositories', review: 'Review workspace', history: 'Recent reviews', saved: 'Saved pull requests', diff: 'Pull request diff', learning: 'Learning lab', analytics: 'Insights & analytics', profile: 'Developer profile', workspaces: 'Workspaces', benchmarks: 'Benchmarks' }[page]), [page]);
+  const avatar = connection?.profile?.avatar_url ?? auth.user?.avatar_url;
+  const accountName = connection?.profile?.login ?? auth.user?.display_name ?? 'Your profile';
   const reviewRouteView = getReviewRouteView(route.reviewId, review, reviewBusy, reviewError, reviewNotFound);
 
   const toggleTheme = () => {
@@ -398,17 +438,18 @@ function Workspace() {
         </button>
         <div className="profile-menu" ref={profileMenuRef}>
           <button ref={profileTriggerRef} className="profile-trigger" type="button" aria-label={profileMenuOpen ? 'Close profile menu' : 'Open profile menu'} aria-haspopup="menu" aria-expanded={profileMenuOpen} aria-controls="profile-menu-options" onClick={() => setProfileMenuOpen((open) => !open)}>
-            {auth.user?.avatar_url ? <img className="profile-trigger-avatar" src={auth.user.avatar_url} alt=""/> : <span className="profile-trigger-avatar profile-trigger-initials">{auth.user?.display_name?.slice(0, 2).toUpperCase() ?? 'PM'}</span>}
-            <span className="profile-trigger-copy"><strong>{auth.user?.display_name ?? 'Your profile'}</strong><small>Account</small></span>
+            {avatar ? <img className="profile-trigger-avatar" src={avatar} alt=""/> : <span className="profile-trigger-avatar profile-trigger-initials">{accountName.slice(0, 2).toUpperCase()}</span>}
+            <span className="profile-trigger-copy"><strong>{accountName}</strong><small>{connection?.connected ? 'GitHub connected' : 'Account'}</small></span>
             <ChevronDown className="profile-trigger-chevron" size={15}/>
           </button>
           {profileMenuOpen && <div className="profile-dropdown" id="profile-menu-options" role="menu" aria-label="Profile options">
             <div className="profile-dropdown-identity" role="presentation">
-              {auth.user?.avatar_url ? <img className="profile-trigger-avatar" src={auth.user.avatar_url} alt=""/> : <span className="profile-trigger-avatar profile-trigger-initials">{auth.user?.display_name?.slice(0, 2).toUpperCase() ?? 'PM'}</span>}
-              <span><strong>{auth.user?.display_name ?? 'Your profile'}</strong><small>{auth.user?.email ?? ''}</small></span>
+              {avatar ? <img className="profile-trigger-avatar" src={avatar} alt=""/> : <span className="profile-trigger-avatar profile-trigger-initials">{accountName.slice(0, 2).toUpperCase()}</span>}
+              <span><strong>{accountName}</strong><small>{connection?.profile?.email ?? auth.user?.email ?? ''}</small></span>
             </div>
             <div className="profile-dropdown-divider" role="presentation"/>
             <button ref={profileMenuProfileRef} className="profile-option profile-option-profile" type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); go('profile'); }}><UserRound size={16}/>Developer profile</button>
+            <button className="profile-option profile-option-profile" type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); navigateRouter('/repositories?connection=manage'); }}><FolderGit2 size={16}/>{connection?.connected ? 'Manage Connection' : 'Connect GitHub'}</button>
             <button ref={profileSignOutRef} className="profile-option profile-option-signout" type="button" role="menuitem" onClick={() => { setProfileMenuOpen(false); void auth.logout(); }}><LogOut size={16}/>Sign out</button>
           </div>}
         </div>
@@ -425,6 +466,19 @@ function Workspace() {
 
         <main className="main-content">
           {page === 'discover' && <LandingPage url={url} setUrl={(value) => { setUrl(value); setReviewError(''); }} mode={mode} setMode={setMode} busy={reviewBusy} error={reviewError} onSubmit={runAnalysis}/>}
+
+          {page === 'repositories' && <RepositoriesPage
+            coordinates={coordinates} connection={connection} connectionLoading={connectionLoading}
+            connectionError={connectionError || auth.error} onReloadConnection={reloadConnection}
+            onConnect={() => startGitHubOAuth('connect')} onDisconnect={disconnectConnection}
+            onOpenRepository={(owner, repo) => navigateRouter(`/repositories/${owner}/${repo}`)} onBack={() => go('repositories')}
+            onAnalyze={async (pullUrl) => {
+              const result = await analyzePullRequest(pullUrl, 'live', true);
+              setReview(result);
+              openReviewRoute(result.review_id);
+            }}
+            manageConnection={manageConnection} onCloseManagement={() => navigateRouter(location.pathname, { replace: true })}
+          />}
 
           {page === 'review' && route.reviewId !== null && reviewRouteView.review
             ? <ReviewWorkspacePage accountId={user?.user_id ?? ''} review={reviewRouteView.review} history={history} historyState={historyState} historyError={historyError} diffFiles={reviewRouteView.review.diff_files ?? []} diffWarnings={diffWarnings} onBackToHistory={() => go('history')} onSave={() => void saveCurrent()} saveMessage={saveMessage} onOpenDiff={() => go('diff')} onOpenReview={openReview} onFixDecision={decideFix}/>

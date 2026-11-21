@@ -1,4 +1,7 @@
 export function resolvePageRoute(pathname) {
+  if (/^\/repositories(?:\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?\/?$/.test(pathname)) {
+    return { page: 'repositories', reviewId: null };
+  }
   const reviewPath = pathname.match(/^\/reviews(?:\/(.*?))?\/?$/);
   if (reviewPath) {
     let reviewId = reviewPath[1] ?? '';

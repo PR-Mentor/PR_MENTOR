@@ -8,6 +8,7 @@ from app.database.mongo_connection import close_mongo_client
 from app.database.reviews import get_store
 from app.routes.analytics import router as analytics_router
 from app.routes.auth import legacy_router as legacy_auth_router, router as auth_router
+from app.routes.github import router as github_router
 from app.routes.learning import router as learning_router
 from app.routes.review import router as review_router
 from app.routes.workspaces import router as workspaces_router
@@ -81,3 +82,4 @@ app.include_router(auth_router)
 app.include_router(legacy_auth_router)
 app.include_router(analytics_router)
 app.include_router(workspaces_router)
+app.include_router(github_router)

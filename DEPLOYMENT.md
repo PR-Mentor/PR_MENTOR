@@ -4,14 +4,11 @@
 
 Set the Vercel project's **Root Directory** to `frontend` and its framework preset to **Vite**. The checked-in `frontend/vercel.json` serves the generated `dist` directory and routes client-side paths to the React app. The build command is the `build` script in `frontend/package.json` (`tsc -b && vite build`).
 
- codex/phone-otp-login
 Set `VITE_API_BASE_URL=https://pr-mentor.onrender.com`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in Vercel's project environment variables for each environment that should use the backend and Supabase. The frontend uses the Render URL as its production-safe fallback if the API variable is omitted. Redeploy the frontend after changing build variables; Vite embeds them at build time. The npm `cache-dir` warning is non-fatal; remove any manually configured `npm_config_cache_dir` / `NPM_CONFIG_CACHE_DIR` variable from the Vercel project if that warning needs to be cleared.
 
 For the custom domain, add both `https://prmentor.in` and `https://www.prmentor.in` to `PR_MENTOR_CORS_ORIGINS` on the Render backend, alongside any existing origins. This variable replaces the backend's defaults when set. Redeploy/restart the backend after changing it. Check `https://pr-mentor.onrender.com/health` for API liveness and `/api/health/ready` for configured database readiness.
 
- codex/fix-supabase-env-deployment
 Set `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in Vercel's project environment variables for each environment that should use the backend and Supabase. The npm `cache-dir` warning is non-fatal; remove any manually configured `npm_config_cache_dir` / `NPM_CONFIG_CACHE_DIR` variable from the Vercel project if that warning needs to be cleared.
- main
 
 ## Render backend
 
@@ -46,10 +43,7 @@ For numeric codes on both paths, update **Authentication → Email Templates** i
 - **Confirm signup** is used for account creation. Set its subject to `{{ .Token }} is your PR Mentor verification code` and make the body display `{{ .Token }}`. Remove `{{ .ConfirmationURL }}` so signup sends a code rather than a confirmation link.
 - **Magic Link** is used for existing-user login. Set its subject to `{{ .Token }} is your PR Mentor sign-in code` and make the body display `{{ .Token }}` instead of `{{ .ConfirmationURL }}`.
 
- codex/phone-otp-login
 Use valid, simple HTML in the template body, for example `<p><strong>{{ .Token }}</strong></p>`. Avoid escaped quotes in HTML attributes; malformed attributes cause Supabase Auth to fail the email request before sending it.
 
 
- main
 The frontend verifies signup codes with OTP type `signup` and login codes with OTP type `email`. The login screen reports Supabase's missing-account OTP error and directs the user to create an account (or choose GitHub if the account uses GitHub sign-in).
- main
