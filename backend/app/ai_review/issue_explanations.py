@@ -132,6 +132,7 @@ async def _execute_single_batch(
         _raw, (explanations, rejected) = await complete_validated_json(
             "issue_explanation", CANONICAL_ISSUE_EXPLANATION_GUIDANCE, prompt,
             parse_for_batch,
+            allow_top_level_array=True,
         )
         metadata = last_call_metadata()
         if metadata is not None:
@@ -165,9 +166,17 @@ def _is_provider_connectivity_error(reason: str | None) -> bool:
 async def _process_batch_with_retry(
     batch: list[dict[str, Any]], result: ExplanationGenerationResult
 ) -> tuple[dict[str, IssueExplanation], int, str | None]:
-    """Execute a batch. If a multi-issue batch fails due to response validation or parsing, isolate failures by retrying each issue individually."""
+    """Execute a batch. If a multi-issue batch fails due to response validation or parsing,
+    isolate failures by retrying each issue individually."""
     explanations, rejected, failed_reason = await _execute_single_batch(batch, result)
     if failed_reason is None:
+        for item in batch:
+            issue_id = item["issue_id"]
+            if issue_id in explanations:
+                result.issue_statuses[issue_id] = "completed"
+            else:
+                result.issue_statuses[issue_id] = "failed"
+                result.issue_failure_reasons[issue_id] = "Explanation could not be validated for canonical issue."
         return explanations, rejected, None
 
     # If the provider itself failed with a connectivity or infrastructure error (HTTP 503, timeout, etc.),
@@ -175,7 +184,7 @@ async def _process_batch_with_retry(
     if _is_provider_connectivity_error(failed_reason):
         return {}, 0, failed_reason
 
-    # If the batch contained multiple issues, retry each individually to prevent
+    # If the batch contained multiple issues and failed, retry each individually to prevent
     # one malformed or oversized explanation response from failing the others.
     if len(batch) > 1:
         isolated_explanations: dict[str, IssueExplanation] = {}
@@ -184,18 +193,18 @@ async def _process_batch_with_retry(
         last_sub_failure = failed_reason
         for item in batch:
             sub_expls, sub_rejected, sub_err = await _execute_single_batch([item], result)
-            if sub_err is None:
+            total_rejected += sub_rejected
+            if sub_err is None and item["issue_id"] in sub_expls:
                 isolated_explanations.update(sub_expls)
-                total_rejected += sub_rejected
                 any_success = True
                 result.issue_statuses[item["issue_id"]] = "completed"
             else:
-                last_sub_failure = sub_err
+                last_sub_failure = sub_err or "Explanation could not be validated for canonical issue."
                 result.issue_statuses[item["issue_id"]] = "failed"
-                result.issue_failure_reasons[item["issue_id"]] = sub_err
+                result.issue_failure_reasons[item["issue_id"]] = last_sub_failure
         if any_success:
             return isolated_explanations, total_rejected, None
-        return {}, 0, last_sub_failure
+        return {}, total_rejected, last_sub_failure
 
     return {}, 0, failed_reason
 
@@ -443,6 +452,18 @@ def _validate_batch_response(
     except json.JSONDecodeError as exc:
         raise AIReviewUnavailable("AI provider returned invalid explanation JSON.") from exc
 
+    if isinstance(body, dict):
+        for wrapper_key in ("data", "result", "response", "review"):
+            wrapped = body.get(wrapper_key)
+            if isinstance(wrapped, dict) and any(
+                k in wrapped for k in ("explanations", "explanation", *expected_ids)
+            ):
+                body = wrapped
+                break
+            elif isinstance(wrapped, list):
+                body = wrapped
+                break
+
     entries: list[Any] | None = None
     if isinstance(body, dict):
         if isinstance(body.get("explanations"), list):
@@ -450,10 +471,6 @@ def _validate_batch_response(
         elif isinstance(body.get("explanations"), dict):
             entries = []
             for k, v in body["explanations"].items():
-                if isinstance(v, dict):
-                    inner_id = v.get("issue_id") or v.get("id") or v.get("canonical_issue_id")
-                    if inner_id and inner_id != k:
-                        continue
                 entries.append({"issue_id": k, "explanation": v})
         elif isinstance(body.get("explanation"), dict):
             # Single-issue explanation response without an 'explanations' wrapper
@@ -462,21 +479,30 @@ def _validate_batch_response(
                 entries = [{"issue_id": body_id, "explanation": body["explanation"]}]
             elif len(expected_ids) == 1:
                 entries = [{"issue_id": next(iter(expected_ids)), "explanation": body["explanation"]}]
+            else:
+                entries = [{"explanation": body["explanation"]}]
         elif any(k in expected_ids for k in body.keys()):
             entries = []
             for k, v in body.items():
-                if k in expected_ids:
-                    if isinstance(v, dict):
-                        inner_id = v.get("issue_id") or v.get("id") or v.get("canonical_issue_id")
-                        if inner_id and inner_id != k:
-                            continue
-                    entries.append({"issue_id": k, "explanation": v})
+                entries.append({"issue_id": k, "explanation": v})
         elif isinstance(body.get("summary"), str) or isinstance(body.get("root_cause"), str):
             body_id = body.get("issue_id") or body.get("id") or body.get("canonical_issue_id")
             if isinstance(body_id, str):
                 entries = [body]
             elif len(expected_ids) == 1:
                 entries = [body]
+            else:
+                entries = [body]
+        else:
+            # Check if dict maps ordinal or unknown IDs to explanation dicts
+            dict_entries = []
+            for k, v in body.items():
+                if isinstance(v, dict) and any(
+                    field in v for field in ("summary", "root_cause", "description", "explanation", "impact", "cause", "fix")
+                ):
+                    dict_entries.append({"issue_id": k, "explanation": v})
+            if dict_entries:
+                entries = dict_entries
     elif isinstance(body, list):
         entries = body
 
@@ -485,42 +511,80 @@ def _validate_batch_response(
     if len(entries) > MAX_RESPONSE_ENTRIES:
         raise AIReviewUnavailable("AI provider returned too many explanations.")
 
-    ids = [
-        entry.get("issue_id") or entry.get("id") or entry.get("canonical_issue_id")
-        for entry in entries
-        if isinstance(entry, dict)
-    ]
-    duplicates = {issue_id for issue_id, count in Counter(ids).items() if issue_id and count > 1}
+    # Phase 1: Determine the candidate ID for each entry and detect duplicates and conflicts
+    candidate_ids: list[str | None] = []
+    conflict_indices: set[int] = set()
+
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            candidate_ids.append(None)
+            continue
+
+        outer_id = None
+        for k in ("issue_id", "id", "canonical_issue_id"):
+            val = entry.get(k)
+            if isinstance(val, str) and val.strip():
+                outer_id = val.strip()
+                break
+
+        raw_expl = entry.get("explanation")
+        inner_id = None
+        if isinstance(raw_expl, dict):
+            for k in ("issue_id", "id", "canonical_issue_id"):
+                val = raw_expl.get(k)
+                if isinstance(val, str) and val.strip():
+                    inner_id = val.strip()
+                    break
+
+        if outer_id and inner_id and outer_id != inner_id:
+            conflict_indices.add(idx)
+            candidate_ids.append(None)
+            continue
+
+        cid = outer_id or inner_id
+        if not cid and len(expected_ids) == 1 and len(entries) == 1:
+            cid = next(iter(expected_ids))
+        candidate_ids.append(cid)
+
+    # Detect duplicates among valid candidate IDs
+    id_counts = Counter(cid for cid in candidate_ids if cid is not None)
+    duplicates = {cid for cid, count in id_counts.items() if count > 1}
+
+    # Phase 2: Validate each entry
     explanations: dict[str, IssueExplanation] = {}
     rejected = 0
-    for entry in entries:
-        if not isinstance(entry, dict):
+
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict) or idx in conflict_indices:
             rejected += 1
             continue
-        issue_id = entry.get("issue_id") or entry.get("id") or entry.get("canonical_issue_id")
-        if not issue_id and len(expected_ids) == 1 and len(entries) == 1:
-            issue_id = next(iter(expected_ids))
-        if not isinstance(issue_id, str) or issue_id not in expected_ids or issue_id in duplicates:
+
+        cid = candidate_ids[idx]
+        if not cid or cid not in expected_ids or cid in duplicates:
             rejected += 1
             continue
+
         raw_expl = entry.get("explanation")
         if raw_expl is None:
             raw_expl = {k: v for k, v in entry.items() if k not in ("issue_id", "id", "canonical_issue_id")}
         if not isinstance(raw_expl, dict):
             rejected += 1
             continue
-        inner_id = raw_expl.get("issue_id") or raw_expl.get("id") or raw_expl.get("canonical_issue_id")
-        if inner_id and inner_id != issue_id:
+
+        if cid in explanations:
             rejected += 1
             continue
+
         try:
-            has_context = issue_id in code_context_ids
+            has_context = cid in code_context_ids
             sanitized = _sanitize_explanation_payload(raw_expl, has_context)
             explanation = IssueExplanation.model_validate(sanitized)
         except (ValidationError, TypeError, ValueError):
             rejected += 1
             continue
-        explanations[issue_id] = explanation
+
+        explanations[cid] = explanation
+
     return explanations, rejected
 
 

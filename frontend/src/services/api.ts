@@ -24,7 +24,7 @@ import type {
 } from '../types/review';
 import { authenticatedFetch } from './auth';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'https://pr-mentor.onrender.com').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'https://pr-mentor-3b2w.onrender.com').replace(/\/$/, '');
 
 export interface CurrentUser { user_id: string; email: string }
 export type WorkspaceRole = 'owner' | 'admin' | 'editor' | 'viewer';
