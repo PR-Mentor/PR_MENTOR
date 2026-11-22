@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'https://pr-mentor.onrender.com').replace(/\/$/, '');
+const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? 'https://pr-mentor-3b2w.onrender.com').replace(/\/$/, '');
 
 export async function syncSupabaseUser(token: string) {
   const response = await fetch(`${API_BASE}/api/auth/supabase/verify`, {
