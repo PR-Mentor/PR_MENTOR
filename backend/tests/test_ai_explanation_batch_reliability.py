@@ -477,3 +477,176 @@ def test_opencv_review_3_issue_top_level_array_reproduction(monkeypatch):
     assert res.issue_statuses[id_ai_cpp] == "completed"
     assert "Unsorted imports" in res.explanations[id_ruff_1].summary
     assert "copyMakeConstBorder_8u" in res.explanations[id_ai_cpp].summary
+
+
+# ---------------------------------------------------------------------------
+# 5. Finding Pipeline, De-duplication, & False-Positive Regression Tests
+# ---------------------------------------------------------------------------
+
+
+def test_generate_candidates_deduplicates_identical_findings(monkeypatch):
+    """When the AI provider returns duplicate candidate findings with the same signature, only one is kept."""
+    from app.ai_review import reviewer
+
+    diff_files = [{
+        "path": "modules/core/src/copy.cpp",
+        "hunks": [{
+            "lines": [
+                {"kind": "added", "line": 1344, "text": "copyMakeConstBorder_8u(src.ptr(), src.step, src.size());"},
+                {"kind": "added", "line": 1345, "text": "return dst;"},
+            ]
+        }],
+    }]
+
+    dup_finding = {
+        "title": "Suspicious Memory Call",
+        "description": "Alleged type mismatch in kernel call.",
+        "file_path": "modules/core/src/copy.cpp",
+        "line_start": 1344,
+        "line_end": 1344,
+        "severity": "medium",
+        "category": "bug",
+        "confidence": 0.85,
+        "evidence": ["copyMakeConstBorder_8u"],
+        "why_it_matters": "Potential buffer misuse",
+        "suggested_fix": "Pass explicit depth conversion",
+    }
+
+    # Provider emits 3 copies of the exact same finding
+    payload = json.dumps({"findings": [dup_finding, dup_finding, dup_finding]})
+
+    async def mock_complete(*_args, **_kwargs):
+        return payload
+
+    monkeypatch.setattr(reviewer, "complete_json", mock_complete)
+    findings = asyncio.run(reviewer.generate_candidates({}, diff_files, []))
+    assert len(findings) == 1
+    assert findings[0].line_start == 1344
+
+
+def test_ai_finding_grounding_rejects_hallucinated_unchanged_lines():
+    """Verify that AI findings pointing to unchanged or missing lines in C++ code are rejected by grounding."""
+    from app.services.review_orchestrator import _ground_ai_findings
+
+    diff_files = [{
+        "path": "modules/core/src/copy.cpp",
+        "hunks": [{
+            "lines": [
+                {"kind": "added", "line": 1344, "text": "copyMakeBorderWithBorderValues();"},
+            ]
+        }],
+    }]
+
+    # 1. Finding points to line 1032 (which is in the unchanged base file, not in the PR added lines)
+    unsupported_finding = ReviewFinding(
+        id="f-hallucinated",
+        title="Hallucinated kernel bug",
+        description="False positive on legacy copyMakeConstBorder_8u kernel.",
+        file_path="modules/core/src/copy.cpp",
+        line_start=1032,
+        line_end=1032,
+        severity="medium",
+        category="bug",
+        confidence=0.8,
+        source="ai_candidate",
+        verification_status="needs_review",
+        evidence=["copyMakeConstBorder_8u"],
+        why_it_matters="Hallucination",
+        suggested_fix="None",
+        limitations=[],
+    )
+
+    accepted, rejections = _ground_ai_findings([unsupported_finding], diff_files)
+    assert len(accepted) == 0
+    assert rejections.get("line_not_in_diff") == 1
+
+
+# ---------------------------------------------------------------------------
+# 6. Provider Failure Classification & Reliability Tests
+# ---------------------------------------------------------------------------
+
+
+def test_provider_health_tracker_classifies_http_413_as_non_retryable():
+    """HTTP 413 (Payload Too Large) is classified as SIZE_LIMIT_EXCEEDED and is non-retryable."""
+    from app.ai_orchestration.health import FailureCategory, ProviderHealthTracker
+
+    tracker = ProviderHealthTracker()
+    exc = AIReviewUnavailable("AI provider request payload exceeded size limit (HTTP 413).")
+    category, retryable, retry_after = tracker.classify_exception(exc)
+
+    assert category == FailureCategory.SIZE_LIMIT_EXCEEDED
+    assert retryable is False
+    assert retry_after is None
+
+
+def test_provider_health_tracker_classifies_auth_failure_as_non_retryable():
+    """HTTP 401/403 are classified as AUTHENTICATION_ERROR and are non-retryable."""
+    from app.ai_orchestration.health import FailureCategory, ProviderHealthTracker
+
+    tracker = ProviderHealthTracker()
+    exc = AIReviewUnavailable("AI provider returned HTTP 401.")
+    category, retryable, retry_after = tracker.classify_exception(exc)
+
+    assert category == FailureCategory.AUTHENTICATION_ERROR
+    assert retryable is False
+
+
+def test_provider_health_tracker_classifies_timeout_as_retryable():
+    """Timeout exceptions are classified as TRANSIENT_NETWORK and are retryable."""
+    from app.ai_orchestration.health import FailureCategory, ProviderHealthTracker
+
+    tracker = ProviderHealthTracker()
+    exc = AIReviewUnavailable("AI provider did not respond in time (timeout).")
+    category, retryable, _ = tracker.classify_exception(exc)
+
+    assert category == FailureCategory.TRANSIENT_NETWORK
+    assert retryable is True
+
+
+# ---------------------------------------------------------------------------
+# 7. Multi-Language Context & Candidate Normalization (C, C++, Java, Python)
+# ---------------------------------------------------------------------------
+
+
+def test_multi_language_ai_candidate_normalization_all_languages(monkeypatch):
+    """Verify AI candidate generation and normalization works consistently across C, C++, Java, and Python."""
+    from app.ai_review import reviewer
+
+    diff_files = [
+        {"path": "src/driver.c", "hunks": [{"lines": [{"kind": "added", "line": 10, "text": "char* p = malloc(32);"}]}]},
+        {"path": "src/matrix.cpp", "hunks": [{"lines": [{"kind": "added", "line": 42, "text": "auto ptr = std::make_shared<Mat>();"}]}]},
+        {"path": "src/Server.java", "hunks": [{"lines": [{"kind": "added", "line": 88, "text": "ServerSocket s = new ServerSocket(8080);"}]}]},
+        {"path": "src/app.py", "hunks": [{"lines": [{"kind": "added", "line": 15, "text": "subprocess.run(shlex.split(cmd))"}]}]},
+    ]
+
+    raw_candidates = [
+        {"file": "src/driver.c", "line": 10, "title": "C Memory Leak", "severity": "warning", "category": "security", "confidence": "90%", "evidence": ["malloc(32)"], "description": "Pointer not freed"},
+        {"file": "src/matrix.cpp", "line": 42, "title": "C++ Modern Pointer", "severity": "info", "category": "best_practice", "confidence": 0.95, "evidence": ["std::make_shared<Mat>()"], "description": "Good use of smart pointers"},
+        {"file": "src/Server.java", "line": 88, "title": "Java Socket Binding", "severity": "error", "category": "bug", "confidence": 0.8, "evidence": ["ServerSocket s = new ServerSocket(8080)"], "description": "Hardcoded port"},
+        {"file": "src/app.py", "line": 15, "title": "Python Safe Subprocess", "severity": "low", "category": "code_quality", "confidence": "0.75", "evidence": ["shlex.split(cmd)"], "description": "Avoids shell=True"},
+    ]
+
+    async def mock_complete(*_args, **_kwargs):
+        return json.dumps({"findings": raw_candidates})
+
+    monkeypatch.setattr(reviewer, "complete_json", mock_complete)
+
+    findings = asyncio.run(reviewer.generate_candidates({}, diff_files, []))
+    assert len(findings) == 4
+
+    findings_by_file = {f.file_path: f for f in findings}
+    # C finding: severity warning -> medium
+    assert findings_by_file["src/driver.c"].severity == "medium"
+    assert findings_by_file["src/driver.c"].confidence == 0.90
+
+    # C++ finding: severity info -> informational, category best_practice -> code_quality
+    assert findings_by_file["src/matrix.cpp"].severity == "informational"
+    assert findings_by_file["src/matrix.cpp"].category == "code_quality"
+
+    # Java finding: severity error -> high
+    assert findings_by_file["src/Server.java"].severity == "high"
+
+    # Python finding
+    assert findings_by_file["src/app.py"].severity == "low"
+    assert findings_by_file["src/app.py"].confidence == 0.75
+

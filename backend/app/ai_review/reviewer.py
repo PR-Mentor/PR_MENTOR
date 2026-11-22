@@ -286,11 +286,22 @@ async def generate_candidates(
             body = json.loads(cleaned_raw)
             items = _extract_findings_array(body)
             findings: list[ReviewFinding] = []
+            seen_signatures: set[tuple[str, int | None, int | None, str, str]] = set()
             for item in items[:100]:
                 if not isinstance(item, dict):
                     continue
                 candidate = _normalize_candidate_payload(item)
                 finding = ReviewFinding.model_validate(candidate)
+                sig = (
+                    finding.file_path,
+                    finding.line_start,
+                    finding.line_end,
+                    finding.category,
+                    " ".join(finding.title.lower().split()),
+                )
+                if sig in seen_signatures:
+                    continue
+                seen_signatures.add(sig)
                 if _finding_supported_by_diff(finding, files):
                     findings.append(finding)
             annotate_last_call(
