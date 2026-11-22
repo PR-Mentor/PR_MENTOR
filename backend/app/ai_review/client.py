@@ -179,17 +179,22 @@ async def complete_json(
         retries = max(0, min(int(os.getenv("LLM_PROVIDER_RETRIES", "1")), 2))
     except ValueError:
         retries = 1
+    try:
+        rate_limit_retries = max(retries, min(int(os.getenv("LLM_PROVIDER_RATE_LIMIT_RETRIES", "3")), 5))
+    except ValueError:
+        rate_limit_retries = 3
     response_limit = max_response_bytes or 1_000_000
     total_attempts = 0
     attempted_providers: list[str] = []
     last_reason = "provider request failed"
-    from app.ai_orchestration.health import get_health_tracker
+    from app.ai_orchestration.health import FailureCategory, get_health_tracker
     from app.ai_orchestration.models import get_model_registry
     health_tracker = get_health_tracker()
     model_registry = get_model_registry()
 
     for provider_index, provider in enumerate(providers):
-        for attempt in range(retries + 1):
+        max_attempts = rate_limit_retries + 1
+        for attempt in range(max_attempts):
             total_attempts += 1
             if provider.name not in attempted_providers:
                 attempted_providers.append(provider.name)
@@ -223,9 +228,22 @@ async def complete_json(
                 last_reason = str(exc)
                 if not retryable:
                     break
-                if attempt < retries:
-                    delay = retry_after if retry_after is not None else (0.2 * (2 ** attempt))
-                    await asyncio.sleep(min(delay, 5.0))
+                is_rate_limit = (category == FailureCategory.RATE_LIMIT)
+                allowed_retries = rate_limit_retries if is_rate_limit else retries
+                if attempt < allowed_retries:
+                    if is_rate_limit:
+                        import random
+                        jitter = random.uniform(0.1, 0.5)
+                        if retry_after is not None and retry_after > 0:
+                            delay = retry_after + jitter
+                        else:
+                            delay = (1.0 * (2 ** attempt)) + jitter
+                        await asyncio.sleep(min(delay, 15.0))
+                    else:
+                        delay = retry_after if retry_after is not None else (0.2 * (2 ** attempt))
+                        await asyncio.sleep(min(delay, 5.0))
+                else:
+                    break
     _last_call.set({"status": "unavailable", "providers_attempted": attempted_providers, "attempt_count": total_attempts})
     raise AIReviewUnavailable(f"Configured AI provider chain failed: {last_reason}")
 

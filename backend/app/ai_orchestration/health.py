@@ -96,6 +96,47 @@ class ProviderHealthTracker:
         self._states.clear()
 
     @staticmethod
+    def _parse_retry_after(headers: Any) -> float | None:
+        if not hasattr(headers, "get"):
+            return None
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+        if raw and isinstance(raw, str):
+            try:
+                val = float(raw.strip())
+                if val >= 0:
+                    return min(val, 60.0)
+            except ValueError:
+                import datetime
+                import email.utils
+                try:
+                    date_tuple = email.utils.parsedate_to_datetime(raw.strip())
+                    now = datetime.datetime.now(datetime.timezone.utc)
+                    diff = (date_tuple - now).total_seconds()
+                    if diff >= 0:
+                        return min(diff, 60.0)
+                except Exception:
+                    pass
+        raw_ms = headers.get("retry-after-ms")
+        if raw_ms and isinstance(raw_ms, str):
+            try:
+                val = float(raw_ms.strip()) / 1000.0
+                if val >= 0:
+                    return min(val, 60.0)
+            except ValueError:
+                pass
+        for reset_key in ("x-ratelimit-reset-requests", "x-ratelimit-reset-tokens"):
+            reset_val = headers.get(reset_key)
+            if reset_val and isinstance(reset_val, str):
+                clean = reset_val.strip().rstrip("sS")
+                try:
+                    val = float(clean)
+                    if val >= 0:
+                        return min(val, 60.0)
+                except ValueError:
+                    pass
+        return None
+
+    @staticmethod
     def classify_exception(exc: Exception) -> tuple[FailureCategory, bool, float | None]:
         """Classify exception into category, retryability, and optional retry-after."""
         target_exc = exc.__cause__ if exc.__cause__ is not None else exc
@@ -106,13 +147,7 @@ class ProviderHealthTracker:
         if isinstance(target_exc, httpx.HTTPStatusError):
             code = target_exc.response.status_code
             if code == 429:
-                retry_after: float | None = None
-                raw_header = target_exc.response.headers.get("Retry-After")
-                if raw_header:
-                    try:
-                        retry_after = float(raw_header)
-                    except ValueError:
-                        pass
+                retry_after = ProviderHealthTracker._parse_retry_after(target_exc.response.headers)
                 return FailureCategory.RATE_LIMIT, True, retry_after
             if code in (401, 403):
                 return FailureCategory.AUTHENTICATION_ERROR, False, None
@@ -124,7 +159,10 @@ class ProviderHealthTracker:
 
         msg = str(exc).lower()
         if "http 429" in msg or "rate limit" in msg:
-            return FailureCategory.RATE_LIMIT, True, None
+            retry_after = None
+            if hasattr(target_exc, "response") and hasattr(target_exc.response, "headers"):
+                retry_after = ProviderHealthTracker._parse_retry_after(target_exc.response.headers)
+            return FailureCategory.RATE_LIMIT, True, retry_after
         if "http 401" in msg or "http 403" in msg or "unauthorized" in msg or "forbidden" in msg:
             return FailureCategory.AUTHENTICATION_ERROR, False, None
         if any(f"http 50{i}" in msg for i in range(10)):

@@ -336,8 +336,15 @@ async def analyze(
                     issue.explanation_status = explanation_result.issue_statuses.get(issue.issue_id, "failed")
                     issue.explanation_failure_reason = explanation_result.issue_failure_reasons.get(issue.issue_id)
             explained_count = len(explanation_result.explanations)
+            expected_issue_ids = {issue.issue_id for issue in reconciliation.issues}
+            all_canonical_explained = (
+                expected_issue_ids.issubset(explanation_result.explanations.keys())
+                if expected_issue_ids
+                else True
+            )
             has_failures = bool(
-                explanation_result.failed_batch_count
+                not all_canonical_explained
+                or explanation_result.failed_batch_count
                 or explanation_result.rejected_explanation_count
                 or explanation_result.context_failure_count
                 or explained_count < len(reconciliation.issues)

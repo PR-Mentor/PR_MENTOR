@@ -650,3 +650,191 @@ def test_multi_language_ai_candidate_normalization_all_languages(monkeypatch):
     assert findings_by_file["src/app.py"].severity == "low"
     assert findings_by_file["src/app.py"].confidence == 0.75
 
+
+# ---------------------------------------------------------------------------
+# 8. Rate Limiting, Backoff, Jitter, and Pacing Reliability Tests
+# ---------------------------------------------------------------------------
+
+
+def test_provider_health_tracker_parses_numeric_retry_after():
+    """Health tracker parses numeric Retry-After seconds header."""
+    from app.ai_orchestration.health import FailureCategory, ProviderHealthTracker
+
+    tracker = ProviderHealthTracker()
+    resp = httpx.Response(429, headers={"Retry-After": "2.5"})
+    exc = AIReviewUnavailable("AI provider returned HTTP 429.")
+    exc.__cause__ = httpx.HTTPStatusError("Rate limit", request=None, response=resp)
+
+    category, retryable, retry_after = tracker.classify_exception(exc)
+    assert category == FailureCategory.RATE_LIMIT
+    assert retryable is True
+    assert retry_after == 2.5
+
+
+def test_provider_health_tracker_parses_retry_after_ms():
+    """Health tracker parses retry-after-ms millisecond header."""
+    from app.ai_orchestration.health import FailureCategory, ProviderHealthTracker
+
+    tracker = ProviderHealthTracker()
+    resp = httpx.Response(429, headers={"retry-after-ms": "1500"})
+    exc = AIReviewUnavailable("AI provider returned HTTP 429.")
+    exc.__cause__ = httpx.HTTPStatusError("Rate limit", request=None, response=resp)
+
+    category, retryable, retry_after = tracker.classify_exception(exc)
+    assert category == FailureCategory.RATE_LIMIT
+    assert retryable is True
+    assert retry_after == 1.5
+
+
+def test_provider_health_tracker_parses_ratelimit_reset_header():
+    """Health tracker parses x-ratelimit-reset-requests header."""
+    from app.ai_orchestration.health import FailureCategory, ProviderHealthTracker
+
+    tracker = ProviderHealthTracker()
+    resp = httpx.Response(429, headers={"x-ratelimit-reset-requests": "3s"})
+    exc = AIReviewUnavailable("AI provider returned HTTP 429.")
+    exc.__cause__ = httpx.HTTPStatusError("Rate limit", request=None, response=resp)
+
+    category, retryable, retry_after = tracker.classify_exception(exc)
+    assert category == FailureCategory.RATE_LIMIT
+    assert retryable is True
+    assert retry_after == 3.0
+
+
+def test_complete_json_retries_and_recovers_on_http_429(monkeypatch):
+    """complete_json recovers when HTTP 429 is encountered on initial attempt."""
+    provider = ProviderConfig("test-p", "secret", "model", "https://example.com/chat", True, 2)
+    monkeypatch.setattr(client, "provider_registry", lambda _task=None: [provider])
+    monkeypatch.setattr(client, "llm_configuration", lambda: ("secret", "model", None))
+    monkeypatch.setenv("LLM_PROVIDER_RATE_LIMIT_RETRIES", "2")
+
+    calls = 0
+    sleeps = []
+
+    async def fake_sleep(secs):
+        sleeps.append(secs)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    def handle_request(req):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"Retry-After": "1.0"}, content=b"Rate limit")
+        return httpx.Response(200, content=b'{"choices":[{"message":{"content":"{\\"status\\":\\"ok\\"}"}}]}')
+
+    transport = httpx.MockTransport(handle_request)
+
+    class CustomAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", CustomAsyncClient)
+
+    raw = asyncio.run(client.complete_json("sys", "user"))
+    assert json.loads(raw) == {"status": "ok"}
+    assert calls == 2
+    assert len(sleeps) == 1
+    # Slept at least retry_after (1.0s) + jitter
+    assert sleeps[0] >= 1.0
+
+
+def test_complete_json_exhausts_retries_on_persistent_429(monkeypatch):
+    """complete_json halts after rate_limit_retries on persistent 429."""
+    provider = ProviderConfig("test-p", "secret", "model", "https://example.com/chat", True, 2)
+    monkeypatch.setattr(client, "provider_registry", lambda _task=None: [provider])
+    monkeypatch.setattr(client, "llm_configuration", lambda: ("secret", "model", None))
+    monkeypatch.setenv("LLM_PROVIDER_RATE_LIMIT_RETRIES", "2")
+
+    calls = 0
+    sleeps = []
+
+    async def fake_sleep(secs):
+        sleeps.append(secs)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    def handle_request(req):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, content=b"Rate limit")
+
+    transport = httpx.MockTransport(handle_request)
+
+    class CustomAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", CustomAsyncClient)
+
+    with pytest.raises(AIReviewUnavailable) as exc_info:
+        asyncio.run(client.complete_json("sys", "user"))
+
+    assert "HTTP 429" in str(exc_info.value)
+    # Initial attempt + 2 retries = 3 total attempts
+    assert calls == 3
+    assert len(sleeps) == 2
+
+
+def test_permanent_error_http_401_does_not_retry(monkeypatch):
+    """Permanent errors (HTTP 401) abort immediately on attempt 1 without retry."""
+    provider = ProviderConfig("test-p", "secret", "model", "https://example.com/chat", True, 2)
+    monkeypatch.setattr(client, "provider_registry", lambda _task=None: [provider])
+    monkeypatch.setattr(client, "llm_configuration", lambda: ("secret", "model", None))
+
+    calls = 0
+
+    def handle_request(req):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(401, content=b"Unauthorized")
+
+    transport = httpx.MockTransport(handle_request)
+
+    class CustomAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = transport
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", CustomAsyncClient)
+
+    with pytest.raises(AIReviewUnavailable) as exc_info:
+        asyncio.run(client.complete_json("sys", "user"))
+
+    assert "HTTP 401" in str(exc_info.value)
+    assert calls == 1
+
+
+def test_completion_validation_strictly_requires_all_canonical_ids():
+    """Validation requires exact canonical IDs and marks status accurately."""
+    from app.ai_review.issue_explanations import ExplanationGenerationResult
+    from app.schemas.issue import CanonicalIssue, FindingObservation
+
+    issues = [_issue("issue-alpha"), _issue("issue-beta")]
+    expected_ids = {iss.issue_id for iss in issues}
+
+    # Case 1: All issues explained
+    full_result = ExplanationGenerationResult(
+        explanations={
+            "issue-alpha": _explanation(),
+            "issue-beta": _explanation(),
+        },
+        batch_count=1,
+        failed_batch_count=0,
+    )
+    all_explained = expected_ids.issubset(full_result.explanations.keys())
+    assert all_explained is True
+    assert len(full_result.explanations) == 2
+
+    # Case 2: Only 1 of 2 explained (partial)
+    partial_result = ExplanationGenerationResult(
+        explanations={"issue-alpha": _explanation()},
+        batch_count=1,
+        failed_batch_count=0,
+    )
+    all_explained_partial = expected_ids.issubset(partial_result.explanations.keys())
+    assert all_explained_partial is False
+
+

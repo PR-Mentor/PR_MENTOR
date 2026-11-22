@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -92,7 +93,11 @@ async def generate_issue_explanations(
 
     batches = _batch_contexts(contexts)
     result.batch_count = len(batches)
-    for batch in batches:
+    for batch_index, batch in enumerate(batches):
+        if batch_index > 0:
+            inter_batch_delay = float(os.getenv("LLM_EXPLANATION_INTER_BATCH_DELAY", "0.0"))
+            if inter_batch_delay > 0:
+                await asyncio.sleep(inter_batch_delay)
         explanations, rejected, failed_reason = await _process_batch_with_retry(batch, result)
         if failed_reason:
             result.failed_batch_count += 1
