@@ -95,17 +95,42 @@ export function getWorkspaceLearningInsights(workspaceId: string): Promise<Learn
   return request<LearningInsights>(`/api/workspaces/${encodeURIComponent(workspaceId)}/learning-insights`);
 }
 
-export function analyzePullRequest(url: string, mode: AnalysisMode, useGithubConnection = false): Promise<ReviewResponse> {
-  return request<ReviewResponse>('/api/reviews/analyze', {
+const LIVE_REVIEW_TIMEOUT_MS = 150_000;
+const QUICK_REVIEW_TIMEOUT_MS = 20_000;
+
+export async function analyzePullRequest(
+  url: string,
+  mode: AnalysisMode,
+  useGithubConnection = false,
+  depth: 'quick' | 'full' = 'full',
+): Promise<ReviewResponse> {
+  const controller = mode === 'live' ? new AbortController() : undefined;
+  const analysis = request<ReviewResponse>('/api/reviews/analyze', {
+    signal: controller?.signal,
     method: 'POST',
     body: JSON.stringify({
       url,
       mode,
+      depth,
       include_learning: true,
       include_suggested_fixes: true,
       use_github_connection: useGithubConnection,
     }),
   });
+  if (!controller) return analysis;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('Live analysis timed out. Check Recent reviews before retrying.'));
+      controller.abort();
+    }, depth === 'quick' ? QUICK_REVIEW_TIMEOUT_MS : LIVE_REVIEW_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([analysis, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export interface ReviewJob { job_id: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; review_id?: string | null; error_code?: string | null }

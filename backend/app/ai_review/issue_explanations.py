@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections import Counter
@@ -30,6 +31,7 @@ from app.schemas.issue import (
     LearningResource,
 )
 
+MAX_EXPLANATION_SECONDS = 25.0
 MAX_ISSUES_PER_BATCH = 3
 MAX_OBSERVATIONS_PER_ISSUE = 6
 MAX_EVIDENCE_ITEMS_PER_OBSERVATION = 2
@@ -93,12 +95,22 @@ async def generate_issue_explanations(
 
     batches = _batch_contexts(contexts)
     result.batch_count = len(batches)
+    deadline = asyncio.get_running_loop().time() + MAX_EXPLANATION_SECONDS
+    budget_reason = "Issue explanation time budget reached."
+    budget_exhausted = False
     for batch_index, batch in enumerate(batches):
-        if batch_index > 0:
-            inter_batch_delay = float(os.getenv("LLM_EXPLANATION_INTER_BATCH_DELAY", "0.0"))
-            if inter_batch_delay > 0:
-                await asyncio.sleep(inter_batch_delay)
-        explanations, rejected, failed_reason = await _process_batch_with_retry(batch, result)
+        try:
+            async with asyncio.timeout_at(deadline):
+                if batch_index > 0:
+                    inter_batch_delay = float(os.getenv("LLM_EXPLANATION_INTER_BATCH_DELAY", "0.0"))
+                    if inter_batch_delay > 0:
+                        await asyncio.sleep(inter_batch_delay)
+                explanations, rejected, failed_reason = await _process_batch_with_retry(batch, result)
+        except TimeoutError:
+            budget_exhausted = True
+            result.failed_batch_count += len(batches) - batch_index
+            result.failure_reasons.append(budget_reason)
+            break
         if failed_reason:
             result.failed_batch_count += 1
             result.failure_reasons.append(failed_reason)
@@ -116,6 +128,12 @@ async def generate_issue_explanations(
         if issue.issue_id in ambiguous_ids:
             result.issue_statuses[issue.issue_id] = "unavailable"
             result.issue_failure_reasons[issue.issue_id] = "Canonical issue ID was ambiguous."
+        elif budget_exhausted and issue.issue_id not in result.explanations and (
+            issue.issue_id not in result.issue_statuses
+            or result.issue_statuses[issue.issue_id] == "completed"
+        ):
+            result.issue_statuses[issue.issue_id] = "unavailable"
+            result.issue_failure_reasons[issue.issue_id] = budget_reason
         elif issue.issue_id not in result.explanations and issue.issue_id not in result.issue_statuses:
             result.issue_statuses[issue.issue_id] = "failed"
             result.issue_failure_reasons[issue.issue_id] = "Explanation could not be generated."

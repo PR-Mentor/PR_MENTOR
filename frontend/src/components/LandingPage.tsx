@@ -11,6 +11,8 @@ type LandingPageProps = {
   setUrl: (value: string) => void;
   mode: AnalysisMode;
   setMode: (value: AnalysisMode) => void;
+  fullReview: boolean;
+  setFullReview: (value: boolean) => void;
   busy: boolean;
   error: string;
   onSubmit: (event: FormEvent) => void;
@@ -29,7 +31,7 @@ const capabilities = [
   { icon: BookOpen, title: 'Learning lab', tag: 'PRACTICE', copy: 'Turn review concepts into small exercises and track progress over time.' },
 ];
 
-export default function LandingPage({ url, setUrl, mode, setMode, busy, error, onSubmit }: LandingPageProps) {
+export default function LandingPage({ url, setUrl, mode, setMode, fullReview, setFullReview, busy, error, onSubmit }: LandingPageProps) {
   return (
     <div className="landing-page">
       <section className="landing-hero" aria-labelledby="hero-title">
@@ -64,6 +66,7 @@ export default function LandingPage({ url, setUrl, mode, setMode, busy, error, o
           <label htmlFor="pr-url">GitHub pull request URL</label>
           <div className="landing-input-row"><GitPullRequest size={18}/><input id="pr-url" type="url" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/owner/repository/pull/42" autoComplete="url"/><button className="analyze-button" type="submit" disabled={busy}>{busy ? <><span className="spin"/> Reviewing</> : <>Analyze PR <ArrowRight size={16}/></>}</button></div>
           <fieldset className="landing-mode-select"><legend>Review mode</legend><label className={mode === 'demo' ? 'is-selected' : ''}><input type="radio" name="mode" value="demo" checked={mode === 'demo'} onChange={() => setMode('demo')}/><span><strong>Demo</strong><small>Explore illustrative learning findings</small></span></label><label className={mode === 'live' ? 'is-selected' : ''}><input type="radio" name="mode" value="live" checked={mode === 'live'} onChange={() => setMode('live')}/><span><strong>Live analysis</strong><small>Review available PR evidence</small></span></label></fieldset>
+          {mode === 'live' && <label><input type="checkbox" checked={fullReview} disabled={busy} onChange={(event) => setFullReview(event.target.checked)}/> Include AI explanations and suggested fixes (takes longer)</label>}
           {error && <div className="alert error-alert" role="alert">{error}</div>}
           <p className="form-note"><ShieldCheck size={14}/> Submitted repository code is not executed by PR Mentor.</p>
         </form>

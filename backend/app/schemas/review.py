@@ -14,6 +14,7 @@ class AnalyzeRequest(BaseModel):
     url: str | None = None
     pull_request_url: str | None = None
     mode: Literal["demo", "live"] = "demo"
+    depth: Literal["quick", "full"] = "full"
     include_learning: bool = True
     include_suggested_fixes: bool = False
     use_github_connection: bool = False

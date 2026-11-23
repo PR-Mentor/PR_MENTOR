@@ -8,31 +8,20 @@ Set `VITE_API_BASE_URL=https://pr-mentor-3b2w.onrender.com`, `VITE_SUPABASE_URL`
 
 For the custom domain, add both `https://prmentor.in` and `https://www.prmentor.in` to `PR_MENTOR_CORS_ORIGINS` on the Render backend, alongside any existing origins. This variable replaces the backend's defaults when set. Redeploy/restart the backend after changing it. Check `https://pr-mentor-3b2w.onrender.com/health` for API liveness and `/api/health/ready` for configured database readiness.
 
-Set `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in Vercel's project environment variables for each environment that should use the backend and Supabase. The npm `cache-dir` warning is non-fatal; remove any manually configured `npm_config_cache_dir` / `NPM_CONFIG_CACHE_DIR` variable from the Vercel project if that warning needs to be cleared.
 
 ## Render backend
 
 The backend always allows the production origins `https://prmentor.in` and `https://www.prmentor.in`, even when `PR_MENTOR_CORS_ORIGINS` is set. Keep any other required frontend origins in that variable and redeploy the backend after changing configuration.
 
-The FastAPI service must deploy this repository's `codex/fix-supabase-env-deployment` branch to use the repaired backend entry point. The failed deployment log was building `main` at `742c106`; it failed during app import because `backend/app/routes/review.py` contained an indented branch-name line. That stray line is absent from the repaired branch.
+Use a verified release commit from `main` for the Render backend. Set **Root Directory** to `backend`, **Build Command** to `pip install -r requirements.txt && python -m compileall -q app`, and **Start Command** to `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Keep the existing MongoDB and Supabase environment settings. Check both health endpoints and submit an authenticated live review after deployment.
 
-In the Render service settings, set **Branch** to `codex/fix-supabase-env-deployment`, **Root Directory** to `backend`, **Build Command** to `pip install -r requirements.txt`, and **Start Command** to `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Set `MONGODB_URI` to the Atlas connection string and optionally set `MONGODB_DATABASE` to the existing database name (`pr_mentor` by default) in Render's Environment page. Keep the database URI secret; do not commit it. Render now selects MongoDB for durable storage and reports the API as not ready if the URI is missing, instead of writing review history to ephemeral SQLite storage.
+Quick reviews use a 17-second server deadline and a 20-second browser deadline. The browser deadline includes network and hosting time. Use an always-on backend if the first review after an idle period must meet the same target.
 
 ### Learning Lab Persistence & Render Disks
 The Learning Lab subsystems (PR learning spaces, concepts, coding exercises, drafts, and submissions) persist to SQLite via `connection()`. To ensure learning progress, drafts, and spaces survive service restarts or redeployments on Render:
 1. Attach a **Render Persistent Disk** to the backend service (e.g., Mount Path: `/var/data`, Size: 1 GB+).
 2. Set `PR_MENTOR_DATABASE_PATH=/var/data/pr_mentor.sqlite3` in Render's Environment Variables.
 Reviews and workspaces continue using MongoDB as configured by `MONGODB_URI`.
-
-Set `VITE_API_BASE_URL=https://pr-mentor-3b2w.onrender.com`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in Vercel's project environment variables for each environment that should use the backend and Supabase. The frontend uses the Render URL as its production-safe fallback if the API variable is omitted. Redeploy the frontend after changing build variables; Vite embeds them at build time. The npm `cache-dir` warning is non-fatal; remove any manually configured `npm_config_cache_dir` / `NPM_CONFIG_CACHE_DIR` variable from the Vercel project if that warning needs to be cleared.
-
-For the custom domain, add both `https://prmentor.in` and `https://www.prmentor.in` to `PR_MENTOR_CORS_ORIGINS` on the Render backend, alongside any existing origins. This variable replaces the backend's defaults when set. Redeploy/restart the backend after changing it. Check `https://pr-mentor-3b2w.onrender.com/health` for API liveness and `/api/health/ready` for configured database readiness.
-
-## Render backend
-
-The FastAPI service must deploy this repository's `codex/fix-supabase-env-deployment` branch to use the repaired backend entry point. The failed deployment log was building `main` at `742c106`; it failed during app import because `backend/app/routes/review.py` contained an indented branch-name line. That stray line is absent from the repaired branch.
-
-In the Render service settings, set **Branch** to `codex/fix-supabase-env-deployment`, **Root Directory** to `backend`, **Build Command** to `pip install -r requirements.txt`, and **Start Command** to `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Configure the service's existing runtime environment variables (including the storage connection and Supabase validation settings) in Render's Environment page; do not commit secrets.
 
 ## Email OTP with Brevo
 
