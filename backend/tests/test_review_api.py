@@ -31,6 +31,29 @@ def client(tmp_path, monkeypatch):
         yield instance
 
 
+def test_live_review_deadline_is_retryable(client, monkeypatch):
+    from app.routes import review as review_routes
+
+    original = review_routes._analyze_review
+
+    async def stalled_analysis(_payload, _uid):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(review_routes, "LIVE_REVIEW_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(review_routes, "_analyze_review", stalled_analysis)
+    payload = {"url": "https://github.com/example/project/pull/7", "mode": "live"}
+
+    timed_out = client.post("/api/reviews/analyze", json=payload)
+    assert timed_out.status_code == 504
+    assert "retrying" in timed_out.json()["detail"]
+    assert client.get("/api/reviews/history").json() == []
+
+    monkeypatch.setattr(review_routes, "_analyze_review", original)
+    retry = client.post("/api/reviews/analyze", json={**payload, "mode": "demo"})
+    assert retry.status_code == 200
+    assert retry.json()["is_demo"] is True
+
+
 def test_demo_review_history_detail_and_diff_are_persisted(client):
     submitted_url = "https://github.com/example/project/pull/7"
     response = client.post("/api/reviews/analyze", json={"url": submitted_url, "mode": "demo", "include_learning": True})

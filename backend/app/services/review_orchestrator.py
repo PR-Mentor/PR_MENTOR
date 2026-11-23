@@ -1,11 +1,13 @@
 """Coordinate ingestion, static checks, optional AI review, and persistence."""
 
 import asyncio
+import logging
 import re
 import tempfile
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -47,8 +49,11 @@ from app.verification.ruff_runner import ToolExecutionError, run_ruff
 from app.verification.test_runner import run_tests
 
 
+AI_REVIEW_TIMEOUT_SECONDS = 20
+FIX_FRESHNESS_TIMEOUT_SECONDS = 8
 MAX_SOURCE_FETCH_ATTEMPTS = 20
 SOURCE_FETCH_CONCURRENCY = 5
+_logger = logging.getLogger("uvicorn.error.pr_mentor.review")
 
 
 async def analyze(
@@ -104,6 +109,15 @@ async def analyze(
         return response
 
     started = datetime.now(UTC)
+    stage_started = perf_counter()
+    stage_ms: dict[str, int] = {}
+
+    def record_stage(name: str) -> None:
+        nonlocal stage_started
+        now = perf_counter()
+        stage_ms[name] = round((now - stage_started) * 1000)
+        stage_started = now
+
     bundle = (
         await fetch_pull_request(submitted_url, github_token=github_token)
         if github_token
@@ -167,6 +181,7 @@ async def analyze(
                 continue
             source_files.append((safe_name, content))
 
+    record_stage("github")
     tool_results: list[dict[str, Any]] = [{"tool": "github_rest_api", "status": "completed", "files_received": len(bundle.files), "analyzable_patch_files": sum(bool(file.patch) and file.status != "removed" for file in bundle.files)}]
     normalized_static: list[ReviewFinding] = []
     static_observations: list[FindingObservation] = []
@@ -215,26 +230,28 @@ async def analyze(
                             "reason": f"No eligible {adapter.display_name} source was available for analysis.",
                         })
 
+    record_stage("static_analysis")
     ai_findings: list[ReviewFinding] = []
     if is_configured():
         try:
-            try:
-                if repository_private:
-                    repository_structure = summarize_python_sources(source_files)
-                elif not isinstance(head_sha, str):
-                    raise TypeError("Pull request source identity is unavailable.")
-                else:
-                    repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
-            except Exception:  # noqa: BLE001 - full-repository context is optional; changed-file context remains available.
-                repository_structure = _summarize_sources_by_language(registry, source_files)
-                warnings.append("Full repository context was unavailable; AI review used changed-file structure only.")
-            prompt_metadata = bundle.metadata.model_dump(mode="json")
-            prompt_metadata["repository_structure"] = repository_structure
-            ai_findings = await generate_candidates(
-                prompt_metadata,
-                diff_files,
-                [item.model_dump(mode="json") for item in normalized_static],
-            )
+            async with asyncio.timeout(AI_REVIEW_TIMEOUT_SECONDS):
+                try:
+                    if repository_private:
+                        repository_structure = summarize_python_sources(source_files)
+                    elif not isinstance(head_sha, str):
+                        raise TypeError("Pull request source identity is unavailable.")
+                    else:
+                        repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
+                except Exception:  # noqa: BLE001 - full-repository context is optional; changed-file context remains available.
+                    repository_structure = _summarize_sources_by_language(registry, source_files)
+                    warnings.append("Full repository context was unavailable; AI review used changed-file structure only.")
+                prompt_metadata = bundle.metadata.model_dump(mode="json")
+                prompt_metadata["repository_structure"] = repository_structure
+                ai_findings = await generate_candidates(
+                    prompt_metadata,
+                    diff_files,
+                    [item.model_dump(mode="json") for item in normalized_static],
+                )
             ai_findings, ai_rejections = _ground_ai_findings(ai_findings, diff_files)
             provider_metadata = last_call_metadata() or {}
             tool_results.append({
@@ -265,11 +282,12 @@ async def analyze(
                 warnings.append(
                     "AI findings that could not be grounded in changed PR code were omitted."
                 )
-        except AIReviewUnavailable as exc:
+        except (AIReviewUnavailable, TimeoutError) as exc:
             provider_metadata = last_call_metadata() or {}
             tool_results.append({
                 "tool": "ai_review", "status": "unavailable", "executed": False,
-                "reason": str(exc), "providers_attempted": provider_metadata.get("providers_attempted", []),
+                "reason": "AI review time budget reached." if isinstance(exc, TimeoutError) else str(exc),
+                "providers_attempted": provider_metadata.get("providers_attempted", []),
                 "attempt_count": provider_metadata.get("attempt_count", 0),
             })
             warnings.append("AI review was unavailable; no AI findings are claimed.")
@@ -278,6 +296,7 @@ async def analyze(
         tool_results.append({"tool": "ai_review", "status": "unavailable", "executed": False, "reason": reason})
         warnings.append("AI review is unavailable because no provider is configured.")
 
+    record_stage("ai_review")
     test_result = run_tests()
     tool_results.append({"tool": "tests", **test_result})
 
@@ -376,6 +395,7 @@ async def analyze(
             }
             warnings.append("AI issue explanations were unavailable; canonical issues are preserved without explanations.")
     tool_results.append(explanation_tool)
+    record_stage("explanations")
     if repository_private and request.include_suggested_fixes:
         warnings.append("Suggested fix generation is unavailable for private repository reviews.")
         request = request.model_copy(update={"include_suggested_fixes": False})
@@ -388,6 +408,7 @@ async def analyze(
         diff_files,
     )
     tool_results.append(fix_generation_tool)
+    record_stage("fix_generation")
     if request.include_suggested_fixes:
         fix_analysis_tool = analyze_fix_relationships(reconciliation.issues)
         conflict_status = fix_analysis_tool["status"]
@@ -416,6 +437,7 @@ async def analyze(
             "freshness": {"status": "not_requested", "proposal_count": 0, "per_proposal": []},
         }
     tool_results.append(fix_analysis_tool)
+    record_stage("fix_analysis")
     counts = {status: sum(finding.verification_status == status for finding in findings) for status in ("verified", "needs_review", "unsupported")}
     partial = any(item.get("status") in {"unavailable", "error", "skipped", "partial"} for item in tool_results if item.get("tool") not in {"github_rest_api", "issue_explanations", "fix_generation", "fix_analysis"})
     partial = partial or explanation_tool.get("status") in {"unavailable", "partial"}
@@ -441,6 +463,8 @@ async def analyze(
         created_at=datetime.now(UTC), duration_ms=elapsed, diff_files=diff_files,
     )
     await asyncio.to_thread(_persist, response, effective_id)
+    record_stage("result_and_storage")
+    _logger.info("Live review completed review_id=%s stage_ms=%s", response.review_id, stage_ms)
     return response
 
 
@@ -674,12 +698,13 @@ async def _run_fix_freshness(
 ) -> dict[str, Any]:
     """Keep freshness verification best effort and preserve all proposals."""
     try:
-        return await verify_fix_freshness(
-            issues,
-            owner=owner,
-            repo=repo,
-            pull_request_number=pull_request_number,
-        )
+        async with asyncio.timeout(FIX_FRESHNESS_TIMEOUT_SECONDS):
+            return await verify_fix_freshness(
+                issues,
+                owner=owner,
+                repo=repo,
+                pull_request_number=pull_request_number,
+            )
     except Exception:  # noqa: BLE001 - Stale/unavailable fixes must not invalidate the fetched review.
         # Unexpected verification failures are reported without provider
         # details and never invalidate the review or mutate proposal content.
