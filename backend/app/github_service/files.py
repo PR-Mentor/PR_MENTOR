@@ -5,6 +5,8 @@ import binascii
 import re
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -20,6 +22,7 @@ from .client import (
 
 MAX_SOURCE_FILE_BYTES = 1_000_000
 MAX_SOURCE_FILES_PER_PR = 100
+MAX_SOURCE_FETCH_WORKERS = 8
 SOURCE_EXTENSIONS = {
     ".c", ".cc", ".cpp", ".cs", ".css", ".go", ".h", ".hpp", ".html",
     ".java", ".js", ".jsx", ".kt", ".kts", ".php", ".py", ".rb", ".rs",
@@ -123,19 +126,38 @@ def fetch_source_contents(
     head_sha: str,
     files: list[ChangedFile],
 ) -> list[ChangedFile]:
-    """Fetch content for eligible files, with a per-PR API-call budget."""
-    fetched = 0
+    """Fetch eligible source files concurrently within a bounded API budget.
+
+    GitHub's PR-files endpoint supplies patches but not full file contents, so
+    eligible files need individual Contents API requests. A small worker pool
+    avoids serial network latency without creating an unbounded request burst.
+    ``executor.map`` preserves input ordering; each worker mutates only its own
+    ChangedFile object.
+    """
+    pending: list[ChangedFile] = []
     for changed_file in files:
         eligible = (
             changed_file.status != "removed"
             and any(changed_file.filename.lower().endswith(ext) for ext in SOURCE_EXTENSIONS)
         )
-        if eligible and fetched >= MAX_SOURCE_FILES_PER_PR:
+        if not eligible:
+            fetch_source_content(client, reference, head_sha, changed_file)
+            continue
+        if len(pending) >= MAX_SOURCE_FILES_PER_PR:
             changed_file.content_unavailable_reason = "per_pr_content_limit"
             continue
-        if eligible:
-            fetched += 1
-        fetch_source_content(client, reference, head_sha, changed_file)
+
+        pending.append(changed_file)
+
+    if pending:
+        fetch_one = partial(fetch_source_content, client, reference, head_sha)
+        with ThreadPoolExecutor(
+            max_workers=min(MAX_SOURCE_FETCH_WORKERS, len(pending)),
+            thread_name_prefix="github-source",
+        ) as executor:
+            # Consume the iterator so worker exceptions (auth, rate limit,
+            # network) propagate to the caller instead of being suppressed.
+            list(executor.map(fetch_one, pending))
     return files
 
 
