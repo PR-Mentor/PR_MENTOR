@@ -431,7 +431,7 @@ async def analyze(
     tool_results.append(fix_analysis_tool)
     phase_timings["fix_generation_and_validation_ms"] = max(0, round((perf_counter() - fix_generation_started) * 1000))
     fix_analysis_tool["duration_ms"] = phase_timings["fix_generation_and_validation_ms"]
-    tool_results.append({"tool": "phase_timings", "status": "completed", **phase_timings})
+    tool_results[0]["phase_timings"] = phase_timings
     counts = {status: sum(finding.verification_status == status for finding in findings) for status in ("verified", "needs_review", "unsupported")}
     partial = any(item.get("status") in {"unavailable", "error", "skipped", "partial"} for item in tool_results if item.get("tool") not in {"github_rest_api", "issue_explanations", "fix_generation", "fix_analysis"})
     partial = partial or explanation_tool.get("status") in {"unavailable", "partial"}
