@@ -74,6 +74,7 @@ class FixGenerationResult:
     outcomes: list[IssueFixOutcome] = field(default_factory=list)
     source_fetch_count: int = 0
     llm_call_count: int = 0
+    budget_exhausted: bool = False
     provider_calls: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -99,6 +100,7 @@ async def generate_suggested_fixes(
     repo: str,
     head_sha: str | None,
     diff_files: list[dict[str, Any]] | None = None,
+    deadline: float | None = None,
 ) -> FixGenerationResult:
     """Return at most one verified proposal per eligible issue, without mutation."""
     result = FixGenerationResult()
@@ -109,7 +111,9 @@ async def generate_suggested_fixes(
     for issue in issues:
         counts[issue.issue_id] = counts.get(issue.issue_id, 0) + 1
     duplicate_ids = {issue_id for issue_id, count in counts.items() if count > 1}
-    started = asyncio.get_running_loop().time()
+    clock = asyncio.get_running_loop().time
+    default_deadline = clock() + MAX_TOTAL_GENERATION_SECONDS
+    deadline = default_deadline if deadline is None else min(deadline, default_deadline)
     source_cache: dict[str, str | None] = {}
     attempted = 0
 
@@ -144,8 +148,9 @@ async def generate_suggested_fixes(
             result.outcomes.append(IssueFixOutcome(issue.issue_id, "insufficient_context", "The issue has no unambiguous source line range."))
             continue
 
-        remaining = MAX_TOTAL_GENERATION_SECONDS - (asyncio.get_running_loop().time() - started)
+        remaining = deadline - clock()
         if remaining <= 0:
+            result.budget_exhausted = True
             result.outcomes.append(IssueFixOutcome(issue.issue_id, "skipped_limit", "Per-request time budget reached."))
             continue
         if path not in source_cache:
@@ -156,6 +161,7 @@ async def generate_suggested_fixes(
                     timeout=min(MAX_SOURCE_FETCH_SECONDS, remaining),
                 )
             except Exception:  # noqa: BLE001 - A single unavailable source file must not cancel other issue proposals.
+                result.budget_exhausted |= clock() >= deadline
                 source_cache[path] = None
         source = source_cache[path]
         if not isinstance(source, str):
@@ -179,8 +185,9 @@ async def generate_suggested_fixes(
             result.outcomes.append(IssueFixOutcome(issue.issue_id, "insufficient_context", "The bounded fix-generation prompt exceeds its size limit."))
             continue
 
-        remaining = MAX_TOTAL_GENERATION_SECONDS - (asyncio.get_running_loop().time() - started)
+        remaining = deadline - clock()
         if remaining <= 0:
+            result.budget_exhausted = True
             result.outcomes.append(IssueFixOutcome(issue.issue_id, "skipped_limit", "Per-request time budget reached."))
             continue
         result.llm_call_count += 1
@@ -207,6 +214,7 @@ async def generate_suggested_fixes(
                 continue
             result.outcomes.append(IssueFixOutcome(issue.issue_id, "generated", fix=fix))
         except (AIReviewUnavailable, TimeoutError):
+            result.budget_exhausted |= clock() >= deadline
             metadata = last_call_metadata()
             if metadata is not None:
                 result.provider_calls.append(metadata)

@@ -44,6 +44,7 @@ def ingest_pull_request(
 
 """Fetch bounded pull-request metadata and changed-file pages from GitHub."""
 
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -92,7 +93,18 @@ async def _request_json(
 async def fetch_pull_request(url: str, github_token: str | None = None) -> PullRequestBundle:
     owner, repo, number = parse_pull_request_url(url)
     async with async_client(token=github_token) as client:
-        raw = await request_json(client, f"/repos/{owner}/{repo}/pulls/{number}")
+        pr_path = f"/repos/{owner}/{repo}/pulls/{number}"
+        metadata_task = asyncio.create_task(request_json(client, pr_path))
+        files_task = asyncio.create_task(
+            request_json(client, f"{pr_path}/files", params={"per_page": FILES_PER_PAGE, "page": 1})
+        )
+        try:
+            raw, file_data = await asyncio.gather(metadata_task, files_task)
+        finally:
+            for task in (metadata_task, files_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(metadata_task, files_task, return_exceptions=True)
         if not isinstance(raw, dict):
             raise ValueError("GitHub returned an invalid pull request response.")  # noqa: TRY004 - malformed upstream data is a value error, not a caller type error
         base = raw.get("base") if isinstance(raw.get("base"), dict) else {}
@@ -116,35 +128,26 @@ async def fetch_pull_request(url: str, github_token: str | None = None) -> PullR
             additions=_required_nonnegative(raw.get("additions"), "additions"),
             deletions=_required_nonnegative(raw.get("deletions"), "deletions"),
         )
+        if not isinstance(file_data, list):
+            raise ValueError("GitHub returned an invalid changed-files response.")  # noqa: TRY004
         files: list[ChangedFile] = []
         warnings: list[str] = []
-        for page in range(1, MAX_FILE_PAGES + 1):
-            result = await request_json(
-                client,
-                f"/repos/{owner}/{repo}/pulls/{number}/files",
-                params={"per_page": FILES_PER_PAGE, "page": page},
-            )
-            if not isinstance(result, list):
-                raise ValueError("GitHub returned an invalid changed-files response.")  # noqa: TRY004 - malformed upstream data is a value error, not a caller type error
-            for item in result:
-                if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
-                    warnings.append("GitHub returned a malformed changed-file entry; it was skipped.")
-                    continue
-                files.append(ChangedFile(
-                    filename=item["filename"],
-                    status=_str(item.get("status"), "modified"),
-                    additions=_nonnegative(item.get("additions")),
-                    deletions=_nonnegative(item.get("deletions")),
-                    changes=_nonnegative(item.get("changes")),
-                    previous_filename=item.get("previous_filename") if isinstance(item.get("previous_filename"), str) else None,
-                    patch=item.get("patch") if isinstance(item.get("patch"), str) else None,
-                    size=_nonnegative(item.get("size")) if isinstance(item.get("size"), int) else None,
-                ))
-                if len(files) >= MAX_FILES:
-                    warnings.append(f"Changed-file listing was capped at {MAX_FILES} files.")
-                    return PullRequestBundle(metadata=metadata, files=files, warnings=warnings)
-            if len(result) < FILES_PER_PAGE:
-                break
+        for item in file_data[:FILES_PER_PAGE]:
+            if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
+                warnings.append("GitHub returned a malformed changed-file entry; it was skipped.")
+                continue
+            files.append(ChangedFile(
+                filename=item["filename"],
+                status=_str(item.get("status"), "modified"),
+                additions=_nonnegative(item.get("additions")),
+                deletions=_nonnegative(item.get("deletions")),
+                changes=_nonnegative(item.get("changes")),
+                previous_filename=item.get("previous_filename") if isinstance(item.get("previous_filename"), str) else None,
+                patch=item.get("patch") if isinstance(item.get("patch"), str) else None,
+                size=_nonnegative(item.get("size")) if isinstance(item.get("size"), int) else None,
+            ))
+        if metadata.changed_files > FILES_PER_PAGE or len(file_data) > FILES_PER_PAGE:
+            warnings.append(f"Live review changed-file coverage is capped at {FILES_PER_PAGE} files.")
         if metadata.changed_files > len(files):
             warnings.append(f"GitHub reported {metadata.changed_files} changed files; {len(files)} were returned for analysis.")
         return PullRequestBundle(metadata=metadata, files=files, warnings=warnings)

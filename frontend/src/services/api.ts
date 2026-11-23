@@ -95,8 +95,7 @@ export function getWorkspaceLearningInsights(workspaceId: string): Promise<Learn
   return request<LearningInsights>(`/api/workspaces/${encodeURIComponent(workspaceId)}/learning-insights`);
 }
 
-const LIVE_REVIEW_TIMEOUT_MS = 150_000;
-const QUICK_REVIEW_TIMEOUT_MS = 20_000;
+const LIVE_REVIEW_TIMEOUT_MS = 20_000;
 
 export async function analyzePullRequest(
   url: string,
@@ -124,7 +123,7 @@ export async function analyzePullRequest(
     timer = setTimeout(() => {
       reject(new Error('Live analysis timed out. Check Recent reviews before retrying.'));
       controller.abort();
-    }, depth === 'quick' ? QUICK_REVIEW_TIMEOUT_MS : LIVE_REVIEW_TIMEOUT_MS);
+    }, LIVE_REVIEW_TIMEOUT_MS);
   });
   try {
     return await Promise.race([analysis, deadline]);
