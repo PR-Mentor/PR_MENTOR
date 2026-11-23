@@ -1,11 +1,13 @@
 """Coordinate ingestion, static checks, optional AI review, and persistence."""
 
 import asyncio
+import os
 import re
 import tempfile
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -104,6 +106,8 @@ async def analyze(
         return response
 
     started = datetime.now(UTC)
+    phase_timings: dict[str, int] = {}
+    github_fetch_started = perf_counter()
     bundle = (
         await fetch_pull_request(submitted_url, github_token=github_token)
         if github_token
@@ -167,9 +171,11 @@ async def analyze(
                 continue
             source_files.append((safe_name, content))
 
-    tool_results: list[dict[str, Any]] = [{"tool": "github_rest_api", "status": "completed", "files_received": len(bundle.files), "analyzable_patch_files": sum(bool(file.patch) and file.status != "removed" for file in bundle.files)}]
+    phase_timings["github_ingestion_ms"] = max(0, round((perf_counter() - github_fetch_started) * 1000))
+    tool_results: list[dict[str, Any]] = [{"tool": "github_rest_api", "status": "completed", "files_received": len(bundle.files), "analyzable_patch_files": sum(bool(file.patch) and file.status != "removed" for file in bundle.files), "duration_ms": phase_timings["github_ingestion_ms"]}]
     normalized_static: list[ReviewFinding] = []
     static_observations: list[FindingObservation] = []
+    static_analysis_started = perf_counter()
     with tempfile.TemporaryDirectory(prefix="pr-mentor-review-") as temp_name:
         temp_root = Path(temp_name)
         registry = get_registry()
@@ -215,16 +221,23 @@ async def analyze(
                             "reason": f"No eligible {adapter.display_name} source was available for analysis.",
                         })
 
+    phase_timings["static_analysis_ms"] = max(0, round((perf_counter() - static_analysis_started) * 1000))
+    ai_review_started = perf_counter()
+    repository_context_mode = "changed_files_only"
     ai_findings: list[ReviewFinding] = []
     if is_configured():
         try:
             try:
+                use_full_repository_context = os.getenv("PR_MENTOR_FULL_REPOSITORY_CONTEXT", "false").strip().lower() in {"1", "true", "yes", "on"}
                 if repository_private:
                     repository_structure = summarize_python_sources(source_files)
+                elif not use_full_repository_context:
+                    repository_structure = _summarize_sources_by_language(registry, source_files)
                 elif not isinstance(head_sha, str):
                     raise TypeError("Pull request source identity is unavailable.")
                 else:
                     repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
+                    repository_context_mode = "full_repository"
             except Exception:  # noqa: BLE001 - full-repository context is optional; changed-file context remains available.
                 repository_structure = _summarize_sources_by_language(registry, source_files)
                 warnings.append("Full repository context was unavailable; AI review used changed-file structure only.")
@@ -248,6 +261,7 @@ async def analyze(
                 "fallback_used": provider_metadata.get("fallback_used", False),
                 "attempt_count": provider_metadata.get("attempt_count"),
                 "latency_ms": provider_metadata.get("latency_ms"),
+                "repository_context_mode": repository_context_mode,
                 "usage": provider_metadata.get("usage") or None,
                 "model_configuration": {
                     **(provider_metadata.get("model_configuration") or {}),
@@ -278,6 +292,7 @@ async def analyze(
         tool_results.append({"tool": "ai_review", "status": "unavailable", "executed": False, "reason": reason})
         warnings.append("AI review is unavailable because no provider is configured.")
 
+    phase_timings["ai_review_ms"] = max(0, round((perf_counter() - ai_review_started) * 1000))
     test_result = run_tests()
     tool_results.append({"tool": "tests", **test_result})
 
@@ -299,6 +314,7 @@ async def analyze(
         for finding in ai_findings
     ]
     reconciliation = reconcile_observations(observations)
+    explanation_started = perf_counter()
     explanation_result = ExplanationGenerationResult()
     explanation_tool: dict[str, Any]
     if not reconciliation.issues:
@@ -375,7 +391,11 @@ async def analyze(
                 "reason": "The explanation service failed; canonical issues remain available.",
             }
             warnings.append("AI issue explanations were unavailable; canonical issues are preserved without explanations.")
+    phase_timings["issue_explanations_ms"] = max(0, round((perf_counter() - explanation_started) * 1000))
+    if isinstance(explanation_tool, dict):
+        explanation_tool["duration_ms"] = phase_timings["issue_explanations_ms"]
     tool_results.append(explanation_tool)
+    fix_generation_started = perf_counter()
     if repository_private and request.include_suggested_fixes:
         warnings.append("Suggested fix generation is unavailable for private repository reviews.")
         request = request.model_copy(update={"include_suggested_fixes": False})
@@ -416,6 +436,9 @@ async def analyze(
             "freshness": {"status": "not_requested", "proposal_count": 0, "per_proposal": []},
         }
     tool_results.append(fix_analysis_tool)
+    phase_timings["fix_generation_and_validation_ms"] = max(0, round((perf_counter() - fix_generation_started) * 1000))
+    fix_analysis_tool["duration_ms"] = phase_timings["fix_generation_and_validation_ms"]
+    tool_results[0]["phase_timings"] = phase_timings
     counts = {status: sum(finding.verification_status == status for finding in findings) for status in ("verified", "needs_review", "unsupported")}
     partial = any(item.get("status") in {"unavailable", "error", "skipped", "partial"} for item in tool_results if item.get("tool") not in {"github_rest_api", "issue_explanations", "fix_generation", "fix_analysis"})
     partial = partial or explanation_tool.get("status") in {"unavailable", "partial"}
