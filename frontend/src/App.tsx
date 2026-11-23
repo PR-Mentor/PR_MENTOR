@@ -95,6 +95,7 @@ function Workspace() {
   const sidebarRef = useRef<HTMLElement>(null);
   const [url, setUrl] = useState('');
   const [mode, setMode] = useState<AnalysisMode>('demo');
+  const [includeSuggestedFixes, setIncludeSuggestedFixes] = useState(false);
   const [review, setReview] = useState<ReviewResponse | null>(null);
   const [reviewError, setReviewError] = useState('');
   const [reviewNotFound, setReviewNotFound] = useState(false);
@@ -278,7 +279,7 @@ function Workspace() {
     setReviewBusy(true);
     setReview(null);
     try {
-      const result = await analyzePullRequest(url.trim(), mode);
+      const result = await analyzePullRequest(url.trim(), mode, false, includeSuggestedFixes);
       setReview(result);
       openReviewRoute(result.review_id);
     } catch (error) {
@@ -297,7 +298,7 @@ function Workspace() {
     setReviewBusy(true);
     setReviewJob(null);
     try {
-      const job = await enqueueReview(url.trim(), mode);
+      const job = await enqueueReview(url.trim(), mode, includeSuggestedFixes);
       setReviewJob(job);
     } catch (error) {
       setReviewError(error instanceof Error ? error.message : 'The review could not be queued.');
@@ -465,7 +466,7 @@ function Workspace() {
         </aside>
 
         <main className="main-content">
-          {page === 'discover' && <LandingPage url={url} setUrl={(value) => { setUrl(value); setReviewError(''); }} mode={mode} setMode={setMode} busy={reviewBusy} error={reviewError} onSubmit={runAnalysis}/>}
+          {page === 'discover' && <LandingPage url={url} setUrl={(value) => { setUrl(value); setReviewError(''); }} mode={mode} setMode={setMode} includeSuggestedFixes={includeSuggestedFixes} setIncludeSuggestedFixes={setIncludeSuggestedFixes} busy={reviewBusy} error={reviewError} onSubmit={runAnalysis}/>}
 
           {page === 'repositories' && <RepositoriesPage
             coordinates={coordinates} connection={connection} connectionLoading={connectionLoading}
@@ -473,7 +474,7 @@ function Workspace() {
             onConnect={() => startGitHubOAuth('connect')} onDisconnect={disconnectConnection}
             onOpenRepository={(owner, repo) => navigateRouter(`/repositories/${owner}/${repo}`)} onBack={() => go('repositories')}
             onAnalyze={async (pullUrl) => {
-              const result = await analyzePullRequest(pullUrl, 'live', true);
+              const result = await analyzePullRequest(pullUrl, 'live', true, includeSuggestedFixes);
               setReview(result);
               openReviewRoute(result.review_id);
             }}
