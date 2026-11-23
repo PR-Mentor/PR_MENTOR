@@ -229,10 +229,10 @@ async def analyze(
         try:
             try:
                 use_full_repository_context = os.getenv("PR_MENTOR_FULL_REPOSITORY_CONTEXT", "false").strip().lower() in {"1", "true", "yes", "on"}
-                if repository_private or not use_full_repository_context:
+                if repository_private:
                     repository_structure = summarize_python_sources(source_files)
-                    if not repository_private and use_full_repository_context is False:
-                        repository_context_mode = "changed_files_only"
+                elif not use_full_repository_context:
+                    repository_structure = _summarize_sources_by_language(registry, source_files)
                 elif not isinstance(head_sha, str):
                     raise TypeError("Pull request source identity is unavailable.")
                 else:
