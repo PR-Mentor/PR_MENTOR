@@ -95,6 +95,7 @@ function Workspace() {
   const sidebarRef = useRef<HTMLElement>(null);
   const [url, setUrl] = useState('');
   const [mode, setMode] = useState<AnalysisMode>('demo');
+  const [fullReview, setFullReview] = useState(false);
   const [review, setReview] = useState<ReviewResponse | null>(null);
   const [reviewError, setReviewError] = useState('');
   const [reviewNotFound, setReviewNotFound] = useState(false);
@@ -278,7 +279,7 @@ function Workspace() {
     setReviewBusy(true);
     setReview(null);
     try {
-      const result = await analyzePullRequest(url.trim(), mode);
+      const result = await analyzePullRequest(url.trim(), mode, false, mode === 'live' && !fullReview ? 'quick' : 'full');
       setReview(result);
       openReviewRoute(result.review_id);
     } catch (error) {
@@ -465,7 +466,7 @@ function Workspace() {
         </aside>
 
         <main className="main-content">
-          {page === 'discover' && <LandingPage url={url} setUrl={(value) => { setUrl(value); setReviewError(''); }} mode={mode} setMode={setMode} busy={reviewBusy} error={reviewError} onSubmit={runAnalysis}/>}
+          {page === 'discover' && <LandingPage url={url} setUrl={(value) => { setUrl(value); setReviewError(''); }} mode={mode} setMode={setMode} fullReview={fullReview} setFullReview={setFullReview} busy={reviewBusy} error={reviewError} onSubmit={runAnalysis}/>}
 
           {page === 'repositories' && <RepositoriesPage
             coordinates={coordinates} connection={connection} connectionLoading={connectionLoading}

@@ -39,9 +39,9 @@ def test_live_review_deadline_is_retryable(client, monkeypatch):
     async def stalled_analysis(_payload, _uid):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(review_routes, "LIVE_REVIEW_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(review_routes, "QUICK_REVIEW_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(review_routes, "_analyze_review", stalled_analysis)
-    payload = {"url": "https://github.com/example/project/pull/7", "mode": "live"}
+    payload = {"url": "https://github.com/example/project/pull/7", "mode": "live", "depth": "quick"}
 
     timed_out = client.post("/api/reviews/analyze", json=payload)
     assert timed_out.status_code == 504

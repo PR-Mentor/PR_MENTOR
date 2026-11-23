@@ -50,6 +50,8 @@ from app.verification.test_runner import run_tests
 
 
 AI_REVIEW_TIMEOUT_SECONDS = 20
+QUICK_AI_TIMEOUT_SECONDS = 6
+QUICK_SOURCE_LIMIT = 10
 FIX_FRESHNESS_TIMEOUT_SECONDS = 8
 MAX_SOURCE_FETCH_ATTEMPTS = 20
 SOURCE_FETCH_CONCURRENCY = 5
@@ -108,6 +110,10 @@ async def analyze(
         await asyncio.to_thread(_persist, response, effective_id)
         return response
 
+    quick = request.depth == "quick"
+    if quick:
+        request = request.model_copy(update={"include_learning": False, "include_suggested_fixes": False})
+
     started = datetime.now(UTC)
     stage_started = perf_counter()
     stage_ms: dict[str, int] = {}
@@ -124,6 +130,9 @@ async def analyze(
         else await fetch_pull_request(submitted_url)
     )
     warnings = list(bundle.warnings)
+    source_limit = QUICK_SOURCE_LIMIT if quick else MAX_SOURCE_FETCH_ATTEMPTS
+    if quick:
+        warnings.append("Quick review skips AI explanations and suggested fixes. Choose the full review to request them.")
     diff_files = [parse_patch(item.model_dump()) for item in bundle.files[:100]]
     if len(bundle.files) > 100:
         warnings.append("The displayed diff was capped at 100 files.")
@@ -144,9 +153,9 @@ async def analyze(
             if item.size is not None and item.size > MAX_SOURCE_BYTES:
                 warnings.append(f"Source analysis skipped oversized file: {safe_name}")
                 continue
-            if len(source_candidates) >= MAX_SOURCE_FETCH_ATTEMPTS:
+            if len(source_candidates) >= source_limit:
                 warnings.append(
-                    f"Source retrieval was capped at {MAX_SOURCE_FETCH_ATTEMPTS} source files."
+                    f"Source retrieval was capped at {source_limit} source files."
                 )
                 break
             source_candidates.append(safe_name)
@@ -234,9 +243,12 @@ async def analyze(
     ai_findings: list[ReviewFinding] = []
     if is_configured():
         try:
-            async with asyncio.timeout(AI_REVIEW_TIMEOUT_SECONDS):
+            timeout = QUICK_AI_TIMEOUT_SECONDS if quick else AI_REVIEW_TIMEOUT_SECONDS
+            async with asyncio.timeout(timeout):
                 try:
-                    if repository_private:
+                    if quick:
+                        repository_structure = _summarize_sources_by_language(registry, source_files)
+                    elif repository_private:
                         repository_structure = summarize_python_sources(source_files)
                     elif not isinstance(head_sha, str):
                         raise TypeError("Pull request source identity is unavailable.")
