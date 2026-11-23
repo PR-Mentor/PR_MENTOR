@@ -95,28 +95,28 @@ export function getWorkspaceLearningInsights(workspaceId: string): Promise<Learn
   return request<LearningInsights>(`/api/workspaces/${encodeURIComponent(workspaceId)}/learning-insights`);
 }
 
-export function analyzePullRequest(url: string, mode: AnalysisMode, useGithubConnection = false): Promise<ReviewResponse> {
+export function analyzePullRequest(url: string, mode: AnalysisMode, useGithubConnection = false, includeSuggestedFixes = false): Promise<ReviewResponse> {
   return request<ReviewResponse>('/api/reviews/analyze', {
     method: 'POST',
     body: JSON.stringify({
       url,
       mode,
       include_learning: true,
-      include_suggested_fixes: true,
+      include_suggested_fixes: includeSuggestedFixes,
       use_github_connection: useGithubConnection,
     }),
   });
 }
 
 export interface ReviewJob { job_id: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'; review_id?: string | null; error_code?: string | null }
-export function enqueueReview(url: string, mode: AnalysisMode): Promise<ReviewJob> {
+export function enqueueReview(url: string, mode: AnalysisMode, includeSuggestedFixes = false): Promise<ReviewJob> {
   return request<ReviewJob>('/api/reviews/jobs', {
     method: 'POST',
     body: JSON.stringify({
       url,
       mode,
       include_learning: true,
-      include_suggested_fixes: true,
+      include_suggested_fixes: includeSuggestedFixes,
     }),
   });
 }
