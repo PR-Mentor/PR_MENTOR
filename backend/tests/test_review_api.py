@@ -31,17 +31,32 @@ def client(tmp_path, monkeypatch):
         yield instance
 
 
+ codex/fix-live-review-latency
 def test_live_review_deadline_is_retryable(client, monkeypatch):
+
+@pytest.mark.parametrize("depth", ["quick", "full"])
+def test_live_review_deadline_is_retryable(client, monkeypatch, depth):
+main
     from app.routes import review as review_routes
 
     original = review_routes._analyze_review
 
+ codex/fix-live-review-latency
     async def stalled_analysis(_payload, _uid):
         await asyncio.Event().wait()
 
     monkeypatch.setattr(review_routes, "QUICK_REVIEW_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(review_routes, "_analyze_review", stalled_analysis)
     payload = {"url": "https://github.com/example/project/pull/7", "mode": "live", "depth": "quick"}
+
+    async def stalled_analysis(_payload, _uid, *, deadline):
+        assert deadline is not None
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(review_routes, "LIVE_REVIEW_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(review_routes, "_analyze_review", stalled_analysis)
+    payload = {"url": "https://github.com/example/project/pull/7", "mode": "live", "depth": depth}
+ main
 
     timed_out = client.post("/api/reviews/analyze", json=payload)
     assert timed_out.status_code == 504
@@ -477,7 +492,7 @@ def test_live_review_reconciles_static_and_ai_and_persists_observations(client, 
             for issue in issues
         })
 
-    async def generate_fixes(issues, *, owner, repo, head_sha: str, diff_files):
+    async def generate_fixes(issues, *, owner, repo, head_sha: str, diff_files, deadline):
         events.append("fix_generation")
         assert owner == "owner" and repo == "repo"
         assert head_sha == metadata.head_sha
@@ -517,6 +532,10 @@ def test_live_review_reconciles_static_and_ai_and_persists_observations(client, 
     monkeypatch.setattr(service, "run_ruff", ruff)
     monkeypatch.setattr(service, "run_bandit", bandit)
     monkeypatch.setattr(service, "is_configured", lambda: True)
+    async def repository_context(*_args):
+        return {}
+
+    monkeypatch.setattr(service, "build_review_repository_context", repository_context)
     monkeypatch.setattr(service, "generate_candidates", ai)
     monkeypatch.setattr(service, "generate_issue_explanations", explain)
     monkeypatch.setattr(service, "generate_suggested_fixes", generate_fixes)
@@ -641,6 +660,10 @@ def test_explanation_service_failure_does_not_fail_or_drop_live_review(client, m
     monkeypatch.setattr(service, "run_ruff", ruff)
     monkeypatch.setattr(service, "run_bandit", bandit)
     monkeypatch.setattr(service, "is_configured", lambda: True)
+    async def repository_context(*_args):
+        return {}
+
+    monkeypatch.setattr(service, "build_review_repository_context", repository_context)
     monkeypatch.setattr(service, "generate_candidates", ai)
     monkeypatch.setattr(service, "generate_issue_explanations", explain)
 
@@ -701,7 +724,7 @@ def test_fix_generation_partial_success_preserves_review_and_reports_each_issue(
             ) for issue in issues
         })
 
-    async def generate(issues, *, owner, repo, head_sha: str, diff_files):
+    async def generate(issues, *, owner, repo, head_sha: str, diff_files, deadline):
         assert len(issues) == 3
         assert head_sha == metadata.head_sha
         fix = SuggestedFix(
@@ -744,6 +767,10 @@ def test_fix_generation_partial_success_preserves_review_and_reports_each_issue(
     monkeypatch.setattr(service, "run_ruff", ruff)
     monkeypatch.setattr(service, "run_bandit", bandit)
     monkeypatch.setattr(service, "is_configured", lambda: True)
+    async def repository_context(*_args):
+        return {}
+
+    monkeypatch.setattr(service, "build_review_repository_context", repository_context)
     monkeypatch.setattr(service, "generate_candidates", ai)
     monkeypatch.setattr(service, "generate_issue_explanations", explain)
     monkeypatch.setattr(service, "generate_suggested_fixes", generate)

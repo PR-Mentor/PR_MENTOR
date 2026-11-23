@@ -102,7 +102,9 @@ class PythonAdapter(LanguageAdapter):
             return findings, observations, tool_results
 
         target_paths = [p.relative_to(workspace_dir).as_posix() for p in targets]
-        for name, normalizer in (("ruff", normalize_ruff), ("bandit", normalize_bandit)):
+        async def analyze_tool(name, normalizer):
+            findings: list[ReviewFinding] = []
+            observations: list[FindingObservation] = []
             runner = _get_runner(name)
             kwargs: dict[str, Any] = {"root": workspace_dir}
             resolved = _resolve_tool_path(name)
@@ -143,19 +145,28 @@ class PythonAdapter(LanguageAdapter):
                     for f in findings
                     if f.title.lower().startswith(name.lower())
                 ]
-                tool_results.append({
+                return findings, observations, {
                     "tool": name,
                     "status": "completed",
                     "executed": True,
                     "findings": rendered_findings,
-                })
+                }
             except (ToolExecutionError, PathValidationError, OSError):
-                tool_results.append({
+                return [], [], {
                     "tool": name,
                     "status": "unavailable",
                     "executed": False,
                     "reason": f"{name.title()} execution failed or was unavailable; local execution details are not exposed.",
-                })
+                }
+
+        results = await asyncio.gather(
+            analyze_tool("ruff", normalize_ruff),
+            analyze_tool("bandit", normalize_bandit),
+        )
+        for tool_findings, tool_observations, result in results:
+            findings.extend(tool_findings)
+            observations.extend(tool_observations)
+            tool_results.append(result)
 
         return findings, observations, tool_results
 

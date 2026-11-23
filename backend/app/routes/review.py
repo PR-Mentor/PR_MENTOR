@@ -55,7 +55,7 @@ from app.schemas.review import (
 from app.services.fix_eligibility import evaluate_fix_eligibility
 from app.services.fix_freshness import verify_fix_freshness
 from app.services.review_access import require_review_access
-from app.services.review_orchestrator import analyze
+from app.services.review_orchestrator import LIVE_REVIEW_TIMEOUT_SECONDS, analyze
 from app.verification.source_analysis import validate_static_fix
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
@@ -413,26 +413,39 @@ async def analyze_review(
     if payload.mode != "live":
         return await _analyze_review(payload, uid)
 
+ codex/fix-live-review-latency
     timeout = QUICK_REVIEW_TIMEOUT_SECONDS if payload.depth == "quick" else LIVE_REVIEW_TIMEOUT_SECONDS
     try:
         async with asyncio.timeout(timeout):
             return await _analyze_review(payload, uid)
     except TimeoutError as exc:
         _logger.warning("Live analysis exceeded its %ss processing deadline", timeout)
+
+    deadline = asyncio.get_running_loop().time() + LIVE_REVIEW_TIMEOUT_SECONDS
+    try:
+        async with asyncio.timeout_at(deadline):
+            return await _analyze_review(payload, uid, deadline=deadline)
+    except TimeoutError as exc:
+        _logger.warning("Live analysis exceeded its %ss processing deadline", LIVE_REVIEW_TIMEOUT_SECONDS)
+main
         raise HTTPException(
             status_code=504,
             detail="Live analysis timed out. Check Recent reviews before retrying.",
         ) from exc
 
 
+ codex/fix-live-review-latency
 async def _analyze_review(payload: AnalyzeRequest, uid: str) -> ReviewResponse:
+
+async def _analyze_review(payload: AnalyzeRequest, uid: str, *, deadline: float | None = None) -> ReviewResponse:
+main
     record = None
     try:
         if payload.mode == "live":
             owner, repo, _number = parse_pull_request_url(
                 payload.pull_request_url or payload.url or ""
             )
-            record = github_account.connection(uid)
+            record = await asyncio.to_thread(github_account.connection, uid)
             if payload.use_github_connection and record is None:
                 raise HTTPException(409, "Connect your GitHub account to analyze this pull request.")
             if record is not None:
@@ -444,10 +457,10 @@ async def _analyze_review(payload: AnalyzeRequest, uid: str) -> ReviewResponse:
                 private = visible["private"] or visible.get("visibility", "public") != "public"
                 if private and payload.workspace_id:
                     raise HTTPException(403, "Private repository reviews can only be created in your personal review history.")
-                github_account.require_current_connection(record)
-                return await analyze(payload, user_id=uid, github_token=token, repository_private=private)
+                await asyncio.to_thread(github_account.require_current_connection, record)
+                return await analyze(payload, user_id=uid, github_token=token, repository_private=private, deadline=deadline)
             await ensure_public_repository(owner, repo)
-        return await analyze(payload, user_id=uid)
+        return await analyze(payload, user_id=uid, deadline=deadline)
     except InvalidPullRequestURL as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GitHubAPIError as exc:

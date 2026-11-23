@@ -49,10 +49,21 @@ from app.verification.ruff_runner import ToolExecutionError, run_ruff
 from app.verification.test_runner import run_tests
 
 
+ codex/fix-live-review-latency
 AI_REVIEW_TIMEOUT_SECONDS = 20
 QUICK_AI_TIMEOUT_SECONDS = 6
 QUICK_SOURCE_LIMIT = 10
 FIX_FRESHNESS_TIMEOUT_SECONDS = 8
+
+LIVE_REVIEW_TIMEOUT_SECONDS = 18
+AI_REVIEW_TIMEOUT_SECONDS = 6
+QUICK_AI_TIMEOUT_SECONDS = AI_REVIEW_TIMEOUT_SECONDS
+SOURCE_FETCH_TIMEOUT_SECONDS = 4
+EXPLANATION_TIMEOUT_SECONDS = 4
+FIX_GENERATION_TIMEOUT_SECONDS = 4
+QUICK_SOURCE_LIMIT = 10
+FIX_FRESHNESS_TIMEOUT_SECONDS = 1.5
+ main
 MAX_SOURCE_FETCH_ATTEMPTS = 20
 SOURCE_FETCH_CONCURRENCY = 5
 _logger = logging.getLogger("uvicorn.error.pr_mentor.review")
@@ -65,12 +76,14 @@ async def analyze(
     *,
     owner_id: str | None = None,
     repository_private: bool = False,
+    deadline: float | None = None,
 ) -> ReviewResponse:
     effective_id = user_id or owner_id
     if request.workspace_id:
         from app.database import workspaces
 
-        if effective_id is None or workspaces.get_role(request.workspace_id, effective_id) not in {
+        role = await asyncio.to_thread(workspaces.get_role, request.workspace_id, effective_id) if effective_id else None
+        if role not in {
             "owner", "admin", "editor"
         }:
             raise ValueError("Workspace membership no longer permits this review job.")
@@ -114,6 +127,15 @@ async def analyze(
     if quick:
         request = request.model_copy(update={"include_learning": False, "include_suggested_fixes": False})
 
+ codex/fix-live-review-latency
+
+    clock = asyncio.get_running_loop().time
+    review_deadline = deadline if deadline is not None else clock() + LIVE_REVIEW_TIMEOUT_SECONDS
+
+    def phase_deadline(seconds: float, *, reserve: float = 1.5) -> float:
+        return min(clock() + seconds, review_deadline - reserve)
+
+ main
     started = datetime.now(UTC)
     stage_started = perf_counter()
     stage_ms: dict[str, int] = {}
@@ -137,6 +159,7 @@ async def analyze(
     if len(bundle.files) > 100:
         warnings.append("The displayed diff was capped at 100 files.")
 
+    source_coverage_limited = bundle.metadata.changed_files > len(bundle.files) or len(bundle.files) > 100
     source_files: list[tuple[str, str]] = []
     head_sha = bundle.metadata.head_sha
     if not isinstance(head_sha, str) or re.fullmatch(
@@ -151,9 +174,14 @@ async def analyze(
             if item.status == "removed" or safe_name is None:
                 continue
             if item.size is not None and item.size > MAX_SOURCE_BYTES:
+                source_coverage_limited = True
                 warnings.append(f"Source analysis skipped oversized file: {safe_name}")
                 continue
             if len(source_candidates) >= source_limit:
+codex/fix-live-review-latency
+
+                source_coverage_limited = True
+ main
                 warnings.append(
                     f"Source retrieval was capped at {source_limit} source files."
                 )
@@ -161,19 +189,20 @@ async def analyze(
             source_candidates.append(safe_name)
 
         semaphore = asyncio.Semaphore(SOURCE_FETCH_CONCURRENCY)
+        source_deadline = phase_deadline(SOURCE_FETCH_TIMEOUT_SECONDS, reserve=5)
 
         async def fetch_source(safe_name: str) -> tuple[str, str | None]:
-            async with semaphore:
-                try:
+            try:
+                async with asyncio.timeout_at(source_deadline), semaphore:
                     if github_token:
                         content = await get_file_content(
                             owner, repo, safe_name, head_sha, github_token=github_token
                         )
                     else:
                         content = await get_file_content(owner, repo, safe_name, head_sha)
-                except Exception:  # noqa: BLE001 - Missing source context is isolated to that file.
-                    content = None
-                return safe_name, content
+            except Exception:  # noqa: BLE001 - Missing source context is isolated to that file.
+                content = None
+            return safe_name, content
 
         # Gather preserves candidate order while the semaphore bounds in-flight
         # GitHub requests. A failed fetch no longer triggers serial retries over
@@ -183,9 +212,11 @@ async def analyze(
         )
         for safe_name, content in fetched_sources:
             if content is None:
+                source_coverage_limited = True
                 warnings.append(f"Source content was unavailable for static analysis: {safe_name}")
                 continue
             if len(content.encode("utf-8")) > MAX_SOURCE_BYTES:
+                source_coverage_limited = True
                 warnings.append(f"Source analysis skipped oversized file: {safe_name}")
                 continue
             source_files.append((safe_name, content))
@@ -244,7 +275,11 @@ async def analyze(
     if is_configured():
         try:
             timeout = QUICK_AI_TIMEOUT_SECONDS if quick else AI_REVIEW_TIMEOUT_SECONDS
+codex/fix-live-review-latency
             async with asyncio.timeout(timeout):
+
+            async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else 6)):
+ main
                 try:
                     if quick:
                         repository_structure = _summarize_sources_by_language(registry, source_files)
@@ -253,7 +288,12 @@ async def analyze(
                     elif not isinstance(head_sha, str):
                         raise TypeError("Pull request source identity is unavailable.")
                     else:
+codex/fix-live-review-latency
                         repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
+
+                        async with asyncio.timeout(1.0):
+                            repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
+ main
                 except Exception:  # noqa: BLE001 - full-repository context is optional; changed-file context remains available.
                     repository_structure = _summarize_sources_by_language(registry, source_files)
                     warnings.append("Full repository context was unavailable; AI review used changed-file structure only.")
@@ -352,11 +392,18 @@ async def analyze(
         warnings.append("AI issue explanations were unavailable; canonical issues are preserved without explanations.")
     else:
         try:
+            explanation_level = "beginner"
+            try:
+                async with asyncio.timeout_at(phase_deadline(0.5, reserve=4)):
+                    explanation_level = await asyncio.to_thread(_user_explanation_level, effective_id)
+            except TimeoutError:
+                pass
             explanation_result = await generate_issue_explanations(
                 reconciliation.issues,
                 source_files=source_files,
                 diff_files=diff_files,
-                explanation_level=_user_explanation_level(effective_id),
+                explanation_level=explanation_level,
+                deadline=phase_deadline(EXPLANATION_TIMEOUT_SECONDS, reserve=4),
             )
             for issue in reconciliation.issues:
                 explanation = explanation_result.explanations.get(issue.issue_id)
@@ -418,6 +465,7 @@ async def analyze(
         bundle.metadata.head_sha,
         reconciliation.issues,
         diff_files,
+        deadline=phase_deadline(FIX_GENERATION_TIMEOUT_SECONDS, reserve=2),
     )
     tool_results.append(fix_generation_tool)
     record_stage("fix_generation")
@@ -429,6 +477,7 @@ async def analyze(
             bundle.metadata.repository_name,
             bundle.metadata.pull_request_number,
             reconciliation.issues,
+            deadline=phase_deadline(FIX_FRESHNESS_TIMEOUT_SECONDS),
         )
         fix_analysis_tool["conflict_status"] = conflict_status
         fix_analysis_tool["freshness_status"] = freshness_result["status"]
@@ -452,7 +501,9 @@ async def analyze(
     record_stage("fix_analysis")
     counts = {status: sum(finding.verification_status == status for finding in findings) for status in ("verified", "needs_review", "unsupported")}
     partial = any(item.get("status") in {"unavailable", "error", "skipped", "partial"} for item in tool_results if item.get("tool") not in {"github_rest_api", "issue_explanations", "fix_generation", "fix_analysis"})
+    partial = partial or source_coverage_limited
     partial = partial or explanation_tool.get("status") in {"unavailable", "partial"}
+    partial = partial or fix_generation_tool.get("budget_exhausted", False)
     elapsed = max(0, int((datetime.now(UTC) - started).total_seconds() * 1000))
     ai_review_result = next((item for item in tool_results if item.get("tool") == "ai_review" and item.get("status") == "completed" and item.get("executed") is True), None)
     response = ReviewResponse(
@@ -707,10 +758,16 @@ async def _run_fix_freshness(
     repo: str,
     pull_request_number: int,
     issues: list[CanonicalIssue],
+    *,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Keep freshness verification best effort and preserve all proposals."""
     try:
+ codex/fix-live-review-latency
         async with asyncio.timeout(FIX_FRESHNESS_TIMEOUT_SECONDS):
+
+        async with asyncio.timeout_at(deadline):
+ main
             return await verify_fix_freshness(
                 issues,
                 owner=owner,
@@ -750,6 +807,8 @@ async def _run_fix_generation(
     head_sha: str | None,
     issues: list[CanonicalIssue],
     diff_files: list[dict[str, Any]],
+    *,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Best-effort, sequential fix generation for canonical issues only.
 
@@ -777,6 +836,7 @@ async def _run_fix_generation(
             repo=repo,
             head_sha=head_sha,
             diff_files=diff_files,
+            deadline=deadline,
         )
     except Exception:  # noqa: BLE001 - Optional fix generation must not discard the completed review.
         # Keep internals and provider details out of the response, and retain
@@ -839,6 +899,7 @@ async def _run_fix_generation(
         "requested": True,
         "issue_count": len(issues),
         "processed_issue_count": len(result.outcomes),
+        "budget_exhausted": result.budget_exhausted,
         "generated_issue_count": generated_count,
         "outcome_counts": outcome_counts,
         "per_issue_outcomes": outcomes,

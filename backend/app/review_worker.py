@@ -17,9 +17,9 @@ from app.database.review_jobs import (
 )
 from app.github_service.client import GitHubAPIError
 from app.schemas.review import AnalyzeRequest
-from app.services.review_orchestrator import analyze
+from app.services.review_orchestrator import LIVE_REVIEW_TIMEOUT_SECONDS, analyze
 
-MAX_JOB_SECONDS = 600
+MAX_JOB_SECONDS = LIVE_REVIEW_TIMEOUT_SECONDS
 POLL_SECONDS = 1.0
 _stop = threading.Event()
 logging.basicConfig(level=logging.INFO, format="%(message)s")
