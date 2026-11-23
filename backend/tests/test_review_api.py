@@ -566,6 +566,25 @@ def test_live_review_reconciles_static_and_ai_and_persists_observations(client, 
     assert retrieved.json()["canonical_issues"][0]["explanation"] == issue["explanation"]
     assert retrieved.json()["canonical_issues"][0]["suggested_fixes"] == issue["suggested_fixes"]
 
+    async def stalled_ai(*_args):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(service, "generate_candidates", stalled_ai)
+    monkeypatch.setattr(service, "QUICK_AI_TIMEOUT_SECONDS", 0.01)
+    quick = client.post("/api/reviews/analyze", json={
+        "url": metadata.pull_request_url, "mode": "live", "depth": "quick",
+        "include_learning": True, "include_suggested_fixes": True,
+    })
+    assert quick.status_code == 200, quick.text
+    quick_body = quick.json()
+    assert quick_body["status"] == "partial"
+    assert {finding["source"] for finding in quick_body["findings"]} == {"static_analysis"}
+    tools = {tool["tool"]: tool for tool in quick_body["tool_results"]}
+    assert tools["ai_review"]["status"] == "unavailable"
+    assert tools["issue_explanations"]["status"] == "not_requested"
+    assert tools["fix_generation"]["status"] == "not_requested"
+    assert events == ["explanation", "fix_generation"]
+
 
 def test_unowned_legacy_review_is_preserved_but_not_exposed_to_new_account(client):
     legacy = sample_review("owner", "legacy", 3).model_dump(mode="json")
