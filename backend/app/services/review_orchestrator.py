@@ -1,6 +1,7 @@
 """Coordinate ingestion, static checks, optional AI review, and persistence."""
 
 import asyncio
+import os
 import re
 import tempfile
 from collections import Counter
@@ -222,16 +223,21 @@ async def analyze(
 
     phase_timings["static_analysis_ms"] = max(0, round((perf_counter() - static_analysis_started) * 1000))
     ai_review_started = perf_counter()
+    repository_context_mode = "changed_files_only"
     ai_findings: list[ReviewFinding] = []
     if is_configured():
         try:
             try:
-                if repository_private:
+                use_full_repository_context = os.getenv("PR_MENTOR_FULL_REPOSITORY_CONTEXT", "false").strip().lower() in {"1", "true", "yes", "on"}
+                if repository_private or not use_full_repository_context:
                     repository_structure = summarize_python_sources(source_files)
+                    if not repository_private and use_full_repository_context is False:
+                        repository_context_mode = "changed_files_only"
                 elif not isinstance(head_sha, str):
                     raise TypeError("Pull request source identity is unavailable.")
                 else:
                     repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
+                    repository_context_mode = "full_repository"
             except Exception:  # noqa: BLE001 - full-repository context is optional; changed-file context remains available.
                 repository_structure = _summarize_sources_by_language(registry, source_files)
                 warnings.append("Full repository context was unavailable; AI review used changed-file structure only.")
@@ -255,6 +261,7 @@ async def analyze(
                 "fallback_used": provider_metadata.get("fallback_used", False),
                 "attempt_count": provider_metadata.get("attempt_count"),
                 "latency_ms": provider_metadata.get("latency_ms"),
+                "repository_context_mode": repository_context_mode,
                 "usage": provider_metadata.get("usage") or None,
                 "model_configuration": {
                     **(provider_metadata.get("model_configuration") or {}),
