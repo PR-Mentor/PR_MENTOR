@@ -234,3 +234,14 @@ def test_groq_json_generation_error_retries_with_local_validation(monkeypatch):
     assert "response_format" not in requests[1]
     assert metadata["finish_reason"] == "stop"
     assert metadata["attempt_count"] == 2
+
+
+def test_hf_endpoint_with_embedded_newline(monkeypatch):
+    from app.ai_review.providers import provider_registry
+
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("LLM_API_KEY", "test-only")
+    monkeypatch.setenv("LLM_MODEL", "openai/gpt-oss-20b")
+    expected = "https://router.huggingface.co/v1/chat/completions"
+    monkeypatch.setenv("LLM_API_BASE_URL", expected[:47] + "\n" + expected[47:])
+    assert provider_registry()[0].endpoint == expected

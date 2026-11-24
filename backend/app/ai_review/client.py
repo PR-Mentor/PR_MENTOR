@@ -128,6 +128,8 @@ async def _request_provider(
             latency_ms = max(0, int((time.monotonic() - started) * 1000))
         except (TimeoutError, httpx.TimeoutException) as exc:
             raise AIReviewUnavailable("AI provider did not respond in time.") from exc
+        except httpx.InvalidURL:
+            raise AIReviewUnavailable("AI provider endpoint is invalid. Check the backend API base URL for line breaks.") from None
         except httpx.RequestError as exc:
             raise AIReviewUnavailable("AI provider is temporarily unavailable.") from exc
         except httpx.HTTPStatusError as exc:
