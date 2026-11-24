@@ -72,7 +72,23 @@ def cookie_secure() -> bool:
 
 
 def llm_configuration(task: str | None = None) -> tuple[str | None, str | None, str]:
-    """Resolve task-specific model selection with the legacy model as fallback."""
+    """Resolve task-specific model selection and common Groq credentials.
+
+    Keep the existing generic variables authoritative. GROQ_API_KEY is a
+    convenience alias for deployments that use Groq directly; it selects a
+    fast, structured-output model and Groq's OpenAI-compatible endpoint when
+    no generic settings are supplied.
+    """
     model_key = f"LLM_MODEL_{task.upper().replace('-', '_')}" if task else "LLM_MODEL"
-    model = os.getenv(model_key) or os.getenv("LLM_MODEL") or None
-    return os.getenv("LLM_API_KEY") or None, model, os.getenv("LLM_API_BASE_URL", "https://api.openai.com/v1/chat/completions")
+    groq_key = os.getenv("GROQ_API_KEY")
+    use_groq_alias = bool(groq_key and not os.getenv("LLM_API_KEY"))
+    model = (
+        os.getenv(model_key)
+        or os.getenv("LLM_MODEL")
+        or ("openai/gpt-oss-20b" if use_groq_alias else None)
+    )
+    default_endpoint = (
+        "https://api.groq.com/openai/v1/chat/completions"
+        if use_groq_alias else "https://api.openai.com/v1/chat/completions"
+    )
+    return os.getenv("LLM_API_KEY") or groq_key or None, model, os.getenv("LLM_API_BASE_URL") or default_endpoint
