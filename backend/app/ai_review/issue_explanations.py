@@ -104,17 +104,23 @@ async def generate_issue_explanations(
 
     async def run_batch(
         batch: list[dict[str, Any]],
-    ) -> tuple[dict[str, IssueExplanation], int, str | None]:
+    ) -> str | None:
         async with semaphore:
             async with asyncio.timeout_at(deadline):
                 return await _process_batch_with_retry(batch, result)
 
     tasks = [asyncio.create_task(run_batch(batch)) for batch in batches]
     if tasks:
-        done, pending = await asyncio.wait(
-            tasks,
-            timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
-        )
+        try:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+            )
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         for task in pending:
             task.cancel()
         if pending:
@@ -126,7 +132,7 @@ async def generate_issue_explanations(
                 result.failed_batch_count += 1
                 continue
             try:
-                explanations, rejected, failed_reason = task.result()
+                failed_reason = task.result()
             except TimeoutError:
                 budget_exhausted = True
                 result.failed_batch_count += 1
@@ -136,13 +142,9 @@ async def generate_issue_explanations(
                 result.failure_reasons.append(failed_reason)
                 for item in batch:
                     issue_id = item["issue_id"]
-                    if issue_id not in result.explanations:
+                    if issue_id not in result.explanations and issue_id not in result.issue_statuses:
                         result.issue_statuses[issue_id] = "failed"
                         result.issue_failure_reasons[issue_id] = failed_reason
-            result.explanations.update(explanations)
-            result.rejected_explanation_count += rejected
-            for issue_id in explanations:
-                result.issue_statuses[issue_id] = "completed"
 
         if budget_exhausted:
             result.failure_reasons.append(budget_reason)
@@ -211,48 +213,38 @@ def _is_provider_connectivity_error(reason: str | None) -> bool:
 
 async def _process_batch_with_retry(
     batch: list[dict[str, Any]], result: ExplanationGenerationResult
-) -> tuple[dict[str, IssueExplanation], int, str | None]:
-    """Execute a batch. If a multi-issue batch fails due to response validation or parsing,
-    isolate failures by retrying each issue individually."""
+) -> str | None:
+    """Retain validated results and retry missing explanations within the batch deadline."""
     explanations, rejected, failed_reason = await _execute_single_batch(batch, result)
-    if failed_reason is None:
-        for item in batch:
-            issue_id = item["issue_id"]
-            if issue_id in explanations:
-                result.issue_statuses[issue_id] = "completed"
-            else:
-                result.issue_statuses[issue_id] = "failed"
-                result.issue_failure_reasons[issue_id] = "Explanation could not be validated for canonical issue."
-        return explanations, rejected, None
+    def retain(valid: dict[str, IssueExplanation], count: int) -> None:
+        result.explanations.update(valid)
+        result.rejected_explanation_count += count
+        for issue_id in valid:
+            result.issue_statuses[issue_id] = "completed"
 
-    # If the provider itself failed with a connectivity or infrastructure error (HTTP 503, timeout, etc.),
-    # do not hammer the failing provider with repeated individual requests.
+    retain(explanations, rejected)
+    missing = [item for item in batch if item["issue_id"] not in explanations]
+    if not missing:
+        return None
     if _is_provider_connectivity_error(failed_reason):
-        return {}, 0, failed_reason
+        return failed_reason
 
-    # If the batch contained multiple issues and failed, retry each individually to prevent
-    # one malformed or oversized explanation response from failing the others.
-    if len(batch) > 1:
-        isolated_explanations: dict[str, IssueExplanation] = {}
-        total_rejected = 0
-        any_success = False
-        last_sub_failure = failed_reason
-        for item in batch:
-            sub_expls, sub_rejected, sub_err = await _execute_single_batch([item], result)
-            total_rejected += sub_rejected
-            if sub_err is None and item["issue_id"] in sub_expls:
-                isolated_explanations.update(sub_expls)
-                any_success = True
-                result.issue_statuses[item["issue_id"]] = "completed"
-            else:
-                last_sub_failure = sub_err or "Explanation could not be validated for canonical issue."
-                result.issue_statuses[item["issue_id"]] = "failed"
-                result.issue_failure_reasons[item["issue_id"]] = last_sub_failure
-        if any_success:
-            return isolated_explanations, total_rejected, None
-        return {}, total_rejected, last_sub_failure
+    invalid_reason = "Explanation could not be validated for canonical issue."
+    if len(batch) == 1 and failed_reason:
+        return failed_reason
 
-    return {}, 0, failed_reason
+    last_failure = None
+    for item in missing:
+        valid, rejected, reason = await _execute_single_batch([item], result)
+        retain(valid, rejected)
+        issue_id = item["issue_id"]
+        if issue_id not in valid:
+            last_failure = reason or invalid_reason
+            result.issue_statuses[issue_id] = "failed"
+            result.issue_failure_reasons[issue_id] = last_failure
+            if _is_provider_connectivity_error(reason):
+                break
+    return last_failure
 
 
 def _batch_contexts(contexts: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:

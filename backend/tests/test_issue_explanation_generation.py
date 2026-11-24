@@ -329,9 +329,9 @@ def test_one_invalid_explanation_preserves_valid_explanations_in_same_batch(monk
     assert set(result.explanations) == {"issue-a", "issue-c"}
     assert result.explanations["issue-a"].summary == "Valid summary A."
     assert result.explanations["issue-c"].summary == "Valid summary C."
-    # issue-b had missing required fields (rejected=1), issue-unknown was unknown (rejected=1)
-    assert result.rejected_explanation_count == 2
-    assert result.failed_batch_count == 0
+    # Count rejections in the initial response and the retry response.
+    assert result.rejected_explanation_count == 6
+    assert result.failed_batch_count == 1
 
 
 def test_partial_response_keeps_valid_explanations_and_omits_missing_ones(monkeypatch):
@@ -344,7 +344,7 @@ def test_partial_response_keeps_valid_explanations_and_omits_missing_ones(monkey
     result = asyncio.run(service.generate_issue_explanations(issues))
 
     assert set(result.explanations) == {"issue-a"}
-    assert result.failed_batch_count == 0
+    assert result.failed_batch_count == 1
 
 
 def test_unknown_duplicate_and_malformed_issue_entries_are_rejected(monkeypatch):
@@ -361,7 +361,7 @@ def test_unknown_duplicate_and_malformed_issue_entries_are_rejected(monkeypatch)
     result = asyncio.run(service.generate_issue_explanations([issue]))
 
     assert result.explanations == {}  # Duplicate known IDs invalidate that issue's result.
-    assert result.rejected_explanation_count == 5
+    assert result.rejected_explanation_count == 10
 
 
 @pytest.mark.parametrize("payload", [
@@ -816,7 +816,7 @@ def test_explanation_id_association_ambiguous_and_conflicting_rejected(monkeypat
     res_index = asyncio.run(service.generate_issue_explanations([issue1, issue2]))
     assert "issue-target-1" not in res_index.explanations
     assert "issue-target-2" not in res_index.explanations
-    assert res_index.rejected_explanation_count == 2
+    assert res_index.rejected_explanation_count == 6
 
     # 2. Conflicting inner ID with dictionary key must be rejected to prevent misattribution
     conflict_payload = json.dumps({
@@ -866,7 +866,7 @@ def test_explanation_id_association_ambiguous_and_conflicting_rejected(monkeypat
     _stub_validated_completion(monkeypatch, complete_ambiguous)
     res_ambiguous = asyncio.run(service.generate_issue_explanations([issue1]))
     assert "issue-target-1" not in res_ambiguous.explanations
-    assert res_ambiguous.rejected_explanation_count == 2
+    assert res_ambiguous.rejected_explanation_count == 4
 
 
 

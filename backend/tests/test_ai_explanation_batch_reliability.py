@@ -204,7 +204,7 @@ def test_association_ordinal_ids_rejected(monkeypatch):
     assert "can-id-2" not in res.explanations
     assert res.issue_statuses["can-id-1"] == "failed"
     assert res.issue_statuses["can-id-2"] == "failed"
-    assert res.rejected_explanation_count == 2
+    assert res.rejected_explanation_count == 6
 
 
 def test_association_unknown_ids_rejected(monkeypatch):
@@ -223,7 +223,7 @@ def test_association_unknown_ids_rejected(monkeypatch):
     res = asyncio.run(service.generate_issue_explanations(issues))
     assert "can-id-1" not in res.explanations
     assert res.issue_statuses["can-id-1"] == "failed"
-    assert res.rejected_explanation_count == 1
+    assert res.rejected_explanation_count == 2
 
 
 def test_association_missing_ids_in_multi_issue_batch_rejected(monkeypatch):
@@ -244,7 +244,7 @@ def test_association_missing_ids_in_multi_issue_batch_rejected(monkeypatch):
     assert len(res.explanations) == 0
     assert res.issue_statuses["can-id-1"] == "failed"
     assert res.issue_statuses["can-id-2"] == "failed"
-    assert res.rejected_explanation_count == 2
+    assert res.rejected_explanation_count == 6
 
 
 def test_association_duplicate_ids_rejected(monkeypatch):
@@ -264,7 +264,7 @@ def test_association_duplicate_ids_rejected(monkeypatch):
     res = asyncio.run(service.generate_issue_explanations(issues))
     assert "can-id-1" not in res.explanations
     assert res.issue_statuses["can-id-1"] == "failed"
-    assert res.rejected_explanation_count == 2
+    assert res.rejected_explanation_count == 4
 
 
 def test_association_conflicting_dict_key_and_inner_id_rejected(monkeypatch):
@@ -286,7 +286,7 @@ def test_association_conflicting_dict_key_and_inner_id_rejected(monkeypatch):
     res = asyncio.run(service.generate_issue_explanations(issues))
     assert "can-id-1" not in res.explanations
     assert "can-id-2" not in res.explanations
-    assert res.rejected_explanation_count == 1
+    assert res.rejected_explanation_count == 3
 
 
 def test_association_single_issue_strict_fallback(monkeypatch):
@@ -346,7 +346,7 @@ def test_partial_success_one_valid_one_invalid(monkeypatch):
 
     assert "issue-invalid" not in res.explanations
     assert res.issue_statuses["issue-invalid"] == "failed"
-    assert res.rejected_explanation_count == 1
+    assert res.rejected_explanation_count == 3
 
 
 def test_all_entries_invalid_in_batch(monkeypatch):
@@ -367,7 +367,7 @@ def test_all_entries_invalid_in_batch(monkeypatch):
     assert len(res.explanations) == 0
     assert res.issue_statuses["iss-1"] == "failed"
     assert res.issue_statuses["iss-2"] == "failed"
-    assert res.rejected_explanation_count == 2
+    assert res.rejected_explanation_count == 6
 
 
 def test_connectivity_error_does_not_retry_indefinitely(monkeypatch):
@@ -838,3 +838,38 @@ def test_completion_validation_strictly_requires_all_canonical_ids():
     assert all_explained_partial is False
 
 
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "timeout"])
+def test_partial_batch_retains_valid_results_and_retries_only_missing(monkeypatch, outcome):
+    calls = []
+    explanation = service.IssueExplanation.model_validate(_explanation())
+
+    async def execute(batch, _result):
+        ids = [item["issue_id"] for item in batch]
+        calls.append(ids)
+        if len(ids) == 2:
+            return {"issue-1": explanation}, 0, None
+        if outcome == "timeout":
+            await asyncio.Event().wait()
+        if outcome == "failure":
+            return {}, 0, "AI provider returned HTTP 429"
+        return {"issue-2": explanation}, 0, None
+
+    monkeypatch.setattr(service, "_execute_single_batch", execute)
+
+    async def run():
+        return await service.generate_issue_explanations(
+            [_issue("issue-1"), _issue("issue-2")],
+            deadline=asyncio.get_running_loop().time() + 0.2,
+        )
+
+    result = asyncio.run(run())
+    assert calls == [["issue-1", "issue-2"], ["issue-2"]]
+    assert result.issue_statuses["issue-1"] == "completed"
+    assert result.issue_statuses["issue-2"] == {
+        "success": "completed", "failure": "failed", "timeout": "unavailable",
+    }[outcome]
+    assert set(result.explanations) == (
+        {"issue-1", "issue-2"} if outcome == "success" else {"issue-1"}
+    )
+    assert result.failed_batch_count == (outcome != "success")
