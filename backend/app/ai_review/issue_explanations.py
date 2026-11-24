@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,8 +30,9 @@ from app.schemas.issue import (
     LearningResource,
 )
 
-MAX_EXPLANATION_SECONDS = 25.0
-MAX_ISSUES_PER_BATCH = 3
+MAX_EXPLANATION_SECONDS = 8.0
+MAX_ISSUES_PER_BATCH = 8
+MAX_CONCURRENT_EXPLANATION_BATCHES = 3
 MAX_OBSERVATIONS_PER_ISSUE = 6
 MAX_EVIDENCE_ITEMS_PER_OBSERVATION = 2
 MAX_OBSERVATION_TEXT_CHARS = 800
@@ -100,31 +100,52 @@ async def generate_issue_explanations(
     deadline = default_deadline if deadline is None else min(default_deadline, deadline)
     budget_reason = "Issue explanation time budget reached."
     budget_exhausted = False
-    for batch_index, batch in enumerate(batches):
-        try:
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_EXPLANATION_BATCHES)
+
+    async def run_batch(
+        batch: list[dict[str, Any]],
+    ) -> tuple[dict[str, IssueExplanation], int, str | None]:
+        async with semaphore:
             async with asyncio.timeout_at(deadline):
-                if batch_index > 0:
-                    inter_batch_delay = float(os.getenv("LLM_EXPLANATION_INTER_BATCH_DELAY", "0.0"))
-                    if inter_batch_delay > 0:
-                        await asyncio.sleep(inter_batch_delay)
-                explanations, rejected, failed_reason = await _process_batch_with_retry(batch, result)
-        except TimeoutError:
-            budget_exhausted = True
-            result.failed_batch_count += len(batches) - batch_index
+                return await _process_batch_with_retry(batch, result)
+
+    tasks = [asyncio.create_task(run_batch(batch)) for batch in batches]
+    if tasks:
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        for batch, task in zip(batches, tasks):
+            if task not in done or task.cancelled():
+                budget_exhausted = True
+                result.failed_batch_count += 1
+                continue
+            try:
+                explanations, rejected, failed_reason = task.result()
+            except TimeoutError:
+                budget_exhausted = True
+                result.failed_batch_count += 1
+                continue
+            if failed_reason:
+                result.failed_batch_count += 1
+                result.failure_reasons.append(failed_reason)
+                for item in batch:
+                    issue_id = item["issue_id"]
+                    if issue_id not in result.explanations:
+                        result.issue_statuses[issue_id] = "failed"
+                        result.issue_failure_reasons[issue_id] = failed_reason
+            result.explanations.update(explanations)
+            result.rejected_explanation_count += rejected
+            for issue_id in explanations:
+                result.issue_statuses[issue_id] = "completed"
+
+        if budget_exhausted:
             result.failure_reasons.append(budget_reason)
-            break
-        if failed_reason:
-            result.failed_batch_count += 1
-            result.failure_reasons.append(failed_reason)
-            for item in batch:
-                issue_id = item["issue_id"]
-                if issue_id not in result.explanations:
-                    result.issue_statuses[issue_id] = "failed"
-                    result.issue_failure_reasons[issue_id] = failed_reason
-        result.explanations.update(explanations)
-        result.rejected_explanation_count += rejected
-        for issue_id in explanations:
-            result.issue_statuses[issue_id] = "completed"
 
     for issue in issues:
         if issue.issue_id in ambiguous_ids:
