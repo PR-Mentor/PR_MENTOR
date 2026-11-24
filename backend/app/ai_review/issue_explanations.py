@@ -96,12 +96,8 @@ async def generate_issue_explanations(
 
     batches = _batch_contexts(contexts)
     result.batch_count = len(batches)
- codex/fix-live-review-latency
-    deadline = asyncio.get_running_loop().time() + MAX_EXPLANATION_SECONDS
-
     default_deadline = asyncio.get_running_loop().time() + MAX_EXPLANATION_SECONDS
     deadline = default_deadline if deadline is None else min(default_deadline, deadline)
-main
     budget_reason = "Issue explanation time budget reached."
     budget_exhausted = False
     for batch_index, batch in enumerate(batches):

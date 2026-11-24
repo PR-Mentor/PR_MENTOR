@@ -15,11 +15,7 @@ The backend always allows the production origins `https://prmentor.in` and `http
 
 Use a verified release commit from `main` for the Render backend. Set **Root Directory** to `backend`, **Build Command** to `pip install -r requirements.txt && python -m compileall -q app`, and **Start Command** to `uvicorn app.main:app --host 0.0.0.0 --port $PORT`. Keep the existing MongoDB and Supabase environment settings. Check both health endpoints and submit an authenticated live review after deployment.
 
- codex/fix-live-review-latency
-Quick reviews use a 17-second server deadline and a 20-second browser deadline. The browser deadline includes network and hosting time. Use an always-on backend if the first review after an idle period must meet the same target.
-
 Live reviews use an 18-second server deadline and a 20-second browser deadline. Full reviews preserve completed evidence when optional checks exhaust their share of the deadline. The browser deadline includes network and hosting time. Use an always-on backend if the first review after an idle period must meet the same target.
- main
 
 ### Learning Lab Persistence & Render Disks
 The Learning Lab subsystems (PR learning spaces, concepts, coding exercises, drafts, and submissions) persist to SQLite via `connection()`. To ensure learning progress, drafts, and spaces survive service restarts or redeployments on Render:

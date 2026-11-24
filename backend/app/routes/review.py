@@ -60,8 +60,6 @@ from app.verification.source_analysis import validate_static_fix
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
 _logger = logging.getLogger(__name__)
-LIVE_REVIEW_TIMEOUT_SECONDS = 90
-QUICK_REVIEW_TIMEOUT_SECONDS = 17
 
 
 class PRTestStatusResponse(BaseModel):
@@ -413,32 +411,19 @@ async def analyze_review(
     if payload.mode != "live":
         return await _analyze_review(payload, uid)
 
- codex/fix-live-review-latency
-    timeout = QUICK_REVIEW_TIMEOUT_SECONDS if payload.depth == "quick" else LIVE_REVIEW_TIMEOUT_SECONDS
-    try:
-        async with asyncio.timeout(timeout):
-            return await _analyze_review(payload, uid)
-    except TimeoutError as exc:
-        _logger.warning("Live analysis exceeded its %ss processing deadline", timeout)
-
     deadline = asyncio.get_running_loop().time() + LIVE_REVIEW_TIMEOUT_SECONDS
     try:
         async with asyncio.timeout_at(deadline):
             return await _analyze_review(payload, uid, deadline=deadline)
     except TimeoutError as exc:
         _logger.warning("Live analysis exceeded its %ss processing deadline", LIVE_REVIEW_TIMEOUT_SECONDS)
-main
         raise HTTPException(
             status_code=504,
             detail="Live analysis timed out. Check Recent reviews before retrying.",
         ) from exc
 
 
- codex/fix-live-review-latency
-async def _analyze_review(payload: AnalyzeRequest, uid: str) -> ReviewResponse:
-
 async def _analyze_review(payload: AnalyzeRequest, uid: str, *, deadline: float | None = None) -> ReviewResponse:
-main
     record = None
     try:
         if payload.mode == "live":

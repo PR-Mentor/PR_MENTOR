@@ -49,12 +49,6 @@ from app.verification.ruff_runner import ToolExecutionError, run_ruff
 from app.verification.test_runner import run_tests
 
 
- codex/fix-live-review-latency
-AI_REVIEW_TIMEOUT_SECONDS = 20
-QUICK_AI_TIMEOUT_SECONDS = 6
-QUICK_SOURCE_LIMIT = 10
-FIX_FRESHNESS_TIMEOUT_SECONDS = 8
-
 LIVE_REVIEW_TIMEOUT_SECONDS = 18
 AI_REVIEW_TIMEOUT_SECONDS = 6
 QUICK_AI_TIMEOUT_SECONDS = AI_REVIEW_TIMEOUT_SECONDS
@@ -63,7 +57,6 @@ EXPLANATION_TIMEOUT_SECONDS = 4
 FIX_GENERATION_TIMEOUT_SECONDS = 4
 QUICK_SOURCE_LIMIT = 10
 FIX_FRESHNESS_TIMEOUT_SECONDS = 1.5
- main
 MAX_SOURCE_FETCH_ATTEMPTS = 20
 SOURCE_FETCH_CONCURRENCY = 5
 _logger = logging.getLogger("uvicorn.error.pr_mentor.review")
@@ -127,15 +120,12 @@ async def analyze(
     if quick:
         request = request.model_copy(update={"include_learning": False, "include_suggested_fixes": False})
 
- codex/fix-live-review-latency
-
     clock = asyncio.get_running_loop().time
     review_deadline = deadline if deadline is not None else clock() + LIVE_REVIEW_TIMEOUT_SECONDS
 
     def phase_deadline(seconds: float, *, reserve: float = 1.5) -> float:
         return min(clock() + seconds, review_deadline - reserve)
 
- main
     started = datetime.now(UTC)
     stage_started = perf_counter()
     stage_ms: dict[str, int] = {}
@@ -178,10 +168,7 @@ async def analyze(
                 warnings.append(f"Source analysis skipped oversized file: {safe_name}")
                 continue
             if len(source_candidates) >= source_limit:
-codex/fix-live-review-latency
-
                 source_coverage_limited = True
- main
                 warnings.append(
                     f"Source retrieval was capped at {source_limit} source files."
                 )
@@ -275,11 +262,7 @@ codex/fix-live-review-latency
     if is_configured():
         try:
             timeout = QUICK_AI_TIMEOUT_SECONDS if quick else AI_REVIEW_TIMEOUT_SECONDS
-codex/fix-live-review-latency
-            async with asyncio.timeout(timeout):
-
             async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else 6)):
- main
                 try:
                     if quick:
                         repository_structure = _summarize_sources_by_language(registry, source_files)
@@ -288,12 +271,8 @@ codex/fix-live-review-latency
                     elif not isinstance(head_sha, str):
                         raise TypeError("Pull request source identity is unavailable.")
                     else:
-codex/fix-live-review-latency
-                        repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
-
                         async with asyncio.timeout(1.0):
                             repository_structure = await build_review_repository_context(owner, repo, head_sha, source_files)
- main
                 except Exception:  # noqa: BLE001 - full-repository context is optional; changed-file context remains available.
                     repository_structure = _summarize_sources_by_language(registry, source_files)
                     warnings.append("Full repository context was unavailable; AI review used changed-file structure only.")
@@ -763,11 +742,7 @@ async def _run_fix_freshness(
 ) -> dict[str, Any]:
     """Keep freshness verification best effort and preserve all proposals."""
     try:
- codex/fix-live-review-latency
-        async with asyncio.timeout(FIX_FRESHNESS_TIMEOUT_SECONDS):
-
         async with asyncio.timeout_at(deadline):
- main
             return await verify_fix_freshness(
                 issues,
                 owner=owner,
