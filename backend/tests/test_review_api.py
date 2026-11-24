@@ -42,7 +42,8 @@ def test_live_review_deadline_is_retryable(client, monkeypatch, depth):
         assert request_id
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(review_routes, "LIVE_REVIEW_TIMEOUT_SECONDS", 0.01)
+    timeout_setting = "QUICK_REVIEW_TIMEOUT_SECONDS" if depth == "quick" else "LIVE_REVIEW_TIMEOUT_SECONDS"
+    monkeypatch.setattr(review_routes, timeout_setting, 0.01)
     monkeypatch.setattr(review_routes, "_analyze_review", stalled_analysis)
     payload = {"url": "https://github.com/example/project/pull/7", "mode": "live", "depth": depth}
 

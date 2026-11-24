@@ -50,11 +50,12 @@ from app.verification.ruff_runner import ToolExecutionError, run_ruff
 from app.verification.test_runner import run_tests
 
 
-LIVE_REVIEW_TIMEOUT_SECONDS = 18
-AI_REVIEW_TIMEOUT_SECONDS = 6
-QUICK_AI_TIMEOUT_SECONDS = AI_REVIEW_TIMEOUT_SECONDS
+LIVE_REVIEW_TIMEOUT_SECONDS = 33
+QUICK_REVIEW_TIMEOUT_SECONDS = 18
+AI_REVIEW_TIMEOUT_SECONDS = 10
+QUICK_AI_TIMEOUT_SECONDS = 6
 SOURCE_FETCH_TIMEOUT_SECONDS = 4
-EXPLANATION_TIMEOUT_SECONDS = 8
+EXPLANATION_TIMEOUT_SECONDS = 16
 FIX_GENERATION_TIMEOUT_SECONDS = 2
 QUICK_SOURCE_LIMIT = 10
 FIX_FRESHNESS_TIMEOUT_SECONDS = 1.5
@@ -124,7 +125,7 @@ async def analyze(
         request = request.model_copy(update={"include_learning": False, "include_suggested_fixes": False})
 
     clock = asyncio.get_running_loop().time
-    review_deadline = deadline if deadline is not None else clock() + LIVE_REVIEW_TIMEOUT_SECONDS
+    review_deadline = deadline if deadline is not None else clock() + (QUICK_REVIEW_TIMEOUT_SECONDS if quick else LIVE_REVIEW_TIMEOUT_SECONDS)
     request_id = request_id or uuid4().hex
 
     def phase_deadline(seconds: float, *, reserve: float = 1.5) -> float:
@@ -279,7 +280,7 @@ async def analyze(
     if is_configured():
         try:
             timeout = QUICK_AI_TIMEOUT_SECONDS if quick else AI_REVIEW_TIMEOUT_SECONDS
-            async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else 10)):
+            async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else EXPLANATION_TIMEOUT_SECONDS + 3)):
                 try:
                     if quick:
                         repository_structure = _summarize_sources_by_language(registry, source_files)
