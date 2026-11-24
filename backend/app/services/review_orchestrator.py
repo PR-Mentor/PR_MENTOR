@@ -5,6 +5,7 @@ import logging
 import re
 import tempfile
 from collections import Counter
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from time import perf_counter
@@ -60,6 +61,7 @@ FIX_FRESHNESS_TIMEOUT_SECONDS = 1.5
 MAX_SOURCE_FETCH_ATTEMPTS = 20
 SOURCE_FETCH_CONCURRENCY = 5
 _logger = logging.getLogger("uvicorn.error.pr_mentor.review")
+LIVE_REVIEW_STAGE: ContextVar[str] = ContextVar("pr_mentor_live_review_stage", default="request_preflight")
 
 
 async def analyze(
@@ -70,6 +72,7 @@ async def analyze(
     owner_id: str | None = None,
     repository_private: bool = False,
     deadline: float | None = None,
+    request_id: str | None = None,
 ) -> ReviewResponse:
     effective_id = user_id or owner_id
     if request.workspace_id:
@@ -122,25 +125,36 @@ async def analyze(
 
     clock = asyncio.get_running_loop().time
     review_deadline = deadline if deadline is not None else clock() + LIVE_REVIEW_TIMEOUT_SECONDS
+    request_id = request_id or uuid4().hex
 
     def phase_deadline(seconds: float, *, reserve: float = 1.5) -> float:
         return min(clock() + seconds, review_deadline - reserve)
 
     started = datetime.now(UTC)
-    stage_started = perf_counter()
     stage_ms: dict[str, int] = {}
 
-    def record_stage(name: str) -> None:
-        nonlocal stage_started
-        now = perf_counter()
-        stage_ms[name] = round((now - stage_started) * 1000)
-        stage_started = now
+    def start_stage(name: str) -> float:
+        LIVE_REVIEW_STAGE.set(name)
+        _logger.info("Live review stage started request_id=%s stage=%s", request_id, name)
+        return perf_counter()
 
+    def finish_stage(name: str, stage_started: float) -> None:
+        duration_ms = round((perf_counter() - stage_started) * 1000)
+        stage_ms[name] = duration_ms
+        _logger.info(
+            "Live review stage completed request_id=%s stage=%s duration_ms=%s",
+            request_id,
+            name,
+            duration_ms,
+        )
+
+    stage_started = start_stage("github_metadata_and_diff")
     bundle = (
         await fetch_pull_request(submitted_url, github_token=github_token)
         if github_token
         else await fetch_pull_request(submitted_url)
     )
+    finish_stage("github_metadata_and_diff", stage_started)
     warnings = list(bundle.warnings)
     source_limit = QUICK_SOURCE_LIMIT if quick else MAX_SOURCE_FETCH_ATTEMPTS
     if quick:
@@ -152,6 +166,7 @@ async def analyze(
     source_coverage_limited = bundle.metadata.changed_files > len(bundle.files) or len(bundle.files) > 100
     source_files: list[tuple[str, str]] = []
     head_sha = bundle.metadata.head_sha
+    stage_started = start_stage("source_retrieval")
     if not isinstance(head_sha, str) or re.fullmatch(
         r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", head_sha
     ) is None:
@@ -208,10 +223,11 @@ async def analyze(
                 continue
             source_files.append((safe_name, content))
 
-    record_stage("github")
+    finish_stage("source_retrieval", stage_started)
     tool_results: list[dict[str, Any]] = [{"tool": "github_rest_api", "status": "completed", "files_received": len(bundle.files), "analyzable_patch_files": sum(bool(file.patch) and file.status != "removed" for file in bundle.files)}]
     normalized_static: list[ReviewFinding] = []
     static_observations: list[FindingObservation] = []
+    stage_started = start_stage("static_analysis")
     with tempfile.TemporaryDirectory(prefix="pr-mentor-review-") as temp_name:
         temp_root = Path(temp_name)
         registry = get_registry()
@@ -257,8 +273,9 @@ async def analyze(
                             "reason": f"No eligible {adapter.display_name} source was available for analysis.",
                         })
 
-    record_stage("static_analysis")
+    finish_stage("static_analysis", stage_started)
     ai_findings: list[ReviewFinding] = []
+    stage_started = start_stage("ai_findings")
     if is_configured():
         try:
             timeout = QUICK_AI_TIMEOUT_SECONDS if quick else AI_REVIEW_TIMEOUT_SECONDS
@@ -327,9 +344,11 @@ async def analyze(
         tool_results.append({"tool": "ai_review", "status": "unavailable", "executed": False, "reason": reason})
         warnings.append("AI review is unavailable because no provider is configured.")
 
-    record_stage("ai_review")
+    finish_stage("ai_findings", stage_started)
+    stage_started = start_stage("workflow_status_lookup")
     test_result = run_tests()
     tool_results.append({"tool": "tests", **test_result})
+    finish_stage("workflow_status_lookup", stage_started)
 
     added_lines_map, _ = added_lines_by_file([item.model_dump() for item in bundle.files])
     changed_paths = {_normalize_review_path(item.filename) or item.filename.replace("\\", "/") for item in bundle.files}
@@ -356,7 +375,7 @@ async def analyze(
     # Explanations and suggested fixes are independent once canonical issues
     # exist. Run them concurrently so full reviews don't pay both provider
     # latencies one after the other.
-    fix_generation_started = perf_counter()
+    fix_generation_started = start_stage("suggested_fixes")
     fix_generation_task = asyncio.create_task(_run_fix_generation(
         request,
         bundle.metadata.repository_owner,
@@ -366,7 +385,7 @@ async def analyze(
         diff_files,
         deadline=phase_deadline(FIX_GENERATION_TIMEOUT_SECONDS, reserve=2),
     ))
-    explanation_started = perf_counter()
+    explanation_started = start_stage("issue_explanations")
     explanation_result = ExplanationGenerationResult()
     explanation_tool: dict[str, Any]
     if not reconciliation.issues:
@@ -455,12 +474,11 @@ async def analyze(
             }
             warnings.append("AI issue explanations were unavailable; canonical issues are preserved without explanations.")
     tool_results.append(explanation_tool)
-    record_stage("explanations")
-    stage_ms["explanations"] = round((perf_counter() - explanation_started) * 1000)
+    finish_stage("issue_explanations", explanation_started)
     fix_generation_tool = await fix_generation_task
-    stage_ms["fix_generation"] = round((perf_counter() - fix_generation_started) * 1000)
-    stage_started = perf_counter()
+    finish_stage("suggested_fixes", fix_generation_started)
     tool_results.append(fix_generation_tool)
+    stage_started = start_stage("fix_analysis")
     if request.include_suggested_fixes:
         fix_analysis_tool = analyze_fix_relationships(reconciliation.issues)
         conflict_status = fix_analysis_tool["status"]
@@ -490,7 +508,7 @@ async def analyze(
             "freshness": {"status": "not_requested", "proposal_count": 0, "per_proposal": []},
         }
     tool_results.append(fix_analysis_tool)
-    record_stage("fix_analysis")
+    finish_stage("fix_analysis", stage_started)
     counts = {status: sum(finding.verification_status == status for finding in findings) for status in ("verified", "needs_review", "unsupported")}
     partial = any(item.get("status") in {"unavailable", "error", "skipped", "partial"} for item in tool_results if item.get("tool") not in {"github_rest_api", "issue_explanations", "fix_generation", "fix_analysis"})
     partial = partial or source_coverage_limited
@@ -517,9 +535,15 @@ async def analyze(
         verification_summary=counts, tool_results=tool_results, warnings=warnings,
         created_at=datetime.now(UTC), duration_ms=elapsed, diff_files=diff_files,
     )
+    stage_started = start_stage("result_persistence")
     await asyncio.to_thread(_persist, response, effective_id)
-    record_stage("result_and_storage")
-    _logger.info("Live review completed review_id=%s stage_ms=%s", response.review_id, stage_ms)
+    finish_stage("result_persistence", stage_started)
+    _logger.info(
+        "Live review completed request_id=%s review_id=%s stage_ms=%s",
+        request_id,
+        response.review_id,
+        stage_ms,
+    )
     return response
 
 
