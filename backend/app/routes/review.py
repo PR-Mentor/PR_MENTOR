@@ -32,12 +32,17 @@ from app.database.test_execution_jobs import (
     enqueue as enqueue_execution_job,
     get_job as get_execution_job,
 )
-from app.github_service.access import ensure_public_repository
 from app.github_service import account as github_account
-from app.github_service.client import GitHubAPIError, async_client, request_json
+from app.github_service.access import ensure_public_repository
 from app.github_service.actions_status import get_pr_test_status
-from app.github_service.pull_requests import fetch_current_pull_request_head_sha
+from app.github_service.client import (
+    GitHubAPIError,
+    async_client,
+    prompt_github_cancellation,
+    request_json,
+)
 from app.github_service.parser import InvalidPullRequestURL, parse_pull_request_url
+from app.github_service.pull_requests import fetch_current_pull_request_head_sha
 from app.routes.auth import current_claims
 from app.schemas.generated_test import GeneratedTestCase
 from app.schemas.issue import (
@@ -413,8 +418,9 @@ async def analyze_review(
 
     deadline = asyncio.get_running_loop().time() + LIVE_REVIEW_TIMEOUT_SECONDS
     try:
-        async with asyncio.timeout_at(deadline):
-            return await _analyze_review(payload, uid, deadline=deadline)
+        with prompt_github_cancellation():
+            async with asyncio.timeout_at(deadline):
+                return await _analyze_review(payload, uid, deadline=deadline)
     except TimeoutError as exc:
         _logger.warning("Live analysis exceeded its %ss processing deadline", LIVE_REVIEW_TIMEOUT_SECONDS)
         raise HTTPException(

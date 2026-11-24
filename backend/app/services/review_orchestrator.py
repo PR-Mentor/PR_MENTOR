@@ -349,6 +349,24 @@ async def analyze(
         for finding in ai_findings
     ]
     reconciliation = reconcile_observations(observations)
+    if repository_private and request.include_suggested_fixes:
+        warnings.append("Suggested fix generation is unavailable for private repository reviews.")
+        request = request.model_copy(update={"include_suggested_fixes": False})
+
+    # Explanations and suggested fixes are independent once canonical issues
+    # exist. Run them concurrently so full reviews don't pay both provider
+    # latencies one after the other.
+    fix_generation_started = perf_counter()
+    fix_generation_task = asyncio.create_task(_run_fix_generation(
+        request,
+        bundle.metadata.repository_owner,
+        bundle.metadata.repository_name,
+        bundle.metadata.head_sha,
+        reconciliation.issues,
+        diff_files,
+        deadline=phase_deadline(FIX_GENERATION_TIMEOUT_SECONDS, reserve=2),
+    ))
+    explanation_started = perf_counter()
     explanation_result = ExplanationGenerationResult()
     explanation_tool: dict[str, Any]
     if not reconciliation.issues:
@@ -423,6 +441,10 @@ async def analyze(
                     else "No valid explanations were returned for this review."
                 )
                 warnings.append("AI issue explanations were unavailable for some canonical issues; valid explanations and all findings were preserved.")
+        except asyncio.CancelledError:
+            fix_generation_task.cancel()
+            await asyncio.gather(fix_generation_task, return_exceptions=True)
+            raise
         except Exception:  # noqa: BLE001 - Optional explanations must not discard completed findings.
             # Explanation generation is optional and must not discard a valid
             # review. Keep details out of the response and retain every issue.
@@ -434,20 +456,11 @@ async def analyze(
             warnings.append("AI issue explanations were unavailable; canonical issues are preserved without explanations.")
     tool_results.append(explanation_tool)
     record_stage("explanations")
-    if repository_private and request.include_suggested_fixes:
-        warnings.append("Suggested fix generation is unavailable for private repository reviews.")
-        request = request.model_copy(update={"include_suggested_fixes": False})
-    fix_generation_tool = await _run_fix_generation(
-        request,
-        bundle.metadata.repository_owner,
-        bundle.metadata.repository_name,
-        bundle.metadata.head_sha,
-        reconciliation.issues,
-        diff_files,
-        deadline=phase_deadline(FIX_GENERATION_TIMEOUT_SECONDS, reserve=2),
-    )
+    stage_ms["explanations"] = round((perf_counter() - explanation_started) * 1000)
+    fix_generation_tool = await fix_generation_task
+    stage_ms["fix_generation"] = round((perf_counter() - fix_generation_started) * 1000)
+    stage_started = perf_counter()
     tool_results.append(fix_generation_tool)
-    record_stage("fix_generation")
     if request.include_suggested_fixes:
         fix_analysis_tool = analyze_fix_relationships(reconciliation.issues)
         conflict_status = fix_analysis_tool["status"]

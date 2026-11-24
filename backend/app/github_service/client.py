@@ -9,6 +9,8 @@ import math
 import os
 import time
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -26,6 +28,9 @@ CACHE_MAX_ENTRIES = 256
 MAX_GITHUB_RESPONSE_BYTES = 5_000_000
 _response_cache: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[float, Any]] = {}
 _inflight_requests: dict[tuple[str, tuple[tuple[str, str], ...]], asyncio.Task[Any]] = {}
+_cancel_shared_requests_promptly: ContextVar[bool] = ContextVar(
+    "pr_mentor_cancel_shared_github_requests_promptly", default=False
+)
 _logger = logging.getLogger(__name__)
 
 
@@ -116,6 +121,22 @@ class GitHubClient:
             raise GitHubServiceError("GitHub returned invalid JSON.") from exc
 
 
+@contextmanager
+def prompt_github_cancellation():
+    """Make request_json respect an enclosing review deadline immediately.
+
+    Ordinary callers keep the shared-request behavior that lets a request
+    finish and populate the cache after one waiter is cancelled. A live review
+    instead opts into prompt cancellation so its hard deadline is not held
+    open while awaiting a shielded HTTP request.
+    """
+    token = _cancel_shared_requests_promptly.set(True)
+    try:
+        yield
+    finally:
+        _cancel_shared_requests_promptly.reset(token)
+
+
 def headers(token: str | None = None) -> dict[str, str]:
     result = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     active_token = token or github_token()
@@ -166,14 +187,22 @@ async def request_json(
             return copy.deepcopy(await asyncio.shield(task))
 
     task = asyncio.create_task(_execute_request(client, path, params, cache_key=cache_key))
+    created_task = True
     if cache_key is not None:
         _inflight_requests[cache_key] = task
         task.add_done_callback(lambda done: _cleanup_inflight(cache_key, done))
     # Shield the shared task from cancellation so other waiters are not disrupted.
-    # If this caller is cancelled, wait for the task to finish before propagating.
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
+        if _cancel_shared_requests_promptly.get():
+            # If this caller created the task, cancel it before its owning
+            # AsyncClient context closes. If the task belongs to another
+            # caller, leave it alone and release this waiter immediately.
+            if created_task and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            raise
         await task
         raise
 

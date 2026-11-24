@@ -460,9 +460,11 @@ def test_live_review_reconciles_static_and_ai_and_persists_observations(client, 
     issue_ids_seen_by_explainer = []
     observations_seen_by_explainer = []
     events = []
+    fixes_started = asyncio.Event()
 
     async def explain(issues, **_kwargs):
         events.append("explanation")
+        await asyncio.wait_for(fixes_started.wait(), timeout=0.5)
         issue_ids_seen_by_explainer.extend(issue.issue_id for issue in issues)
         observations_seen_by_explainer.extend(
             [[observation.model_dump(mode="json") for observation in issue.observations] for issue in issues]
@@ -481,11 +483,11 @@ def test_live_review_reconciles_static_and_ai_and_persists_observations(client, 
 
     async def generate_fixes(issues, *, owner, repo, head_sha: str, diff_files, deadline):
         events.append("fix_generation")
+        fixes_started.set()
         assert owner == "owner" and repo == "repo"
         assert head_sha == metadata.head_sha
         assert len(issues) == 1
         assert len(issues[0].observations) == 2
-        assert issues[0].explanation is not None
         fix = SuggestedFix(
             fix_id="fix-query-1", canonical_issue_id=issues[0].issue_id,
             file_path=issues[0].file_path, start_line=1, end_line=1,
@@ -556,7 +558,7 @@ def test_live_review_reconciles_static_and_ai_and_persists_observations(client, 
     assert analysis_tool["relationships"] == []
     assert analysis_tool["freshness_status"] == "completed"
     assert analysis_tool["freshness"]["per_proposal"][0]["status"] == "current"
-    assert events == ["explanation", "fix_generation"]
+    assert set(events) == {"explanation", "fix_generation"}
     assert issue["suggested_fixes"][0]["decision_status"] == "pending"
     assert issue["suggested_fixes"][0]["base_commit_sha"] == head_sha
 
@@ -589,7 +591,7 @@ def test_live_review_reconciles_static_and_ai_and_persists_observations(client, 
     assert tools["ai_review"]["status"] == "unavailable"
     assert tools["issue_explanations"]["status"] == "not_requested"
     assert tools["fix_generation"]["status"] == "not_requested"
-    assert events == ["explanation", "fix_generation"]
+    assert set(events) == {"explanation", "fix_generation"}
 
 
 def test_unowned_legacy_review_is_preserved_but_not_exposed_to_new_account(client):
