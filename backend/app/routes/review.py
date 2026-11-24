@@ -12,9 +12,11 @@ import logging
 import re
 import sqlite3
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Annotated, Any, Literal
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from pymongo.errors import PyMongoError
 
@@ -60,7 +62,7 @@ from app.schemas.review import (
 from app.services.fix_eligibility import evaluate_fix_eligibility
 from app.services.fix_freshness import verify_fix_freshness
 from app.services.review_access import require_review_access
-from app.services.review_orchestrator import LIVE_REVIEW_TIMEOUT_SECONDS, analyze
+from app.services.review_orchestrator import LIVE_REVIEW_STAGE, LIVE_REVIEW_TIMEOUT_SECONDS, analyze
 from app.verification.source_analysis import validate_static_fix
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
@@ -411,34 +413,87 @@ async def validate_suggested_fix(
 async def analyze_review(
     payload: AnalyzeRequest,
     claims: Annotated[dict[str, Any], Depends(current_claims)],
+    response: Response,
 ):
     uid = claims["uid"]
     if payload.mode != "live":
         return await _analyze_review(payload, uid)
 
+    request_id = uuid4().hex
+    response.headers["X-Request-ID"] = request_id
+    request_started = perf_counter()
+    stage_token = LIVE_REVIEW_STAGE.set("github_access_check")
     deadline = asyncio.get_running_loop().time() + LIVE_REVIEW_TIMEOUT_SECONDS
+    _logger.info(
+        "Live review started request_id=%s depth=%s explanations=%s suggested_fixes=%s",
+        request_id,
+        payload.depth,
+        payload.include_learning,
+        payload.include_suggested_fixes,
+    )
     try:
         with prompt_github_cancellation():
             async with asyncio.timeout_at(deadline):
-                return await _analyze_review(payload, uid, deadline=deadline)
+                result = await _analyze_review(payload, uid, deadline=deadline, request_id=request_id)
+        _logger.info(
+            "Live review request completed request_id=%s duration_ms=%s status=%s",
+            request_id,
+            round((perf_counter() - request_started) * 1000),
+            result.status,
+        )
+        return result
     except TimeoutError as exc:
-        _logger.warning("Live analysis exceeded its %ss processing deadline", LIVE_REVIEW_TIMEOUT_SECONDS)
+        duration_ms = round((perf_counter() - request_started) * 1000)
+        stage = LIVE_REVIEW_STAGE.get()
+        _logger.warning(
+            "Live review deadline exceeded request_id=%s stage=%s duration_ms=%s deadline_seconds=%s",
+            request_id,
+            stage,
+            duration_ms,
+            LIVE_REVIEW_TIMEOUT_SECONDS,
+        )
+        detail = (
+            "GitHub did not return the pull request data before the review deadline. Check that the repository is public or connected and that GitHub is not rate-limiting requests, then retry."
+            if stage in {"github_access_check", "github_metadata_and_diff", "source_retrieval"}
+            else "The live review exceeded its time limit during analysis. Retry with Quick review or reduce the pull request size."
+        )
         raise HTTPException(
             status_code=504,
-            detail="Live analysis timed out. Check Recent reviews before retrying.",
+            detail=detail,
+            headers={"X-Request-ID": request_id},
         ) from exc
+    finally:
+        LIVE_REVIEW_STAGE.reset(stage_token)
 
 
-async def _analyze_review(payload: AnalyzeRequest, uid: str, *, deadline: float | None = None) -> ReviewResponse:
+async def _analyze_review(
+    payload: AnalyzeRequest,
+    uid: str,
+    *,
+    deadline: float | None = None,
+    request_id: str | None = None,
+) -> ReviewResponse:
     record = None
     try:
         if payload.mode == "live":
+            if request_id:
+                LIVE_REVIEW_STAGE.set("github_access_check")
+            access_started = perf_counter()
+            if request_id:
+                _logger.info(
+                    "Live review stage started request_id=%s stage=github_access_check",
+                    request_id,
+                )
             owner, repo, _number = parse_pull_request_url(
                 payload.pull_request_url or payload.url or ""
             )
             record = await asyncio.to_thread(github_account.connection, uid)
             if payload.use_github_connection and record is None:
-                raise HTTPException(409, "Connect your GitHub account to analyze this pull request.")
+                raise HTTPException(
+                    409,
+                    "Connect your GitHub account to analyze this pull request.",
+                    headers={"X-Request-ID": request_id} if request_id else None,
+                )
             if record is not None:
                 token = github_account.access_token(record)
                 async with async_client(token=token) as client:
@@ -449,9 +504,25 @@ async def _analyze_review(payload: AnalyzeRequest, uid: str, *, deadline: float 
                 if private and payload.workspace_id:
                     raise HTTPException(403, "Private repository reviews can only be created in your personal review history.")
                 await asyncio.to_thread(github_account.require_current_connection, record)
-                return await analyze(payload, user_id=uid, github_token=token, repository_private=private, deadline=deadline)
+                if request_id:
+                    _logger.info(
+                        "Live review stage completed request_id=%s stage=github_access_check duration_ms=%s",
+                        request_id,
+                        round((perf_counter() - access_started) * 1000),
+                    )
+                return await analyze(
+                    payload, user_id=uid, github_token=token,
+                    repository_private=private, deadline=deadline,
+                    request_id=request_id,
+                )
             await ensure_public_repository(owner, repo)
-        return await analyze(payload, user_id=uid, deadline=deadline)
+            if request_id:
+                _logger.info(
+                    "Live review stage completed request_id=%s stage=github_access_check duration_ms=%s",
+                    request_id,
+                    round((perf_counter() - access_started) * 1000),
+                )
+        return await analyze(payload, user_id=uid, deadline=deadline, request_id=request_id)
     except InvalidPullRequestURL as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except GitHubAPIError as exc:

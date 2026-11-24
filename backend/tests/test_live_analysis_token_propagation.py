@@ -251,8 +251,9 @@ def test_live_review_endpoint_ignores_browser_supplied_github_token(monkeypatch,
 
     captured_tokens = []
 
-    async def mock_analyze(request, user_id=None, github_token=None, *, owner_id=None, deadline=None):
+    async def mock_analyze(request, user_id=None, github_token=None, *, owner_id=None, deadline=None, request_id=None):
         assert deadline is not None
+        assert request_id
         captured_tokens.append(github_token)
         from app.data.sample_reviews import sample_review
         resp = sample_review("acme", "repo", 42)
@@ -272,6 +273,7 @@ def test_live_review_endpoint_ignores_browser_supplied_github_token(monkeypatch,
     )
 
     assert response.status_code == 200, response.text
+    assert response.headers.get("x-request-id")
     assert captured_tokens == [None]
     body = response.json()
     assert body["analysis_mode"] == "live"

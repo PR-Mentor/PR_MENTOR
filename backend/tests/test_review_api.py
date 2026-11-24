@@ -37,8 +37,9 @@ def test_live_review_deadline_is_retryable(client, monkeypatch, depth):
 
     original = review_routes._analyze_review
 
-    async def stalled_analysis(_payload, _uid, *, deadline):
+    async def stalled_analysis(_payload, _uid, *, deadline, request_id):
         assert deadline is not None
+        assert request_id
         await asyncio.Event().wait()
 
     monkeypatch.setattr(review_routes, "LIVE_REVIEW_TIMEOUT_SECONDS", 0.01)
@@ -47,7 +48,8 @@ def test_live_review_deadline_is_retryable(client, monkeypatch, depth):
 
     timed_out = client.post("/api/reviews/analyze", json=payload)
     assert timed_out.status_code == 504
-    assert "retrying" in timed_out.json()["detail"]
+    assert "repository is public or connected" in timed_out.json()["detail"]
+    assert timed_out.headers.get("x-request-id")
     assert client.get("/api/reviews/history").json() == []
 
     monkeypatch.setattr(review_routes, "_analyze_review", original)
