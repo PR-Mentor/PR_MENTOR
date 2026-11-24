@@ -375,11 +375,7 @@ async def analyze(
     # Explanations and suggested fixes are independent once canonical issues
     # exist. Run them concurrently so full reviews don't pay both provider
     # latencies one after the other.
- codex/fix-live-review-deadline-cancellation
     fix_generation_started = start_stage("suggested_fixes")
-
-    fix_generation_started = perf_counter()
- main
     fix_generation_task = asyncio.create_task(_run_fix_generation(
         request,
         bundle.metadata.repository_owner,
@@ -389,11 +385,7 @@ async def analyze(
         diff_files,
         deadline=phase_deadline(FIX_GENERATION_TIMEOUT_SECONDS, reserve=2),
     ))
-codex/fix-live-review-deadline-cancellation
     explanation_started = start_stage("issue_explanations")
-
-    explanation_started = perf_counter()
- main
     explanation_result = ExplanationGenerationResult()
     explanation_tool: dict[str, Any]
     if not reconciliation.issues:
@@ -482,20 +474,11 @@ codex/fix-live-review-deadline-cancellation
             }
             warnings.append("AI issue explanations were unavailable; canonical issues are preserved without explanations.")
     tool_results.append(explanation_tool)
- codex/fix-live-review-deadline-cancellation
     finish_stage("issue_explanations", explanation_started)
     fix_generation_tool = await fix_generation_task
     finish_stage("suggested_fixes", fix_generation_started)
     tool_results.append(fix_generation_tool)
     stage_started = start_stage("fix_analysis")
-
-    record_stage("explanations")
-    stage_ms["explanations"] = round((perf_counter() - explanation_started) * 1000)
-    fix_generation_tool = await fix_generation_task
-    stage_ms["fix_generation"] = round((perf_counter() - fix_generation_started) * 1000)
-    stage_started = perf_counter()
-    tool_results.append(fix_generation_tool)
- main
     if request.include_suggested_fixes:
         fix_analysis_tool = analyze_fix_relationships(reconciliation.issues)
         conflict_status = fix_analysis_tool["status"]
