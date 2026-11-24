@@ -62,7 +62,11 @@ from app.schemas.review import (
 from app.services.fix_eligibility import evaluate_fix_eligibility
 from app.services.fix_freshness import verify_fix_freshness
 from app.services.review_access import require_review_access
+codex/fix-live-review-deadline-cancellation
 from app.services.review_orchestrator import LIVE_REVIEW_STAGE, LIVE_REVIEW_TIMEOUT_SECONDS, QUICK_REVIEW_TIMEOUT_SECONDS, analyze
+
+from app.services.review_orchestrator import LIVE_REVIEW_STAGE, LIVE_REVIEW_TIMEOUT_SECONDS, analyze
+ main
 from app.verification.source_analysis import validate_static_fix
 
 router = APIRouter(prefix="/api/reviews", tags=["reviews"])
@@ -423,8 +427,12 @@ async def analyze_review(
     response.headers["X-Request-ID"] = request_id
     request_started = perf_counter()
     stage_token = LIVE_REVIEW_STAGE.set("github_access_check")
+ codex/fix-live-review-deadline-cancellation
     timeout_seconds = QUICK_REVIEW_TIMEOUT_SECONDS if payload.depth == "quick" else LIVE_REVIEW_TIMEOUT_SECONDS
     deadline = asyncio.get_running_loop().time() + timeout_seconds
+
+    deadline = asyncio.get_running_loop().time() + LIVE_REVIEW_TIMEOUT_SECONDS
+ main
     _logger.info(
         "Live review started request_id=%s depth=%s explanations=%s suggested_fixes=%s",
         request_id,
@@ -451,7 +459,11 @@ async def analyze_review(
             request_id,
             stage,
             duration_ms,
+ codex/fix-live-review-deadline-cancellation
             timeout_seconds,
+
+            LIVE_REVIEW_TIMEOUT_SECONDS,
+ main
         )
         detail = (
             "GitHub did not return the pull request data before the review deadline. Check that the repository is public or connected and that GitHub is not rate-limiting requests, then retry."
