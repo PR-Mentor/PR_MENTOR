@@ -424,6 +424,65 @@ def test_batching_caps_issues_per_request_and_continues_after_a_failed_batch(mon
     assert len(result.explanations) == 1
 
 
+def test_explanation_batches_run_concurrently_and_cover_all_bounded_issues(monkeypatch):
+    issues = [_issue(f"issue-{index}") for index in range(service.MAX_ISSUES_PER_BATCH * 3)]
+    active = 0
+    max_active = 0
+    calls = 0
+
+    async def complete(_system, prompt):
+        nonlocal active, max_active, calls
+        active += 1
+        calls += 1
+        max_active = max(max_active, active)
+        try:
+            await asyncio.sleep(0.02)
+            batch = _decode_prompt(prompt)["issues"]
+            return json.dumps({"explanations": [
+                {"issue_id": item["issue_id"], "explanation": _explanation()}
+                for item in batch
+            ]})
+        finally:
+            active -= 1
+
+    _stub_validated_completion(monkeypatch, complete)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        return await service.generate_issue_explanations(issues, deadline=loop.time() + 0.5)
+
+    result = asyncio.run(run())
+
+    assert result.batch_count == 3
+    assert calls == 3
+    assert max_active == service.MAX_CONCURRENT_EXPLANATION_BATCHES
+    assert set(result.explanations) == {issue.issue_id for issue in issues}
+    assert result.failed_batch_count == 0
+
+
+def test_explanation_batch_deadline_cancels_slow_provider_calls(monkeypatch):
+    issues = [_issue(f"issue-{index}") for index in range(service.MAX_ISSUES_PER_BATCH * 3)]
+
+    async def complete(_system, _prompt):
+        await asyncio.sleep(1)
+        return _response(*issues)
+
+    _stub_validated_completion(monkeypatch, complete)
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        result = await service.generate_issue_explanations(issues, deadline=started + 0.05)
+        return result, loop.time() - started
+
+    result, elapsed = asyncio.run(run())
+
+    assert elapsed < 0.3
+    assert result.failed_batch_count == 3
+    assert result.explanations == {}
+    assert set(result.issue_statuses.values()) == {"unavailable"}
+
+
 def test_prompt_and_response_limits_are_bounded_without_json_truncation():
     assert service.MAX_EXPLANATION_REQUEST_CHARS == 32_000
     assert service.MAX_EXPLANATION_RESPONSE_CHARS == 96_000

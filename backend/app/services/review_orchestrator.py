@@ -54,8 +54,8 @@ LIVE_REVIEW_TIMEOUT_SECONDS = 18
 AI_REVIEW_TIMEOUT_SECONDS = 6
 QUICK_AI_TIMEOUT_SECONDS = AI_REVIEW_TIMEOUT_SECONDS
 SOURCE_FETCH_TIMEOUT_SECONDS = 4
-EXPLANATION_TIMEOUT_SECONDS = 4
-FIX_GENERATION_TIMEOUT_SECONDS = 4
+EXPLANATION_TIMEOUT_SECONDS = 8
+FIX_GENERATION_TIMEOUT_SECONDS = 2
 QUICK_SOURCE_LIMIT = 10
 FIX_FRESHNESS_TIMEOUT_SECONDS = 1.5
 MAX_SOURCE_FETCH_ATTEMPTS = 20
@@ -279,7 +279,7 @@ async def analyze(
     if is_configured():
         try:
             timeout = QUICK_AI_TIMEOUT_SECONDS if quick else AI_REVIEW_TIMEOUT_SECONDS
-            async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else 6)):
+            async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else 10)):
                 try:
                     if quick:
                         repository_structure = _summarize_sources_by_language(registry, source_files)
@@ -375,7 +375,11 @@ async def analyze(
     # Explanations and suggested fixes are independent once canonical issues
     # exist. Run them concurrently so full reviews don't pay both provider
     # latencies one after the other.
+ codex/fix-live-review-deadline-cancellation
     fix_generation_started = start_stage("suggested_fixes")
+
+    fix_generation_started = perf_counter()
+ main
     fix_generation_task = asyncio.create_task(_run_fix_generation(
         request,
         bundle.metadata.repository_owner,
@@ -385,7 +389,11 @@ async def analyze(
         diff_files,
         deadline=phase_deadline(FIX_GENERATION_TIMEOUT_SECONDS, reserve=2),
     ))
+codex/fix-live-review-deadline-cancellation
     explanation_started = start_stage("issue_explanations")
+
+    explanation_started = perf_counter()
+ main
     explanation_result = ExplanationGenerationResult()
     explanation_tool: dict[str, Any]
     if not reconciliation.issues:
@@ -419,7 +427,7 @@ async def analyze(
                 source_files=source_files,
                 diff_files=diff_files,
                 explanation_level=explanation_level,
-                deadline=phase_deadline(EXPLANATION_TIMEOUT_SECONDS, reserve=4),
+                deadline=phase_deadline(EXPLANATION_TIMEOUT_SECONDS, reserve=3),
             )
             for issue in reconciliation.issues:
                 explanation = explanation_result.explanations.get(issue.issue_id)
@@ -474,11 +482,20 @@ async def analyze(
             }
             warnings.append("AI issue explanations were unavailable; canonical issues are preserved without explanations.")
     tool_results.append(explanation_tool)
+ codex/fix-live-review-deadline-cancellation
     finish_stage("issue_explanations", explanation_started)
     fix_generation_tool = await fix_generation_task
     finish_stage("suggested_fixes", fix_generation_started)
     tool_results.append(fix_generation_tool)
     stage_started = start_stage("fix_analysis")
+
+    record_stage("explanations")
+    stage_ms["explanations"] = round((perf_counter() - explanation_started) * 1000)
+    fix_generation_tool = await fix_generation_task
+    stage_ms["fix_generation"] = round((perf_counter() - fix_generation_started) * 1000)
+    stage_started = perf_counter()
+    tool_results.append(fix_generation_tool)
+ main
     if request.include_suggested_fixes:
         fix_analysis_tool = analyze_fix_relationships(reconciliation.issues)
         conflict_status = fix_analysis_tool["status"]

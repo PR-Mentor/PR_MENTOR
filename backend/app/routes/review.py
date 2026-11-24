@@ -434,6 +434,7 @@ async def analyze_review(
     try:
         with prompt_github_cancellation():
             async with asyncio.timeout_at(deadline):
+ codex/fix-live-review-deadline-cancellation
                 result = await _analyze_review(payload, uid, deadline=deadline, request_id=request_id)
         _logger.info(
             "Live review request completed request_id=%s duration_ms=%s status=%s",
@@ -442,6 +443,9 @@ async def analyze_review(
             result.status,
         )
         return result
+
+                return await _analyze_review(payload, uid, deadline=deadline)
+ main
     except TimeoutError as exc:
         duration_ms = round((perf_counter() - request_started) * 1000)
         stage = LIVE_REVIEW_STAGE.get()

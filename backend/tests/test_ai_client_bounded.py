@@ -17,6 +17,37 @@ def test_task_specific_model_configuration_falls_back_to_legacy_model(monkeypatc
     assert client.configured_model("code_review") == "default-model"
 
 
+def test_groq_api_key_uses_fast_structured_output_defaults(monkeypatch):
+    from app.config import llm_configuration
+
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_MODEL_CODE_REVIEW", raising=False)
+    monkeypatch.delenv("LLM_API_BASE_URL", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "groq-secret")
+
+    assert llm_configuration("code_review") == (
+        "groq-secret",
+        "openai/gpt-oss-20b",
+        "https://api.groq.com/openai/v1/chat/completions",
+    )
+
+
+def test_generic_llm_configuration_overrides_groq_alias(monkeypatch):
+    from app.config import llm_configuration
+
+    monkeypatch.setenv("LLM_API_KEY", "generic-secret")
+    monkeypatch.setenv("LLM_MODEL", "custom-model")
+    monkeypatch.setenv("GROQ_API_KEY", "groq-secret")
+    monkeypatch.delenv("LLM_API_BASE_URL", raising=False)
+
+    assert llm_configuration() == (
+        "generic-secret",
+        "custom-model",
+        "https://api.openai.com/v1/chat/completions",
+    )
+
+
 def test_named_provider_registry_routes_tasks_and_limits_capabilities(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_CODE_REVIEW", "primary")
     monkeypatch.setenv("LLM_FALLBACK_PROVIDERS_CODE_REVIEW", "secondary")
