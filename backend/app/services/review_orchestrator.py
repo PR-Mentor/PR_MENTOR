@@ -125,11 +125,7 @@ async def analyze(
         request = request.model_copy(update={"include_learning": False, "include_suggested_fixes": False})
 
     clock = asyncio.get_running_loop().time
- codex/fix-live-review-deadline-cancellation
     review_deadline = deadline if deadline is not None else clock() + (QUICK_REVIEW_TIMEOUT_SECONDS if quick else LIVE_REVIEW_TIMEOUT_SECONDS)
-
-    review_deadline = deadline if deadline is not None else clock() + LIVE_REVIEW_TIMEOUT_SECONDS
- main
     request_id = request_id or uuid4().hex
 
     def phase_deadline(seconds: float, *, reserve: float = 1.5) -> float:
