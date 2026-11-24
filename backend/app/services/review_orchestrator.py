@@ -53,8 +53,8 @@ LIVE_REVIEW_TIMEOUT_SECONDS = 18
 AI_REVIEW_TIMEOUT_SECONDS = 6
 QUICK_AI_TIMEOUT_SECONDS = AI_REVIEW_TIMEOUT_SECONDS
 SOURCE_FETCH_TIMEOUT_SECONDS = 4
-EXPLANATION_TIMEOUT_SECONDS = 4
-FIX_GENERATION_TIMEOUT_SECONDS = 4
+EXPLANATION_TIMEOUT_SECONDS = 8
+FIX_GENERATION_TIMEOUT_SECONDS = 2
 QUICK_SOURCE_LIMIT = 10
 FIX_FRESHNESS_TIMEOUT_SECONDS = 1.5
 MAX_SOURCE_FETCH_ATTEMPTS = 20
@@ -262,7 +262,7 @@ async def analyze(
     if is_configured():
         try:
             timeout = QUICK_AI_TIMEOUT_SECONDS if quick else AI_REVIEW_TIMEOUT_SECONDS
-            async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else 6)):
+            async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else 10)):
                 try:
                     if quick:
                         repository_structure = _summarize_sources_by_language(registry, source_files)
@@ -382,7 +382,7 @@ async def analyze(
                 source_files=source_files,
                 diff_files=diff_files,
                 explanation_level=explanation_level,
-                deadline=phase_deadline(EXPLANATION_TIMEOUT_SECONDS, reserve=4),
+                deadline=phase_deadline(EXPLANATION_TIMEOUT_SECONDS, reserve=3),
             )
             for issue in reconciliation.issues:
                 explanation = explanation_result.explanations.get(issue.issue_id)
