@@ -165,7 +165,11 @@ import pytest
 
 from app.github_service import client as github_client
 from app.github_service import pull_requests
-from app.github_service.client import GitHubAPIError, request_json
+from app.github_service.client import (
+    GitHubAPIError,
+    prompt_github_cancellation,
+    request_json,
+)
 from app.github_service.files import parse_patch
 from app.github_service.parser import InvalidPullRequestURL, parse_pull_request_url
 
@@ -559,6 +563,29 @@ def test_cancelled_waiter_does_not_cancel_shared_request():
     assert isinstance(owner_result, asyncio.CancelledError)
     assert waiter_result == {"value": "ok"}
     assert len(calls) == 1
+    assert not github_client._inflight_requests
+
+
+def test_live_review_deadline_cancels_its_owned_github_request_promptly():
+    github_client._response_cache.clear()
+    github_client._inflight_requests.clear()
+    started = asyncio.Event()
+
+    class SlowTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            started.set()
+            await asyncio.Event().wait()
+            return httpx.Response(200, json={"value": "unreachable"}, request=request)
+
+    async def run():
+        async with httpx.AsyncClient(transport=SlowTransport()) as client:
+            with prompt_github_cancellation():
+                with pytest.raises(TimeoutError):
+                    async with asyncio.timeout(0.02):
+                        await request_json(client, "/repos/deadline/repo/pulls/1")
+            assert started.is_set()
+
+    asyncio.run(run())
     assert not github_client._inflight_requests
 
 
