@@ -17,7 +17,7 @@ from app.database.review_jobs import (
 )
 from app.github_service.client import GitHubAPIError
 from app.schemas.review import AnalyzeRequest
-from app.services.review_orchestrator import LIVE_REVIEW_TIMEOUT_SECONDS, analyze
+from app.services.review_orchestrator import LIVE_REVIEW_TIMEOUT_SECONDS, QUICK_REVIEW_TIMEOUT_SECONDS, analyze
 
 MAX_JOB_SECONDS = LIVE_REVIEW_TIMEOUT_SECONDS
 POLL_SECONDS = 1.0
@@ -56,7 +56,8 @@ def process_one() -> bool:
         request = AnalyzeRequest.model_validate(job["payload"])
         result = asyncio.run(
             asyncio.wait_for(
-                analyze(request, owner_id=job["owner_id"]), timeout=MAX_JOB_SECONDS
+                analyze(request, owner_id=job["owner_id"]),
+                timeout=MAX_JOB_SECONDS if request.mode == "live" and request.depth == "full" else QUICK_REVIEW_TIMEOUT_SECONDS,
             )
         )
         if not complete(job_id, result.status, result.review_id, lease_token):
