@@ -199,3 +199,38 @@ def test_bounded_client_rejects_invalid_limits(monkeypatch, timeout, limit):
     _set_transport(monkeypatch, b"{}")
     with pytest.raises(ValueError):
         asyncio.run(client.complete_json("system", "user", timeout=timeout, max_response_bytes=limit))
+
+
+def test_groq_json_generation_error_retries_with_local_validation(monkeypatch):
+    provider = ProviderConfig("groq-test", "test-key", "openai/gpt-oss-20b",
+                              "https://api.groq.com/openai/v1/chat/completions", True, 1)
+    monkeypatch.setattr(client, "provider_registry", lambda _task=None: [provider])
+    requests = []
+
+    def respond(request):
+        requests.append(client.json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(400, json={"error": {"code": "json_validate_failed"}})
+        return httpx.Response(200, json={"choices": [
+            {"message": {"content": '{"findings":[]}'}, "finish_reason": "stop"}
+        ]})
+
+    real_client = httpx.AsyncClient
+
+    class RoutedClient(real_client):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, transport=httpx.MockTransport(respond), **kwargs)
+
+    monkeypatch.setattr(client.httpx, "AsyncClient", RoutedClient)
+
+    async def call():
+        value = await client.complete_json("Return JSON", "Review", task="code_review")
+        return value, client.last_call_metadata()
+
+    value, metadata = asyncio.run(call())
+    assert value == '{"findings":[]}'
+    assert len(requests) == 2
+    assert requests[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in requests[1]
+    assert metadata["finish_reason"] == "stop"
+    assert metadata["attempt_count"] == 2

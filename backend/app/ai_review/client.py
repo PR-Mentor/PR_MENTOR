@@ -8,6 +8,7 @@ import os
 import time
 import weakref
 from contextvars import ContextVar
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import ValidationError
@@ -66,6 +67,13 @@ def _semaphore(provider: ProviderConfig) -> asyncio.Semaphore:
     return semaphore
 
 
+def _is_json_generation_failure(body: bytes) -> bool:
+    try:
+        return json.loads(body)["error"]["code"] == "json_validate_failed"
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
 async def _request_provider(
     provider: ProviderConfig,
     system_prompt: str,
@@ -89,20 +97,36 @@ async def _request_provider(
             started = time.monotonic()
             chunks: list[bytes] = []
             size = 0
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client, client.stream(
-                "POST", provider.endpoint,
-                headers={"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"},
-                json=request,
-            ) as response:
-                response.raise_for_status()
-                async for chunk in response.aiter_bytes():
-                    size += len(chunk)
-                    if size > max_response_bytes:
-                        raise AIReviewUnavailable("AI provider response exceeded the configured size limit.")
-                    chunks.append(chunk)
+            async with asyncio.timeout(timeout), httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+                for use_json_mode in (True, False):
+                    async with client.stream(
+                        "POST", provider.endpoint,
+                        headers={"Authorization": f"Bearer {provider.api_key}", "Content-Type": "application/json"},
+                        json=request,
+                    ) as response:
+                        groq_bad_request = response.status_code == 400 and urlsplit(provider.endpoint).hostname == "api.groq.com"
+                        if not groq_bad_request:
+                            response.raise_for_status()
+                        async for chunk in response.aiter_bytes():
+                            size += len(chunk)
+                            if size > max_response_bytes:
+                                response.raise_for_status()
+                                raise AIReviewUnavailable("AI provider response exceeded the configured size limit.")
+                            chunks.append(chunk)
+                        if (
+                            use_json_mode and groq_bad_request
+                            and _is_json_generation_failure(b"".join(chunks))
+                        ):
+                            # Keep local JSON and task validation on the second response.
+                            request.pop("response_format")
+                            chunks.clear()
+                            size = 0
+                            continue
+                        response.raise_for_status()
+                        break
             body = httpx.Response(200, content=b"".join(chunks)).json()
             latency_ms = max(0, int((time.monotonic() - started) * 1000))
-        except httpx.TimeoutException as exc:
+        except (TimeoutError, httpx.TimeoutException) as exc:
             raise AIReviewUnavailable("AI provider did not respond in time.") from exc
         except httpx.RequestError as exc:
             raise AIReviewUnavailable("AI provider is temporarily unavailable.") from exc
@@ -138,6 +162,10 @@ async def _request_provider(
         key: usage.get(key) for key in ("prompt_tokens", "completion_tokens", "total_tokens")
         if isinstance(usage, dict) and isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool) and usage[key] >= 0
     }
+    finish_reason = body["choices"][0].get("finish_reason")
+    if isinstance(finish_reason, str) and finish_reason in ("stop", "length", "content_filter", "tool_calls"):
+        usage_data["finish_reason"] = finish_reason
+    usage_data["response_format"] = "json_object" if "response_format" in request else "text"
     return cleaned_content, usage_data, latency_ms
 
 
@@ -203,6 +231,10 @@ async def complete_json(
                     provider, system_prompt, user_prompt, timeout or http_timeout(), response_limit,
                     allow_top_level_array=effective_allow_array,
                 )
+                response_format = usage.pop("response_format", "json_object")
+                finish_reason = usage.pop("finish_reason", None)
+                if response_format == "text":
+                    total_attempts += 1
                 health_tracker.record_success(provider.name)
                 prompt_toks = int(usage.get("prompt_tokens", 0) or 0)
                 comp_toks = int(usage.get("completion_tokens", 0) or 0)
@@ -212,12 +244,12 @@ async def complete_json(
                     "provider": provider.name, "model": provider.model,
                     "fallback_used": provider_index > 0 or bool(exclude_providers),
                     "attempt_count": total_attempts, "providers_attempted": attempted_providers.copy(),
-                    "usage": usage, "latency_ms": latency_ms,
+                    "usage": usage, "latency_ms": latency_ms, "finish_reason": finish_reason,
                     "estimated_cost_usd": cost,
                     "model_configuration": {
                         "provider": provider.name, "model": provider.model,
                         "protocol": "openai_chat_completions", "temperature": 0,
-                        "response_format": "json_object", "request_timeout_seconds": timeout or http_timeout(),
+                        "response_format": response_format, "request_timeout_seconds": timeout or http_timeout(),
                         "max_response_bytes": response_limit, "supports_json": provider.supports_json,
                     },
                 })

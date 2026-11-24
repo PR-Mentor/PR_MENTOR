@@ -280,7 +280,7 @@ async def analyze(
     if is_configured():
         try:
             timeout = QUICK_AI_TIMEOUT_SECONDS if quick else AI_REVIEW_TIMEOUT_SECONDS
-            async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else EXPLANATION_TIMEOUT_SECONDS + 3)):
+            async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else 10)):
                 try:
                     if quick:
                         repository_structure = _summarize_sources_by_language(registry, source_files)
