@@ -17,17 +17,24 @@ def test_task_specific_model_configuration_falls_back_to_legacy_model(monkeypatc
     assert client.configured_model("code_review") == "default-model"
 
 
-def test_groq_api_key_uses_fast_structured_output_defaults(monkeypatch):
+@pytest.mark.parametrize("task", ["code_review", "issue_explanation"])
+def test_groq_api_key_uses_fast_structured_output_defaults(monkeypatch, task):
     from app.config import llm_configuration
 
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
-    monkeypatch.delenv("LLM_MODEL_CODE_REVIEW", raising=False)
+    monkeypatch.delenv(f"LLM_MODEL_{task.upper()}", raising=False)
     monkeypatch.delenv("LLM_API_BASE_URL", raising=False)
     monkeypatch.setenv("GROQ_API_KEY", "groq-secret")
 
-    assert llm_configuration("code_review") == (
+    assert llm_configuration(task) == (
         "groq-secret",
+        "openai/gpt-oss-20b",
+        "https://api.groq.com/openai/v1/chat/completions",
+    )
+    provider = client.provider_registry(task)[0]
+    assert (provider.name, provider.model, provider.endpoint) == (
+        "openai_compatible",
         "openai/gpt-oss-20b",
         "https://api.groq.com/openai/v1/chat/completions",
     )
@@ -45,6 +52,23 @@ def test_generic_llm_configuration_overrides_groq_alias(monkeypatch):
         "generic-secret",
         "custom-model",
         "https://api.openai.com/v1/chat/completions",
+    )
+
+
+@pytest.mark.parametrize("task", ["code_review", "issue_explanation"])
+def test_task_model_override_is_preserved_with_groq_key(monkeypatch, task):
+    from app.config import llm_configuration
+
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_API_BASE_URL", raising=False)
+    monkeypatch.setenv(f"LLM_MODEL_{task.upper()}", "explicit-task-model")
+    monkeypatch.setenv("GROQ_API_KEY", "groq-secret")
+
+    assert llm_configuration(task) == (
+        "groq-secret",
+        "explicit-task-model",
+        "https://api.groq.com/openai/v1/chat/completions",
     )
 
 
