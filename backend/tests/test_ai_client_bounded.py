@@ -9,7 +9,23 @@ from app.ai_review.client import AIReviewUnavailable
 from app.ai_review.providers import ProviderConfig, public_provider_configuration
 
 
+def _clear_provider_routing(monkeypatch):
+    for name in (
+        "LLM_PROVIDER",
+        "LLM_FALLBACK_PROVIDERS",
+        "LLM_PROVIDER_CODE_REVIEW",
+        "LLM_PROVIDER_ISSUE_EXPLANATION",
+        "LLM_FALLBACK_PROVIDERS_CODE_REVIEW",
+        "LLM_FALLBACK_PROVIDERS_ISSUE_EXPLANATION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_task_specific_model_configuration_falls_back_to_legacy_model(monkeypatch):
+    _clear_provider_routing(monkeypatch)
+    for name in ("GEMINI_API_KEY", "DEEPSEEK_API", "GROQ_API", "NVIDIA_API"):
+        monkeypatch.delenv(name, raising=False)
+
     monkeypatch.setenv("LLM_API_KEY", "key")
     monkeypatch.setenv("LLM_MODEL", "default-model")
     monkeypatch.setenv("LLM_MODEL_TEST_GENERATION", "test-model")
@@ -18,8 +34,12 @@ def test_task_specific_model_configuration_falls_back_to_legacy_model(monkeypatc
 
 
 @pytest.mark.parametrize("task", ["code_review", "issue_explanation"])
-def test_groq_api_key_uses_fast_structured_output_defaults(monkeypatch, task):
+def test_groq_legacy_api_key_uses_defaults(monkeypatch, task):
     from app.config import llm_configuration
+
+    _clear_provider_routing(monkeypatch)
+    for name in ("GEMINI_API_KEY", "DEEPSEEK_API", "GROQ_API", "NVIDIA_API"):
+        monkeypatch.delenv(name, raising=False)
 
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -32,6 +52,7 @@ def test_groq_api_key_uses_fast_structured_output_defaults(monkeypatch, task):
         "openai/gpt-oss-20b",
         "https://api.groq.com/openai/v1/chat/completions",
     )
+
     provider = client.provider_registry(task)[0]
     assert (provider.name, provider.model, provider.endpoint) == (
         "openai_compatible",
@@ -42,6 +63,10 @@ def test_groq_api_key_uses_fast_structured_output_defaults(monkeypatch, task):
 
 def test_generic_llm_configuration_overrides_groq_alias(monkeypatch):
     from app.config import llm_configuration
+
+    _clear_provider_routing(monkeypatch)
+    for name in ("GEMINI_API_KEY", "DEEPSEEK_API", "GROQ_API", "NVIDIA_API"):
+        monkeypatch.delenv(name, raising=False)
 
     monkeypatch.setenv("LLM_API_KEY", "generic-secret")
     monkeypatch.setenv("LLM_MODEL", "custom-model")
@@ -59,6 +84,10 @@ def test_generic_llm_configuration_overrides_groq_alias(monkeypatch):
 def test_task_model_override_is_preserved_with_groq_key(monkeypatch, task):
     from app.config import llm_configuration
 
+    _clear_provider_routing(monkeypatch)
+    for name in ("GEMINI_API_KEY", "DEEPSEEK_API", "GROQ_API", "NVIDIA_API"):
+        monkeypatch.delenv(name, raising=False)
+
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("LLM_API_BASE_URL", raising=False)
@@ -73,6 +102,7 @@ def test_task_model_override_is_preserved_with_groq_key(monkeypatch, task):
 
 
 def test_named_provider_registry_routes_tasks_and_limits_capabilities(monkeypatch):
+    _clear_provider_routing(monkeypatch)
     monkeypatch.setenv("LLM_PROVIDER_CODE_REVIEW", "primary")
     monkeypatch.setenv("LLM_FALLBACK_PROVIDERS_CODE_REVIEW", "secondary")
     monkeypatch.setenv("LLM_PRIMARY_API_KEY", "primary-secret")
@@ -81,12 +111,62 @@ def test_named_provider_registry_routes_tasks_and_limits_capabilities(monkeypatc
     monkeypatch.setenv("LLM_MODEL_CODE_REVIEW_PRIMARY", "review-v3")
     monkeypatch.setenv("LLM_SECONDARY_API_KEY", "secondary-secret")
     monkeypatch.setenv("LLM_MODEL", "fallback-model")
+
     configured = client.provider_registry("code_review")
-    assert [(item.name, item.model) for item in configured] == [("primary", "review-v3"), ("secondary", "fallback-model")]
+    assert [(item.name, item.model) for item in configured] == [
+        ("primary", "review-v3"),
+        ("secondary", "fallback-model"),
+    ]
     assert configured[0].max_concurrency == 32
     assert configured[0].supports_json is True
     public = public_provider_configuration("code_review")
     assert "api_key" not in str(public) and "primary-secret" not in str(public)
+
+
+def test_four_provider_keys_are_registered_in_default_order(monkeypatch):
+    from app.config import LLM_PROVIDER_DEFAULTS
+
+    _clear_provider_routing(monkeypatch)
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret")
+    monkeypatch.setenv("DEEPSEEK_API", "deepseek-secret")
+    monkeypatch.setenv("GROQ_API", "groq-secret")
+    monkeypatch.setenv("NVIDIA_API", "nvidia-secret")
+
+    configured = client.provider_registry()
+    assert [item.name for item in configured] == [
+        "gemini",
+        "deepseek",
+        "groq",
+        "nvidia",
+    ]
+    assert [item.api_key for item in configured] == [
+        "gemini-secret",
+        "deepseek-secret",
+        "groq-secret",
+        "nvidia-secret",
+    ]
+    assert [item.model for item in configured] == [
+        LLM_PROVIDER_DEFAULTS["gemini"]["model"],
+        LLM_PROVIDER_DEFAULTS["deepseek"]["model"],
+        LLM_PROVIDER_DEFAULTS["groq"]["model"],
+        LLM_PROVIDER_DEFAULTS["nvidia"]["model"],
+    ]
+
+
+def test_selected_named_provider_falls_back_through_remaining_defaults(monkeypatch):
+    _clear_provider_routing(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret")
+    monkeypatch.setenv("DEEPSEEK_API", "deepseek-secret")
+    monkeypatch.setenv("GROQ_API", "groq-secret")
+    monkeypatch.setenv("NVIDIA_API", "nvidia-secret")
+
+    assert [item.name for item in client.provider_registry()] == [
+        "deepseek",
+        "gemini",
+        "groq",
+        "nvidia",
+    ]
 
 
 def test_provider_concurrency_semaphore_is_shared_per_loop_and_loop_scoped():
@@ -100,6 +180,8 @@ def test_provider_concurrency_semaphore_is_shared_per_loop_and_loop_scoped():
     first_loop_semaphore = asyncio.run(get_semaphore())
     second_loop_semaphore = asyncio.run(get_semaphore())
     assert second_loop_semaphore is not first_loop_semaphore
+
+
 def _set_transport(monkeypatch, body, *, status=200):
     transport = httpx.MockTransport(lambda request: httpx.Response(status, content=body))
     real_client = httpx.AsyncClient
@@ -110,38 +192,72 @@ def _set_transport(monkeypatch, body, *, status=200):
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(client.httpx, "AsyncClient", TransportClient)
-    monkeypatch.setattr(client, "provider_registry", lambda _task=None: [ProviderConfig("test-provider", "secret", "test-model", "https://example.test/chat", True, 2)])
+    monkeypatch.setattr(
+        client,
+        "provider_registry",
+        lambda _task=None: [
+            ProviderConfig(
+                "test-provider",
+                "secret",
+                "test-model",
+                "https://example.test/chat",
+                True,
+                2,
+            )
+        ],
+    )
 
 
 def test_bounded_client_streams_successful_json_response(monkeypatch):
     _set_transport(monkeypatch, b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}]}')
+
     async def call():
-        value = await client.complete_json("system", "user", timeout=2, max_response_bytes=500)
+        value = await client.complete_json(
+            "system", "user", timeout=2, max_response_bytes=500
+        )
         return value, client.last_call_metadata()
+
     value, metadata = asyncio.run(call())
     assert value == '{"ok":true}'
     assert metadata["provider"] == "test-provider"
 
 
 def test_provider_registry_fallback_is_ordered_bounded_and_observable(monkeypatch):
-    primary = ProviderConfig("primary", "secret-1", "model-1", "https://primary.test/chat", True, 1)
-    fallback = ProviderConfig("fallback", "secret-2", "model-2", "https://fallback.test/chat", True, 2)
+    primary = ProviderConfig(
+        "primary", "secret-1", "model-1", "https://primary.test/chat", True, 1
+    )
+    fallback = ProviderConfig(
+        "fallback", "secret-2", "model-2", "https://fallback.test/chat", True, 2
+    )
     monkeypatch.setattr(client, "provider_registry", lambda _task=None: [primary, fallback])
     monkeypatch.setenv("LLM_PROVIDER_RETRIES", "0")
+
     real_client = httpx.AsyncClient
+
     def respond(request):
         if "primary.test" in str(request.url):
             return httpx.Response(503, content=b"busy")
-        return httpx.Response(200, content=b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}')
+        return httpx.Response(
+            200,
+            content=(
+                b'{"choices":[{"message":{"content":"{\\"ok\\":true}"}}],'
+                b'"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}'
+            ),
+        )
+
     transport = httpx.MockTransport(respond)
+
     class RoutedClient(real_client):
         def __init__(self, *args, **kwargs):
             kwargs["transport"] = transport
             super().__init__(*args, **kwargs)
+
     monkeypatch.setattr(client.httpx, "AsyncClient", RoutedClient)
+
     async def call():
         content = await client.complete_json("system", "user")
         return content, client.last_call_metadata()
+
     content, metadata = asyncio.run(call())
     assert content == '{"ok":true}'
     assert metadata["provider"] == "fallback"
@@ -151,15 +267,22 @@ def test_provider_registry_fallback_is_ordered_bounded_and_observable(monkeypatc
 
 
 def test_structured_schema_failure_tries_next_provider(monkeypatch):
-    primary = ProviderConfig("primary", "secret-1", "model-1", "https://primary.test/chat", True, 1)
-    fallback = ProviderConfig("fallback", "secret-2", "model-2", "https://fallback.test/chat", True, 2)
+    primary = ProviderConfig(
+        "primary", "secret-1", "model-1", "https://primary.test/chat", True, 1
+    )
+    fallback = ProviderConfig(
+        "fallback", "secret-2", "model-2", "https://fallback.test/chat", True, 2
+    )
     monkeypatch.setattr(client, "provider_registry", lambda _task=None: [primary, fallback])
     monkeypatch.setenv("LLM_PROVIDER_RETRIES", "0")
     real_client = httpx.AsyncClient
 
     def respond(request):
         content = '{"wrong":true}' if "primary.test" in str(request.url) else '{"result":7}'
-        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+        )
 
     transport = httpx.MockTransport(respond)
 
@@ -169,6 +292,7 @@ def test_structured_schema_failure_tries_next_provider(monkeypatch):
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(client.httpx, "AsyncClient", RoutedClient)
+
     def validate(content):
         parsed = json.loads(content)
         if not isinstance(parsed, dict) or set(parsed) != {"result"}:
@@ -191,40 +315,74 @@ def test_structured_schema_failure_tries_next_provider(monkeypatch):
 def test_bounded_client_rejects_oversized_stream(monkeypatch):
     _set_transport(monkeypatch, b"x" * 101)
     with pytest.raises(AIReviewUnavailable, match="size limit"):
-        asyncio.run(client.complete_json("system", "user", timeout=2, max_response_bytes=100))
+        asyncio.run(
+            client.complete_json(
+                "system", "user", timeout=2, max_response_bytes=100
+            )
+        )
 
 
-@pytest.mark.parametrize("timeout,limit", [(0, 10), (float("inf"), 10), (1, 0), (1, True)])
+@pytest.mark.parametrize(
+    "timeout,limit",
+    [(0, 10), (float("inf"), 10), (1, 0), (1, True)],
+)
 def test_bounded_client_rejects_invalid_limits(monkeypatch, timeout, limit):
     _set_transport(monkeypatch, b"{}")
     with pytest.raises(ValueError):
-        asyncio.run(client.complete_json("system", "user", timeout=timeout, max_response_bytes=limit))
+        asyncio.run(
+            client.complete_json(
+                "system", "user", timeout=timeout, max_response_bytes=limit
+            )
+        )
 
 
 def test_groq_json_generation_error_retries_with_local_validation(monkeypatch):
-    provider = ProviderConfig("groq-test", "test-key", "openai/gpt-oss-20b",
-                              "https://api.groq.com/openai/v1/chat/completions", True, 1)
+    provider = ProviderConfig(
+        "groq-test",
+        "test-key",
+        "openai/gpt-oss-20b",
+        "https://api.groq.com/openai/v1/chat/completions",
+        True,
+        1,
+    )
     monkeypatch.setattr(client, "provider_registry", lambda _task=None: [provider])
     requests = []
 
     def respond(request):
-        requests.append(client.json.loads(request.content))
+        requests.append(json.loads(request.content))
         if len(requests) == 1:
-            return httpx.Response(400, json={"error": {"code": "json_validate_failed"}})
-        return httpx.Response(200, json={"choices": [
-            {"message": {"content": '{"findings":[]}'}, "finish_reason": "stop"}
-        ]})
+            return httpx.Response(
+                400,
+                json={"error": {"code": "json_validate_failed"}},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": '{"findings":[]}'},
+                        "finish_reason": "stop",
+                    }
+                ]
+            },
+        )
 
     real_client = httpx.AsyncClient
 
     class RoutedClient(real_client):
         def __init__(self, *args, **kwargs):
-            super().__init__(*args, transport=httpx.MockTransport(respond), **kwargs)
+            super().__init__(
+                *args,
+                transport=httpx.MockTransport(respond),
+                **kwargs,
+            )
 
     monkeypatch.setattr(client.httpx, "AsyncClient", RoutedClient)
 
     async def call():
-        value = await client.complete_json("Return JSON", "Review", task="code_review")
+        value = await client.complete_json(
+            "Return JSON", "Review", task="code_review"
+        )
         return value, client.last_call_metadata()
 
     value, metadata = asyncio.run(call())
@@ -239,6 +397,7 @@ def test_groq_json_generation_error_retries_with_local_validation(monkeypatch):
 def test_hf_endpoint_with_embedded_newline(monkeypatch):
     from app.ai_review.providers import provider_registry
 
+    _clear_provider_routing(monkeypatch)
     monkeypatch.setenv("LLM_PROVIDER", "openai_compatible")
     monkeypatch.setenv("LLM_API_KEY", "test-only")
     monkeypatch.setenv("LLM_MODEL", "openai/gpt-oss-20b")
