@@ -200,6 +200,34 @@ def _init_db(db: sqlite3.Connection, path_str: str) -> None:
         );
         CREATE INDEX IF NOT EXISTS review_jobs_claim_idx ON review_jobs(status, available_at, created_at);
         CREATE INDEX IF NOT EXISTS review_jobs_owner_idx ON review_jobs(owner_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS issue_explanation_jobs (
+            job_id TEXT PRIMARY KEY,
+            owner_id TEXT NOT NULL,
+            review_id TEXT NOT NULL,
+            issue_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(
+                status IN ('queued', 'running', 'completed', 'failed')
+            ),
+            attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+            max_attempts INTEGER NOT NULL DEFAULT 3
+                CHECK(max_attempts BETWEEN 1 AND 3),
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            available_at REAL NOT NULL,
+            lease_until REAL,
+            lease_token TEXT,
+            error_code TEXT,
+            UNIQUE(review_id, issue_id)
+        );
+        CREATE INDEX IF NOT EXISTS issue_explanation_jobs_claim_idx
+            ON issue_explanation_jobs(status, available_at, created_at);
+        CREATE INDEX IF NOT EXISTS issue_explanation_jobs_review_owner_idx
+            ON issue_explanation_jobs(review_id, owner_id, created_at);
+        CREATE INDEX IF NOT EXISTS issue_explanation_jobs_owner_idx
+            ON issue_explanation_jobs(owner_id, created_at);
+
         CREATE TABLE IF NOT EXISTS test_execution_jobs (
             execution_id TEXT PRIMARY KEY,
             owner_id TEXT NOT NULL,
