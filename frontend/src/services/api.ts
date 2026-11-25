@@ -96,7 +96,7 @@ export function getWorkspaceLearningInsights(workspaceId: string): Promise<Learn
 }
 
 const QUICK_LIVE_REVIEW_TIMEOUT_MS = 30_000;
-const FULL_LIVE_REVIEW_TIMEOUT_MS = 55_000;
+const FULL_LIVE_REVIEW_TIMEOUT_MS = 105_000;
 
 export async function analyzePullRequest(
   url: string,
