@@ -19,6 +19,7 @@ from app.ai_review.fix_generation import (
     generate_suggested_fixes,
 )
 from app.ai_review.issue_explanations import (
+    MAX_EXPLANATION_SECONDS,
     ExplanationGenerationResult,
     generate_issue_explanations,
 )
@@ -50,12 +51,11 @@ from app.verification.ruff_runner import ToolExecutionError, run_ruff
 from app.verification.test_runner import run_tests
 
 
-LIVE_REVIEW_TIMEOUT_SECONDS = 33
-QUICK_REVIEW_TIMEOUT_SECONDS = 18
-AI_REVIEW_TIMEOUT_SECONDS = 10
-QUICK_AI_TIMEOUT_SECONDS = 6
+LIVE_REVIEW_TIMEOUT_SECONDS = 48
+QUICK_REVIEW_TIMEOUT_SECONDS = 25
+AI_REVIEW_TIMEOUT_SECONDS = 18
+QUICK_AI_TIMEOUT_SECONDS = 15
 SOURCE_FETCH_TIMEOUT_SECONDS = 4
-EXPLANATION_TIMEOUT_SECONDS = 16
 FIX_GENERATION_TIMEOUT_SECONDS = 2
 QUICK_SOURCE_LIMIT = 10
 FIX_FRESHNESS_TIMEOUT_SECONDS = 1.5
@@ -280,7 +280,8 @@ async def analyze(
     if is_configured():
         try:
             timeout = QUICK_AI_TIMEOUT_SECONDS if quick else AI_REVIEW_TIMEOUT_SECONDS
-            async with asyncio.timeout_at(phase_deadline(timeout, reserve=1.5 if quick else EXPLANATION_TIMEOUT_SECONDS + 3)):
+            reserve = MAX_EXPLANATION_SECONDS + 3 if request.include_learning else (1.5 if quick else 3)
+            async with asyncio.timeout_at(phase_deadline(timeout, reserve=reserve)):
                 try:
                     if quick:
                         repository_structure = _summarize_sources_by_language(registry, source_files)
@@ -420,7 +421,7 @@ async def analyze(
                 source_files=source_files,
                 diff_files=diff_files,
                 explanation_level=explanation_level,
-                deadline=phase_deadline(EXPLANATION_TIMEOUT_SECONDS, reserve=3),
+                deadline=phase_deadline(MAX_EXPLANATION_SECONDS, reserve=3),
             )
             for issue in reconciliation.issues:
                 explanation = explanation_result.explanations.get(issue.issue_id)

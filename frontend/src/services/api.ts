@@ -95,8 +95,8 @@ export function getWorkspaceLearningInsights(workspaceId: string): Promise<Learn
   return request<LearningInsights>(`/api/workspaces/${encodeURIComponent(workspaceId)}/learning-insights`);
 }
 
-const QUICK_LIVE_REVIEW_TIMEOUT_MS = 20_000;
-const FULL_LIVE_REVIEW_TIMEOUT_MS = 35_000;
+const QUICK_LIVE_REVIEW_TIMEOUT_MS = 30_000;
+const FULL_LIVE_REVIEW_TIMEOUT_MS = 55_000;
 
 export async function analyzePullRequest(
   url: string,

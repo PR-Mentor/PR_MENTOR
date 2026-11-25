@@ -133,12 +133,18 @@ def provider_registry(task: str | None = None) -> list[ProviderConfig]:
         except ValueError:
             concurrency = 4
 
+        endpoint = endpoint.strip()
+        # Recover pasted line breaks only for the known public HF router URL.
+        hf_endpoint = "https://router.huggingface.co/v1/chat/completions"
+        if endpoint.replace("\r", "").replace("\n", "") == hf_endpoint:
+            endpoint = hf_endpoint
+
         providers.append(
             ProviderConfig(
                 name=name,
                 api_key=api_key,
                 model=model,
-                endpoint=endpoint.strip(),
+                endpoint=endpoint,
                 supports_json=True,
                 max_concurrency=max(1, min(concurrency, 32)),
             )
