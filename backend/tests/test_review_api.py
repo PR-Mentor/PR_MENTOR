@@ -577,6 +577,22 @@ def test_live_review_reconciles_static_and_ai_and_persists_observations(client, 
     assert retrieved.json()["canonical_issues"][0]["explanation"] == issue["explanation"]
     assert retrieved.json()["canonical_issues"][0]["suggested_fixes"] == issue["suggested_fixes"]
 
+    async def slow_ai(*args):
+        # This provider response would have exceeded the old six-second Quick budget.
+        await asyncio.sleep(6.1)
+        return await ai(*args)
+
+    monkeypatch.setattr(service, "generate_candidates", slow_ai)
+    quick = client.post("/api/reviews/analyze", json={
+        "url": metadata.pull_request_url, "mode": "live", "depth": "quick",
+    })
+    assert quick.status_code == 200, quick.text
+    quick_body = quick.json()
+    tools = {tool["tool"]: tool for tool in quick_body["tool_results"]}
+    assert tools["ai_review"]["status"] == "completed"
+    assert {finding["source"] for finding in quick_body["findings"]} == {"static_analysis", "ai_candidate"}
+    assert tools["issue_explanations"]["status"] == "not_requested"
+
     async def stalled_ai(*_args):
         await asyncio.Event().wait()
 
