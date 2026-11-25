@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import threading
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,9 +17,21 @@ from app.routes.workspaces import router as workspaces_router
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    from app.review_worker import run_worker
+
+    worker_stop = threading.Event()
+    worker_thread = threading.Thread(
+        target=run_worker,
+        args=(worker_stop,),
+        name="pr-mentor-background-review-worker",
+        daemon=True,
+    )
+    worker_thread.start()
     try:
         yield
     finally:
+        worker_stop.set()
+        worker_thread.join(timeout=5)
         close_mongo_client()
 
 
@@ -83,3 +96,4 @@ app.include_router(legacy_auth_router)
 app.include_router(analytics_router)
 app.include_router(workspaces_router)
 app.include_router(github_router)
+

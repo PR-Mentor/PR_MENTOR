@@ -619,7 +619,9 @@ class CanonicalIssue(BaseModel):
     status: IssueStatus = "open"
     observations: list[FindingObservation] = Field(default_factory=list)
     explanation: IssueExplanation | None = None
-    explanation_status: Literal["completed", "partial", "failed", "unavailable", "not_requested"] = "not_requested"
+    explanation_status: Literal[
+        "pending", "running", "retrying", "completed", "partial", "failed", "unavailable", "not_requested"
+    ] = "not_requested"
     explanation_failure_reason: str | None = None
     suggested_fixes: list[SuggestedFix] = Field(default_factory=list, max_length=MAX_SUGGESTED_FIXES_PER_ISSUE)
     attribution: Literal["introduced", "pre_existing", "contextual"] = "contextual"
@@ -648,3 +650,4 @@ class CanonicalIssue(BaseModel):
             if len(attempt_numbers) != len(set(attempt_numbers)):
                 raise ValueError("validation attempt numbers must be unique within a suggested fix")
         return self
+
