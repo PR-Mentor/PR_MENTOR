@@ -276,7 +276,9 @@ async def analyze(
     if is_configured():
         try:
             timeout = QUICK_AI_TIMEOUT_SECONDS if quick else AI_REVIEW_TIMEOUT_SECONDS
-            reserve = MAX_EXPLANATION_SECONDS + 3 if request.include_learning else (1.5 if quick else 3)
+            # Issue explanations run in the background now, so the live AI
+            # findings phase should not reserve their former synchronous budget.
+            reserve = 1.5 if quick else 3
             async with asyncio.timeout_at(phase_deadline(timeout, reserve=reserve)):
                 try:
                     if quick:
