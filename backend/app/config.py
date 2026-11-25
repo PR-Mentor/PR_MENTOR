@@ -5,6 +5,31 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
+LLM_PROVIDER_DEFAULTS = {
+    "gemini": {
+        "api_key_env": "GEMINI_API_KEY",
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "model": "gemini-3.8-flash",
+    },
+    "deepseek": {
+        "api_key_env": "DEEPSEEK_API",
+        "endpoint": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-flash",
+    },
+    "groq": {
+        "api_key_env": "GROQ_API",
+        "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+        "model": "openai/gpt-oss-20b",
+    },
+    "nvidia": {
+        "api_key_env": "NVIDIA_API",
+        "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions",
+        "model": "openai/gpt-oss-20b",
+    },
+}
+
+DEFAULT_LLM_PROVIDER_ORDER = ("gemini", "deepseek", "groq", "nvidia")
+
 
 def database_path() -> Path:
     value = os.getenv("PR_MENTOR_DATABASE_PATH")
@@ -51,7 +76,11 @@ def cors_origins() -> list[str]:
     if is_staging():
         defaults = "http://localhost:5173,http://127.0.0.1:5173"
     else:
-        defaults = "http://localhost:5173,http://127.0.0.1:5173,https://18rajritik.github.io,https://pr-mentor.github.io,https://prmentor.in,https://www.prmentor.in"
+        defaults = (
+            "http://localhost:5173,http://127.0.0.1:5173,"
+            "https://18rajritik.github.io,https://pr-mentor.github.io,"
+            "https://prmentor.in,https://www.prmentor.in"
+        )
 
     return [origin.strip() for origin in defaults.split(",") if origin.strip()]
 
@@ -72,23 +101,30 @@ def cookie_secure() -> bool:
 
 
 def llm_configuration(task: str | None = None) -> tuple[str | None, str | None, str]:
-    """Resolve task-specific model selection and common Groq credentials.
+    """Resolve the legacy generic LLM configuration.
 
-    Keep the existing generic variables authoritative. GROQ_API_KEY is a
-    convenience alias for deployments that use Groq directly; it selects a
-    fast, structured-output model and Groq's OpenAI-compatible endpoint when
-    no generic settings are supplied.
+    Named-provider configuration for Gemini, DeepSeek, Groq, and NVIDIA is
+    handled by the provider registry. These generic variables remain
+    supported for backward compatibility.
     """
     model_key = f"LLM_MODEL_{task.upper().replace('-', '_')}" if task else "LLM_MODEL"
+    model = os.getenv(model_key) or os.getenv("LLM_MODEL")
+
+    generic_key = os.getenv("LLM_API_KEY")
     groq_key = os.getenv("GROQ_API_KEY")
-    use_groq_alias = bool(groq_key and not os.getenv("LLM_API_KEY"))
-    model = (
-        os.getenv(model_key)
-        or os.getenv("LLM_MODEL")
-        or ("openai/gpt-oss-20b" if use_groq_alias else None)
-    )
+    use_groq_alias = bool(groq_key and not generic_key)
+
+    if use_groq_alias and not model:
+        model = LLM_PROVIDER_DEFAULTS["groq"]["model"]
+
     default_endpoint = (
-        "https://api.groq.com/openai/v1/chat/completions"
-        if use_groq_alias else "https://api.openai.com/v1/chat/completions"
+        LLM_PROVIDER_DEFAULTS["groq"]["endpoint"]
+        if use_groq_alias
+        else "https://api.openai.com/v1/chat/completions"
     )
-    return os.getenv("LLM_API_KEY") or groq_key or None, model, os.getenv("LLM_API_BASE_URL") or default_endpoint
+
+    return (
+        generic_key or groq_key or None,
+        model,
+        os.getenv("LLM_API_BASE_URL") or default_endpoint,
+    )
