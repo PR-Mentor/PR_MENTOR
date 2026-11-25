@@ -25,10 +25,17 @@ _indexed_databases: set[tuple[str, str]] = set()
 def _validate_uri(uri: str) -> None:
     try:
         parts = urlsplit(uri)
-        options = {key.lower(): values[-1].lower() for key, values in parse_qs(parts.query).items() if values}
+        options = {
+            key.lower(): values[-1].lower()
+            for key, values in parse_qs(parts.query).items()
+            if values
+        }
         if parts.scheme not in {"mongodb", "mongodb+srv"} or not parts.netloc:
             raise ValueError
-        if options.get("tlsallowinvalidcertificates") == "true" or options.get("tlsinsecure") == "true":
+        if (
+            options.get("tlsallowinvalidcertificates") == "true"
+            or options.get("tlsinsecure") == "true"
+        ):
             raise ValueError
         hostname = (parts.hostname or "").lower()
         local_host = hostname in {"localhost", "127.0.0.1", "::1"}
@@ -38,15 +45,21 @@ def _validate_uri(uri: str) -> None:
         if not local_host and tls_option != "true" and parts.scheme != "mongodb+srv":
             raise ValueError
     except ValueError as exc:
-        raise StorageUnavailable("MONGODB_URI is invalid or disables TLS certificate validation.") from exc
+        raise StorageUnavailable(
+            "MONGODB_URI is invalid or disables TLS certificate validation."
+        ) from exc
 
 
 def get_mongo_client() -> MongoClient[dict[str, Any]]:
     global _client, _client_uri
+
     uri = mongodb_uri()
     if not uri:
-        raise StorageUnavailable("PR_MENTOR_STORAGE=mongodb requires MONGODB_URI to be configured.")
+        raise StorageUnavailable(
+            "PR_MENTOR_STORAGE=mongodb requires MONGODB_URI to be configured."
+        )
     _validate_uri(uri)
+
     with _lock:
         if _client is None or _client_uri != uri:
             if _client is not None:
@@ -62,7 +75,9 @@ def get_mongo_client() -> MongoClient[dict[str, Any]]:
             except (ConfigurationError, ValueError) as exc:
                 _client = None
                 _client_uri = None
-                raise StorageUnavailable("MongoDB connection configuration is invalid.") from exc
+                raise StorageUnavailable(
+                    "MongoDB connection configuration is invalid."
+                ) from exc
             _client_uri = uri
             _indexed_databases.clear()
         return _client
@@ -72,6 +87,7 @@ def get_mongo_database(*, ensure_indexes: bool = True):
     client = get_mongo_client()
     name = mongodb_database()
     database = client[name]
+
     if ensure_indexes:
         key = (_client_uri or "", name)
         with _lock:
@@ -79,8 +95,40 @@ def get_mongo_database(*, ensure_indexes: bool = True):
                 from app.database.mongo_reviews import create_indexes
 
                 create_indexes(database)
-                database["github_oauth_flows"].create_index("expires_at", expireAfterSeconds=0)
+                database["github_oauth_flows"].create_index(
+                    "expires_at",
+                    expireAfterSeconds=0,
+                )
+
+                explanation_jobs = database["issue_explanation_jobs"]
+                explanation_jobs.create_index(
+                    [
+                        ("status", 1),
+                        ("available_at", 1),
+                        ("created_at", 1),
+                    ],
+                    name="issue_explanation_jobs_claim_idx",
+                )
+                explanation_jobs.create_index(
+                    [("review_id", 1), ("issue_id", 1)],
+                    unique=True,
+                    name="issue_explanation_jobs_review_issue_unique_idx",
+                )
+                explanation_jobs.create_index(
+                    [
+                        ("review_id", 1),
+                        ("owner_id", 1),
+                        ("created_at", 1),
+                    ],
+                    name="issue_explanation_jobs_review_owner_idx",
+                )
+                explanation_jobs.create_index(
+                    [("owner_id", 1), ("created_at", 1)],
+                    name="issue_explanation_jobs_owner_idx",
+                )
+
                 _indexed_databases.add(key)
+
     return database
 
 
@@ -93,6 +141,7 @@ def ping_mongo() -> None:
 
 def close_mongo_client() -> None:
     global _client, _client_uri
+
     with _lock:
         if _client is not None:
             _client.close()
