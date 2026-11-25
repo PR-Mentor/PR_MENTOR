@@ -18,12 +18,8 @@ from app.ai_review.fix_generation import (
     IssueFixOutcome,
     generate_suggested_fixes,
 )
-from app.ai_review.issue_explanations import (
-    MAX_EXPLANATION_SECONDS,
-    ExplanationGenerationResult,
-    generate_issue_explanations,
-)
 from app.ai_review.reviewer import generate_candidates
+from app.database.issue_explanation_jobs import enqueue_many as enqueue_issue_explanations
 from app.database.reviews import get_store
 from app.github_service.files import parse_patch
 from app.github_service.parser import parse_pull_request_url
@@ -388,7 +384,6 @@ async def analyze(
         deadline=phase_deadline(FIX_GENERATION_TIMEOUT_SECONDS, reserve=2),
     ))
     explanation_started = start_stage("issue_explanations")
-    explanation_result = ExplanationGenerationResult()
     explanation_tool: dict[str, Any]
     if not reconciliation.issues:
         explanation_tool = {
@@ -408,6 +403,13 @@ async def analyze(
             "reason": "LLM_API_KEY and LLM_MODEL are not configured.",
         }
         warnings.append("AI issue explanations were unavailable; canonical issues are preserved without explanations.")
+    elif not effective_id:
+        explanation_tool = {
+            "tool": "issue_explanations", "status": "unavailable", "executed": False,
+            "issue_count": len(reconciliation.issues), "explained_issue_count": 0,
+            "reason": "A signed-in owner is required to queue issue explanations.",
+        }
+        warnings.append("AI issue explanations could not be queued because this review has no signed-in owner.")
     else:
         try:
             explanation_level = "beginner"
@@ -416,65 +418,25 @@ async def analyze(
                     explanation_level = await asyncio.to_thread(_user_explanation_level, effective_id)
             except TimeoutError:
                 pass
-            explanation_result = await generate_issue_explanations(
-                reconciliation.issues,
-                source_files=source_files,
-                diff_files=diff_files,
-                explanation_level=explanation_level,
-                deadline=phase_deadline(MAX_EXPLANATION_SECONDS, reserve=3),
-            )
             for issue in reconciliation.issues:
-                explanation = explanation_result.explanations.get(issue.issue_id)
-                if explanation is not None:
-                    issue.explanation = explanation
-                    issue.explanation_status = "completed"
-                else:
-                    issue.explanation_status = explanation_result.issue_statuses.get(issue.issue_id, "failed")
-                    issue.explanation_failure_reason = explanation_result.issue_failure_reasons.get(issue.issue_id)
-            explained_count = len(explanation_result.explanations)
-            expected_issue_ids = {issue.issue_id for issue in reconciliation.issues}
-            all_canonical_explained = (
-                expected_issue_ids.issubset(explanation_result.explanations.keys())
-                if expected_issue_ids
-                else True
-            )
-            has_failures = bool(
-                not all_canonical_explained
-                or explanation_result.failed_batch_count
-                or explanation_result.rejected_explanation_count
-                or explanation_result.context_failure_count
-                or explained_count < len(reconciliation.issues)
-            )
-            explanation_status = "completed" if not has_failures else "partial" if explained_count else "unavailable"
+                issue.explanation_status = "pending"
+                issue.explanation_failure_reason = None
             explanation_tool = {
-                "tool": "issue_explanations", "status": explanation_status, "executed": True,
-                "issue_count": len(reconciliation.issues), "explained_issue_count": explained_count,
-                "batch_count": explanation_result.batch_count,
-                "failed_batch_count": explanation_result.failed_batch_count,
-                "rejected_explanation_count": explanation_result.rejected_explanation_count,
-                "context_failure_count": explanation_result.context_failure_count,
-                "provider_calls": explanation_result.provider_calls,
+                "tool": "issue_explanations", "status": "queued", "executed": True,
+                "issue_count": len(reconciliation.issues), "explained_issue_count": 0,
+                "queued_issue_count": len(reconciliation.issues),
             }
-            if has_failures:
-                explanation_tool["reason"] = (
-                    "Some canonical issues did not receive a valid explanation."
-                    if explained_count
-                    else "No valid explanations were returned for this review."
-                )
-                warnings.append("AI issue explanations were unavailable for some canonical issues; valid explanations and all findings were preserved.")
         except asyncio.CancelledError:
             fix_generation_task.cancel()
             await asyncio.gather(fix_generation_task, return_exceptions=True)
             raise
-        except Exception:  # noqa: BLE001 - Optional explanations must not discard completed findings.
-            # Explanation generation is optional and must not discard a valid
-            # review. Keep details out of the response and retain every issue.
+        except Exception:  # noqa: BLE001 - Preference lookup must not discard a valid review.
             explanation_tool = {
-                "tool": "issue_explanations", "status": "unavailable", "executed": True,
+                "tool": "issue_explanations", "status": "unavailable", "executed": False,
                 "issue_count": len(reconciliation.issues), "explained_issue_count": 0,
-                "reason": "The explanation service failed; canonical issues remain available.",
+                "reason": "The explanation queue could not be prepared; canonical issues remain available.",
             }
-            warnings.append("AI issue explanations were unavailable; canonical issues are preserved without explanations.")
+            warnings.append("AI issue explanations could not be queued; canonical issues are preserved without explanations.")
     tool_results.append(explanation_tool)
     finish_stage("issue_explanations", explanation_started)
     fix_generation_tool = await fix_generation_task
@@ -538,7 +500,60 @@ async def analyze(
         created_at=datetime.now(UTC), duration_ms=elapsed, diff_files=diff_files,
     )
     stage_started = start_stage("result_persistence")
-    await asyncio.to_thread(_persist, response, effective_id)
+    if explanation_tool.get("status") == "queued":
+        jobs = [
+            {"issue_id": issue.issue_id, "payload": {"explanation_level": explanation_level}}
+            for issue in reconciliation.issues
+        ]
+        queued = await asyncio.to_thread(
+            _persist_and_enqueue_issue_explanations,
+            response,
+            effective_id,
+            jobs,
+        )
+        if not queued:
+            queued_issue_ids: set[str] = set()
+            try:
+                from app.database.issue_explanation_jobs import list_for_review
+
+                existing_jobs = await asyncio.to_thread(list_for_review, response.review_id, effective_id)
+                queued_issue_ids = {str(job.get("issue_id")) for job in existing_jobs}
+            except Exception:  # noqa: BLE001 - Queue storage may be the source of the failure.
+                pass
+            response_issues = {issue.issue_id: issue for issue in response.canonical_issues}
+            for issue in reconciliation.issues:
+                if issue.issue_id in queued_issue_ids:
+                    continue
+                issue.explanation_status = "failed"
+                issue.explanation_failure_reason = "Explanation could not be queued."
+                response_issue = response_issues.get(issue.issue_id)
+                if response_issue is not None:
+                    response_issue.explanation_status = "failed"
+                    response_issue.explanation_failure_reason = issue.explanation_failure_reason
+                try:
+                    await asyncio.to_thread(
+                        get_store().update_issue_explanation,
+                        response.review_id,
+                        issue.issue_id,
+                        "failed",
+                        owner_id=effective_id,
+                        failure_reason=issue.explanation_failure_reason,
+                    )
+                except Exception:  # noqa: BLE001 - Return the review even if status repair also fails.
+                    pass
+            queued_count = len(queued_issue_ids)
+            explanation_tool["status"] = "partial" if queued_count else "unavailable"
+            explanation_tool["queued_issue_count"] = queued_count
+            explanation_tool["failed_issue_count"] = len(reconciliation.issues) - queued_count
+            explanation_tool["reason"] = "Some explanations could not be queued." if queued_count else "Explanations could not be queued."
+            response.status = "partial"
+            response.warnings.append("Some AI issue explanations could not be queued; findings and available jobs were preserved.")
+            response.tool_results = [
+                explanation_tool if item.get("tool") == "issue_explanations" else item
+                for item in response.tool_results
+            ]
+    else:
+        await asyncio.to_thread(_persist, response, effective_id)
     finish_stage("result_persistence", stage_started)
     _logger.info(
         "Live review completed request_id=%s review_id=%s stage_ms=%s",
@@ -741,6 +756,20 @@ def _persist(response: ReviewResponse, user_id: str | None = None, *, owner_id: 
         pass
 
 
+def _persist_and_enqueue_issue_explanations(
+    response: ReviewResponse,
+    owner_id: str,
+    jobs: list[dict[str, Any]],
+) -> bool:
+    """Persist the review before exposing its queued jobs to background workers."""
+    _persist(response, owner_id)
+    try:
+        enqueue_issue_explanations(owner_id, response.review_id, jobs)
+    except Exception:  # noqa: BLE001 - Findings survive queue storage failures.
+        return False
+    return True
+
+
 def _populate_reconciliation(response: ReviewResponse, observations: list[FindingObservation]) -> None:
     """Attach canonical issues while leaving the legacy findings list intact."""
     result = reconcile_observations(observations)
@@ -921,3 +950,4 @@ async def _run_fix_generation(
         "llm_call_count": result.llm_call_count,
         "provider_calls": result.provider_calls,
     }
+

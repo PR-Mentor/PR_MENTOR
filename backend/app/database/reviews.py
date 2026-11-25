@@ -11,6 +11,16 @@ from app.database.connection import connection
 class ReviewStore(Protocol):
     def save_review(self, review: dict[str, Any], user_id: str | None = None, *, owner_id: str | None = None) -> dict[str, Any]: ...
     def get_review(self, review_id: str, user_id: str | None = None, *, owner_id: str | None = None) -> dict[str, Any] | None: ...
+    def update_issue_explanation(
+        self,
+        review_id: str,
+        issue_id: str,
+        status: str,
+        *,
+        owner_id: str,
+        explanation: dict[str, Any] | None = None,
+        failure_reason: str | None = None,
+    ) -> bool: ...
     def list_reviews(self, user_id: str | int | None = None, limit: int = 50, *, owner_id: str | None = None, include_demo: bool = True) -> list[dict[str, Any]]: ...
     def review_count(self, user_id: str | None = None, *, owner_id: str | None = None) -> int: ...
     def live_review_count(self, user_id: str | None = None, *, owner_id: str | None = None) -> int: ...
@@ -59,6 +69,60 @@ class SQLiteReviewStore:
                 (review_id, effective_id, effective_id, effective_id),
             ).fetchone()
         return json.loads(row["payload"]) if row else None
+
+    def update_issue_explanation(
+        self,
+        review_id: str,
+        issue_id: str,
+        status: str,
+        *,
+        owner_id: str,
+        explanation: dict[str, Any] | None = None,
+        failure_reason: str | None = None,
+    ) -> bool:
+        """Atomically update one canonical issue without overwriting sibling jobs."""
+        with connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT user_id, owner_id, payload FROM reviews WHERE review_id = ?",
+                (review_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            if owner_id not in {row["user_id"], row["owner_id"]}:
+                shared = db.execute(
+                    """
+                    SELECT 1
+                    FROM workspace_review_shares AS share
+                    JOIN workspace_members AS member
+                      ON member.workspace_id = share.workspace_id
+                    WHERE share.review_id = ? AND member.user_id = ?
+                      AND member.role IN ('owner', 'admin', 'editor')
+                    LIMIT 1
+                    """,
+                    (review_id, owner_id),
+                ).fetchone()
+                if shared is None:
+                    return False
+
+            review = json.loads(row["payload"])
+            issues = review.get("canonical_issues")
+            if not isinstance(issues, list):
+                return False
+            matching = [issue for issue in issues if issue.get("issue_id") == issue_id]
+            if len(matching) != 1:
+                return False
+            target = matching[0]
+            target["explanation_status"] = status
+            target["explanation_failure_reason"] = failure_reason
+            if explanation is not None:
+                target["explanation"] = explanation
+            review["canonical_issues"] = issues
+            cursor = db.execute(
+                "UPDATE reviews SET payload = ? WHERE review_id = ?",
+                (json.dumps(review, ensure_ascii=False, separators=(",", ":")), review_id),
+            )
+            return cursor.rowcount == 1
 
     def list_reviews(
         self,
@@ -255,3 +319,4 @@ def get_store() -> ReviewStore:
 
         return MongoReviewStore(get_mongo_database(), ensure_indexes=False)
     return SQLiteReviewStore()
+

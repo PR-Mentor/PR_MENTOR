@@ -121,6 +121,39 @@ class MongoReviewStore:
                 doc = self.reviews.find_one({"review_id": review_id})
         return _without_id(doc)
 
+    def update_issue_explanation(
+        self,
+        review_id: str,
+        issue_id: str,
+        status: str,
+        *,
+        owner_id: str,
+        explanation: dict[str, Any] | None = None,
+        failure_reason: str | None = None,
+    ) -> bool:
+        """Atomically update one canonical issue without replacing other jobs' data."""
+        review = self.get_review(review_id, owner_id=owner_id)
+        if review is None:
+            return False
+        issues = review.get("canonical_issues")
+        if not isinstance(issues, list) or sum(
+            issue.get("issue_id") == issue_id for issue in issues if isinstance(issue, dict)
+        ) != 1:
+            return False
+
+        values: dict[str, Any] = {
+            "canonical_issues.$[issue].explanation_status": status,
+            "canonical_issues.$[issue].explanation_failure_reason": failure_reason,
+        }
+        if explanation is not None:
+            values["canonical_issues.$[issue].explanation"] = explanation
+        result = self.reviews.update_one(
+            {"review_id": review_id},
+            {"$set": values},
+            array_filters=[{"issue.issue_id": issue_id}],
+        )
+        return result.modified_count > 0
+
     def list_reviews(
         self,
         user_id: str | int | None = None,
@@ -355,3 +388,4 @@ class MongoReviewStore:
             }},
             upsert=True,
         )
+
